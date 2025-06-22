@@ -65,8 +65,11 @@ A professional blockchain platform built with PHP 8+, featuring Proof of Stake c
 git clone https://github.com/infosave2007/phpblockchain.git
 cd phpblockchain
 
-# Install dependencies
-composer install
+# Install dependencies (ignore optional database extensions if not available)
+composer install --ignore-platform-req=ext-mysqli --ignore-platform-req=ext-pdo_mysql --ignore-platform-req=ext-gmp
+
+# Alternative: Install with all extensions
+# composer install
 
 # Copy environment configuration
 cp .env.example .env
@@ -269,6 +272,21 @@ sudo yum install php-openssl
 
 # macOS
 brew install openssl
+```
+
+#### Missing Database Extensions
+```bash
+# Ubuntu/Debian
+sudo apt-get install php-mysqli php-pdo-mysql php-gmp
+
+# CentOS/RHEL
+sudo yum install php-mysqli php-pdo php-gmp
+
+# macOS
+brew install php-gmp
+
+# Alternative: Install without database extensions
+composer install --ignore-platform-req=ext-mysqli --ignore-platform-req=ext-pdo_mysql --ignore-platform-req=ext-gmp
 ```
 
 #### Composer Issues
