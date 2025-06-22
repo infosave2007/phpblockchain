@@ -65,11 +65,11 @@ A professional blockchain platform built with PHP 8+, featuring Proof of Stake c
 git clone https://github.com/infosave2007/phpblockchain.git
 cd phpblockchain
 
-# Install dependencies (ignore optional database extensions if not available)
-composer install --ignore-platform-req=ext-mysqli --ignore-platform-req=ext-pdo_mysql --ignore-platform-req=ext-gmp
+# Install dependencies (simplified - works without database extensions)
+composer install --ignore-platform-req=ext-mysqli --ignore-platform-req=ext-pdo_mysql --ignore-platform-req=ext-gmp --no-dev
 
-# Alternative: Install with all extensions
-# composer install
+# Alternative: Install with development tools
+# composer install --ignore-platform-req=ext-mysqli --ignore-platform-req=ext-pdo_mysql --ignore-platform-req=ext-gmp
 
 # Copy environment configuration
 cp .env.example .env
@@ -308,6 +308,16 @@ php cli.php db:test
 
 # Create database manually
 mysql -u root -p -e "CREATE DATABASE blockchain;"
+```
+
+#### GitHub Authentication Issues
+```bash
+# If you get GitHub authentication errors during installation
+composer clear-cache
+rm -rf vendor/ composer.lock
+
+# Use the simplified installation
+composer install --ignore-platform-req=ext-mysqli --ignore-platform-req=ext-pdo_mysql --ignore-platform-req=ext-gmp --no-dev
 ```
 
 ## 📚 API Documentation
