@@ -45,7 +45,15 @@
             "Blockchain\\Nodes\\": "nodes/",
             "Blockchain\\Wallet\\": "wallet/",
             "Blockchain\\Database\\": "database/"
-        }
+        },
+        "exclude-from-classmap": [
+            "config/",
+            "tests/",
+            "simple_demo.php",
+            "simple_test.php",
+            "crypto-demo.php",
+            "sync_demo.php"
+        ]
     },
     "autoload-dev": {
         "psr-4": {

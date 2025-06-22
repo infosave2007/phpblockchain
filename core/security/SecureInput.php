@@ -1,6 +1,6 @@
 <?php
 
-namespace Core\Security;
+namespace Blockchain\Core\Security;
 
 use Exception;
 

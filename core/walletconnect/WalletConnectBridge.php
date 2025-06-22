@@ -1,6 +1,6 @@
 <?php
 
-namespace Core\WalletConnect;
+namespace Blockchain\Core\WalletConnect;
 
 use Exception;
 

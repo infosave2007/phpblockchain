@@ -1,6 +1,6 @@
 <?php
 
-namespace Core\Security;
+namespace Blockchain\Core\Security;
 
 /**
  * Secure memory management for sensitive data

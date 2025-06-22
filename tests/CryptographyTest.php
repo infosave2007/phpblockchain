@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+namespace Blockchain\Tests;
+
 use PHPUnit\Framework\TestCase;
 use Blockchain\Core\Cryptography\KeyPair;
 use Blockchain\Core\Cryptography\Signature;

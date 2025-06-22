@@ -75,6 +75,9 @@ echo "   Same as hash 1: " . ($hash1 === $hash3 ? "YES ✓" : "NO ✗") . "\n\n"
 echo "💸 SIMPLE TRANSACTION STRUCTURE\n";
 echo "-------------------------------\n";
 
+// Define classes only when running this file directly (not during autoload)
+if (basename(__FILE__) === basename($_SERVER['SCRIPT_NAME'])) {
+
 class SimpleTransaction {
     public string $id;
     public string $from;
@@ -338,3 +341,5 @@ function formatBytes($bytes) {
     $factor = floor(log($bytes, 1024));
     return sprintf('%.1f %s', $bytes / (1024 ** $factor), $units[$factor]);
 }
+
+} // End of if condition for direct script execution

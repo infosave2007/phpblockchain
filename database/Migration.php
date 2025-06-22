@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-namespace Blockchain\Core\Database;
+namespace Blockchain\Database;
 
 use PDO;
 use Exception;
