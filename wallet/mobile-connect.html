@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connect Your Mobile Wallet - PHP Blockchain</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .wallet-connect-container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            padding: 40px;
+            max-width: 500px;
+            width: 90%;
+            text-align: center;
+        }
+        
+        .logo {
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            border-radius: 50%;
+            margin: 0 auto 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 16px;
+        }
+        
+        .qr-section {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+        }
+        
+        .qr-code {
+            width: 200px;
+            height: 200px;
+            background: white;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            margin: 0 auto 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            color: #666;
+            position: relative;
+        }
+        
+        .qr-placeholder {
+            text-align: center;
+            line-height: 1.4;
+        }
+        
+        .connection-uri {
+            background: #f0f0f0;
+            border-radius: 8px;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 10px;
+            word-break: break-all;
+            margin-top: 10px;
+            color: #666;
+        }
+        
+        .wallet-options {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 15px;
+            margin: 30px 0;
+        }
+        
+        .wallet-button {
+            background: white;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            padding: 20px 15px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            color: #333;
+        }
+        
+        .wallet-button:hover {
+            border-color: #667eea;
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.15);
+        }
+        
+        .wallet-icon {
+            width: 40px;
+            height: 40px;
+            margin: 0 auto 10px;
+            background: #f0f0f0;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+        
+        .wallet-name {
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            font-weight: 500;
+        }
+        
+        .status.connecting {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeeba;
+        }
+        
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .instructions {
+            background: #e7f3ff;
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 20px;
+            text-align: left;
+        }
+        
+        .instructions h3 {
+            color: #0066cc;
+            margin-bottom: 10px;
+        }
+        
+        .instructions ol {
+            margin-left: 20px;
+            line-height: 1.6;
+            color: #555;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .mobile-only {
+            display: none;
+        }
+        
+        @media (max-width: 768px) {
+            .mobile-only {
+                display: block;
+            }
+            
+            .desktop-only {
+                display: none;
+            }
+            
+            .wallet-connect-container {
+                padding: 20px;
+            }
+            
+            .qr-section {
+                padding: 20px;
+            }
+            
+            .qr-code {
+                width: 150px;
+                height: 150px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="wallet-connect-container">
+        <div class="logo">⛓️</div>
+        <h1>Connect Your Wallet</h1>
+        <p class="subtitle">Securely connect your mobile wallet to interact with the blockchain</p>
+        
+        <div class="qr-section desktop-only">
+            <div class="qr-code" id="qrCode">
+                <div class="qr-placeholder">
+                    <div class="loading"></div>
+                    <br>Generating QR Code...
+                </div>
+            </div>
+            <div class="connection-uri" id="connectionUri">Generating connection URI...</div>
+        </div>
+        
+        <div class="wallet-options">
+            <a href="#" class="wallet-button" id="trustwallet">
+                <div class="wallet-icon">🛡️</div>
+                <div class="wallet-name">Trust Wallet</div>
+            </a>
+            <a href="#" class="wallet-button" id="metamask">
+                <div class="wallet-icon">🦊</div>
+                <div class="wallet-name">MetaMask</div>
+            </a>
+            <a href="#" class="wallet-button" id="rainbow">
+                <div class="wallet-icon">🌈</div>
+                <div class="wallet-name">Rainbow</div>
+            </a>
+            <a href="#" class="wallet-button" id="coinbase">
+                <div class="wallet-icon">🔷</div>
+                <div class="wallet-name">Coinbase</div>
+            </a>
+        </div>
+        
+        <div id="connectionStatus" class="status" style="display: none;"></div>
+        
+        <div class="instructions mobile-only">
+            <h3>📱 Mobile Instructions:</h3>
+            <ol>
+                <li>Tap on your preferred wallet above</li>
+                <li>Your wallet app will open automatically</li>
+                <li>Approve the connection request</li>
+                <li>Return to this page to continue</li>
+            </ol>
+        </div>
+        
+        <div class="instructions desktop-only">
+            <h3>🖥️ Desktop Instructions:</h3>
+            <ol>
+                <li>Open your mobile wallet app</li>
+                <li>Find the "WalletConnect" or "Scan QR" option</li>
+                <li>Scan the QR code above</li>
+                <li>Approve the connection on your mobile device</li>
+            </ol>
+        </div>
+    </div>
+
+    <script>
+        class WalletConnector {
+            constructor() {
+                this.session = null;
+                this.connected = false;
+                this.init();
+            }
+            
+            async init() {
+                try {
+                    // Create WalletConnect session
+                    const response = await fetch('/api/v2/wallet/connect/create-session', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('Failed to create session');
+                    }
+                    
+                    this.session = await response.json();
+                    this.updateUI();
+                    this.setupEventListeners();
+                    this.startConnectionCheck();
+                } catch (error) {
+                    console.error('Error initializing wallet connector:', error);
+                    this.showError('Failed to initialize wallet connection');
+                }
+            }
+            
+            updateUI() {
+                if (!this.session) return;
+                
+                // Update QR code
+                const qrCode = document.getElementById('qrCode');
+                qrCode.innerHTML = this.generateQRDisplay(this.session.uri);
+                
+                // Update URI
+                const uriElement = document.getElementById('connectionUri');
+                uriElement.textContent = this.session.uri;
+                
+                // Update deep links
+                this.updateWalletLinks();
+            }
+            
+            generateQRDisplay(uri) {
+                // In real implementation this would be a real QR code
+                return `
+                    <div style="font-family: monospace; font-size: 8px; line-height: 1.1;">
+                        ███████████████████████████<br>
+                        █     █   █   █   █     █<br>
+                        █ ███ █ ███ ███ ███ ███ █<br>
+                        █ ███ █   █   █   █ ███ █<br>
+                        █ ███ █ ███ ███ ███ ███ █<br>
+                        █     █   █   █   █     █<br>
+                        ███████████████████████████<br>
+                        <div style="font-size: 6px; margin-top: 5px;">WalletConnect QR</div>
+                    </div>
+                `;
+            }
+            
+            updateWalletLinks() {
+                const wallets = {
+                    trustwallet: `trust://wc?uri=${encodeURIComponent(this.session.uri)}`,
+                    metamask: `metamask://wc?uri=${encodeURIComponent(this.session.uri)}`,
+                    rainbow: `rainbow://wc?uri=${encodeURIComponent(this.session.uri)}`,
+                    coinbase: `cbwallet://wc?uri=${encodeURIComponent(this.session.uri)}`
+                };
+                
+                Object.entries(wallets).forEach(([id, url]) => {
+                    const button = document.getElementById(id);
+                    if (button) {
+                        button.href = url;
+                        button.addEventListener('click', (e) => {
+                            this.showStatus('connecting', '⏳ Opening wallet app...');
+                            // Fallback for browsers that do not support deep links
+                            setTimeout(() => {
+                                if (!this.connected) {
+                                    this.showStatus('error', '❌ Could not open wallet app. Please scan QR code manually.');
+                                }
+                            }, 3000);
+                        });
+                    }
+                });
+            }
+            
+            setupEventListeners() {
+                // Listen to connection events
+                window.addEventListener('focus', () => {
+                    // Check connection when user returns to page
+                    if (!this.connected) {
+                        this.checkConnection();
+                    }
+                });
+            }
+            
+            startConnectionCheck() {
+                // Check connection status every 2 seconds
+                this.connectionInterval = setInterval(() => {
+                    this.checkConnection();
+                }, 2000);
+            }
+            
+            async checkConnection() {
+                try {
+                    const response = await fetch(`/api/v2/wallet/connect/status/${this.session.key}`);
+                    const status = await response.json();
+                    
+                    if (status.connected && !this.connected) {
+                        this.connected = true;
+                        clearInterval(this.connectionInterval);
+                        this.showStatus('connected', `✅ Connected: ${status.account}`);
+                        this.onConnected(status);
+                    }
+                } catch (error) {
+                    console.error('Error checking connection:', error);
+                }
+            }
+            
+            onConnected(status) {
+                // Wallet connected, can perform operations
+                console.log('Wallet connected:', status);
+                
+                // Hide QR code and instructions
+                document.querySelector('.qr-section').style.display = 'none';
+                document.querySelector('.instructions').style.display = 'none';
+                
+                // Show connected wallet information
+                this.showWalletInfo(status);
+            }
+            
+            showWalletInfo(status) {
+                const container = document.querySelector('.wallet-connect-container');
+                const walletInfo = document.createElement('div');
+                walletInfo.className = 'wallet-info';
+                walletInfo.innerHTML = `
+                    <h3>🎉 Wallet Connected!</h3>
+                    <p><strong>Address:</strong> ${status.account}</p>
+                    <p><strong>Network:</strong> ${status.chainId}</p>
+                    <div style="margin-top: 20px;">
+                        <button onclick="sendTestTransaction()" style="padding: 10px 20px; border: none; background: #667eea; color: white; border-radius: 5px; cursor: pointer;">
+                            Send Test Transaction
+                        </button>
+                        <button onclick="signMessage()" style="padding: 10px 20px; border: none; background: #764ba2; color: white; border-radius: 5px; cursor: pointer; margin-left: 10px;">
+                            Sign Message
+                        </button>
+                    </div>
+                `;
+                container.appendChild(walletInfo);
+            }
+            
+            showStatus(type, message) {
+                const status = document.getElementById('connectionStatus');
+                status.className = `status ${type}`;
+                status.textContent = message;
+                status.style.display = 'block';
+            }
+            
+            showError(message) {
+                this.showStatus('error', `❌ ${message}`);
+            }
+        }
+        
+        // Global functions for testing
+        async function sendTestTransaction() {
+            try {
+                const response = await fetch('/api/v2/wallet/connect/send-transaction', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        to: '0x0000000000000000000000000000000000000000',
+                        value: '0.01',
+                        data: '0x'
+                    })
+                });
+                
+                const result = await response.json();
+                alert('Transaction sent: ' + result.hash);
+            } catch (error) {
+                alert('Error sending transaction: ' + error.message);
+            }
+        }
+        
+        async function signMessage() {
+            try {
+                const message = 'Hello from PHP Blockchain Platform!';
+                const response = await fetch('/api/v2/wallet/connect/sign-message', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        message: message
+                    })
+                });
+                
+                const result = await response.json();
+                alert('Message signed: ' + result.signature);
+            } catch (error) {
+                alert('Error signing message: ' + error.message);
+            }
+        }
+        
+        // Initialize connection on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            new WalletConnector();
+        });
+    </script>
+</body>
+</html>
