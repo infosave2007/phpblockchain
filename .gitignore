@@ -1,0 +1,111 @@
+# Modern Blockchain Platform - Git Ignore File
+
+# Environment files
+.env
+.env.local
+.env.production
+.env.test
+
+# Composer
+/vendor/
+composer.lock
+
+# Storage and logs
+/storage/logs/*
+/storage/blocks/*
+/storage/wallets/*
+/storage/cache/*
+/storage/temp/*
+!/storage/.gitkeep
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Build artifacts
+/build/
+/dist/
+/public/build/
+
+# Testing
+/coverage/
+.phpunit.result.cache
+phpunit.xml
+
+# Deployment
+.deployment
+.deploy
+
+# Configuration
+/config/installed
+/config/local.php
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Blockchain data
+/blockchain_data/*
+/peer_data/*
+
+# Docker
+.docker/
+
+# PHP CS Fixer
+.php_cs.cache
+.php-cs-fixer.cache
+
+# PHPStan
+phpstan.neon.dist
+
+# Logs
+*.log
+
+# Private keys and sensitive data
+*.key
+*.pem
+*.p12
+/keys/
+/certificates/
+
+# Backup files
+*.backup
+*.bak
+*.old
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.rar
+
+# Runtime files
+*.pid
+*.lock

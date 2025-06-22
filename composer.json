@@ -1,0 +1,83 @@
+{
+    "name": "blockchain/modern-platform",
+    "description": "Modern blockchain platform with PoS consensus and customizable branding",
+    "version": "2.0.0",
+    "type": "project",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Blockchain Platform Team",
+            "email": "team@blockchain-platform.com"
+        }
+    ],
+    "require": {
+        "php": ">=8.0",
+        "ext-curl": "*",
+        "ext-hash": "*",
+        "ext-json": "*",
+        "ext-mbstring": "*",
+        "ext-mysqli": "*",
+        "ext-openssl": "*",
+        "ext-pdo": "*",
+        "ext-pdo_mysql": "*",
+        "bitwasp/bitcoin": "*",
+        "doctrine/dbal": "^3.6",
+        "guzzlehttp/guzzle": "^7.8",
+        "kornrunner/keccak": "*",
+        "mdanter/ecc": "*",
+        "monolog/monolog": "^3.0",
+        "simplito/elliptic-php": "*",
+        "stephenhill/base58": "^1.1",
+        "symfony/console": "^6.3",
+        "twig/twig": "^3.7",
+        "vlucas/phpdotenv": "^5.5"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.2",
+        "symfony/var-dumper": "^6.3",
+        "friendsofphp/php-cs-fixer": "^3.21",
+        "phpstan/phpstan": "^1.10",
+        "squizlabs/php_codesniffer": "^3.7"
+    },
+    "autoload": {
+        "psr-4": {
+            "Blockchain\\": ".",
+            "Blockchain\\Core\\": "core/",
+            "Blockchain\\API\\": "api/",
+            "Blockchain\\Contracts\\": "contracts/",
+            "Blockchain\\Nodes\\": "nodes/",
+            "Blockchain\\Wallet\\": "wallet/",
+            "Blockchain\\Database\\": "database/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Blockchain\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "post-install-cmd": [
+            "php -r \"if (!file_exists('.env')) copy('.env.example', '.env');\""
+        ],
+        "test": "phpunit",
+        "cs-fix": "php-cs-fixer fix",
+        "stan": "phpstan analyse",
+        "cs": "phpcs",
+        "install-dev": [
+            "composer install",
+            "php cli.php install"
+        ],
+        "blockchain-init": "php cli.php blockchain init",
+        "node-start": "php cli.php node start",
+        "wallet-create": "php cli.php wallet create"
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "bin": [
+        "cli.php"
+    ]
+}
