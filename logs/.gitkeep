@@ -1,0 +1,9 @@
+# Logs directory for blockchain platform
+# This directory will contain:
+# - blockchain.log - main blockchain logs
+# - api.log - API access logs
+# - network.log - network communication logs
+# - consensus.log - consensus mechanism logs
+# - contracts.log - smart contract execution logs
+
+# This file ensures the directory structure is maintained in git

@@ -1,0 +1,8 @@
+# Storage directory for blockchain data
+# This directory will contain:
+# - blockchain/ - blockchain blocks and state
+# - state/ - current state data
+# - contracts/ - smart contract storage
+# - backups/ - automatic backups
+
+# This file ensures the directory structure is maintained in git

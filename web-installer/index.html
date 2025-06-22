@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Modern Blockchain Platform - Installation</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .install-card {
+            backdrop-filter: blur(10px);
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+        }
+        .step-indicator {
+            position: relative;
+            display: flex;
+            justify-content: center;
+            margin-bottom: 2rem;
+        }
+        .step {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            margin: 0 10px;
+            position: relative;
+        }
+        .step.active {
+            background: #28a745;
+        }
+        .step.completed {
+            background: #007bff;
+        }
+        .step.pending {
+            background: #6c757d;
+        }
+        .step::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 100%;
+            width: 20px;
+            height: 2px;
+            background: #6c757d;
+            transform: translateY(-50%);
+        }
+        .step:last-child::after {
+            display: none;
+        }
+        .form-control {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+        }
+        .form-control:focus {
+            background: rgba(255, 255, 255, 0.2);
+            border-color: #667eea;
+            color: white;
+        }
+        .form-control::placeholder {
+            color: rgba(255, 255, 255, 0.7);
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+        }
+        .alert {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+        }
+    </style>
+</head>
+<body class="gradient-bg">
+    <div class="container py-5">
+        <div class="row justify-content-center">
+            <div class="col-md-8">
+                <div class="install-card p-5">
+                    <div class="text-center mb-4">
+                        <h1 class="text-white mb-3">
+                            <i class="fas fa-coins text-warning"></i>
+                            Modern Blockchain Platform
+                        </h1>
+                        <p class="text-white-50">Installation and blockchain platform setup</p>
+                    </div>
+
+                    <!-- Step indicator -->
+                    <div class="step-indicator">
+                        <div class="step active" id="step1">1</div>
+                        <div class="step pending" id="step2">2</div>
+                        <div class="step pending" id="step3">3</div>
+                        <div class="step pending" id="step4">4</div>
+                        <div class="step pending" id="step5">5</div>
+                    </div>
+
+                    <!-- Installation form -->
+                    <form id="installForm">
+                        <!-- Step 1: System Requirements -->
+                        <div class="install-step" id="step-1">
+                            <h3 class="text-white mb-4">
+                                <i class="fas fa-server"></i>
+                                System Check
+                            </h3>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="requirement-check mb-3">
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <span class="text-white">PHP version (>=8.0)</span>
+                                            <span class="badge bg-success" id="php-version">Checking...</span>
+                                        </div>
+                                    </div>
+                                    <div class="requirement-check mb-3">
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <span class="text-white">MySQL availability</span>
+                                            <span class="badge bg-success" id="mysql-check">Checking...</span>
+                                        </div>
+                                    </div>
+                                    <div class="requirement-check mb-3">
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <span class="text-white">OpenSSL extension</span>
+                                            <span class="badge bg-success" id="openssl-check">Checking...</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="requirement-check mb-3">
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <span class="text-white">cURL extension</span>
+                                            <span class="badge bg-success" id="curl-check">Checking...</span>
+                                        </div>
+                                    </div>
+                                    <div class="requirement-check mb-3">
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <span class="text-white">Write permissions</span>
+                                            <span class="badge bg-success" id="write-check">Checking...</span>
+                                        </div>
+                                    </div>
+                                    <div class="requirement-check mb-3">
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <span class="text-white">Node.js (>=16.0)</span>
+                                            <span class="badge bg-success" id="node-check">Checking...</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Step 2: Database -->
+                        <div class="install-step d-none" id="step-2">
+                            <h3 class="text-white mb-4">
+                                <i class="fas fa-database"></i>
+                                Database Configuration
+                            </h3>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">Database Host</label>
+                                        <input type="text" class="form-control" name="db_host" value="localhost" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">Port</label>
+                                        <input type="number" class="form-control" name="db_port" value="3306" required>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">Username</label>
+                                        <input type="text" class="form-control" name="db_username" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">Password</label>
+                                        <input type="password" class="form-control" name="db_password">
+                                    </div>
+                                </div>
+                                <div class="col-12">
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">Database Name</label>
+                                        <input type="text" class="form-control" name="db_name" value="blockchain_modern" required>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Step 3: Blockchain Configuration -->
+                        <div class="install-step d-none" id="step-3">
+                            <h3 class="text-white mb-4">
+                                <i class="fas fa-cubes"></i>
+                                Blockchain Setup
+                            </h3>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">Network Name</label>
+                                        <input type="text" class="form-control" name="network_name" value="My Blockchain Network" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">Token Symbol</label>
+                                        <input type="text" class="form-control" name="token_symbol" value="MBC" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">Consensus Algorithm</label>
+                                        <select class="form-control" name="consensus_algorithm" required>
+                                            <option value="pos">Proof of Stake</option>
+                                            <option value="pow">Proof of Work</option>
+                                            <option value="poa">Proof of Authority</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">Initial Supply</label>
+                                        <input type="number" class="form-control" name="initial_supply" value="1000000" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">Block Time (sec)</label>
+                                        <input type="number" class="form-control" name="block_time" value="10" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">Block Reward</label>
+                                        <input type="number" step="0.01" class="form-control" name="block_reward" value="10" required>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Step 4: Node Configuration -->
+                        <div class="install-step d-none" id="step-4">
+                            <h3 class="text-white mb-4">
+                                <i class="fas fa-network-wired"></i>
+                                Node Network Setup
+                            </h3>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">Node Type</label>
+                                        <select class="form-control" name="node_type" required>
+                                            <option value="full">Full Node</option>
+                                            <option value="light">Light Node</option>
+                                            <option value="validator">Validator Node</option>
+                                        </select>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">P2P Port</label>
+                                        <input type="number" class="form-control" name="p2p_port" value="8545" required>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">RPC Port</label>
+                                        <input type="number" class="form-control" name="rpc_port" value="8546" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">Max Connections</label>
+                                        <input type="number" class="form-control" name="max_peers" value="25" required>
+                                    </div>
+                                </div>
+                                <div class="col-12">
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">Bootstrap Nodes (comma separated)</label>
+                                        <textarea class="form-control" name="bootstrap_nodes" rows="3" placeholder="127.0.0.1:8545, example.com:8545"></textarea>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Step 5: Administrator Settings -->
+                        <div class="install-step d-none" id="step-5">
+                            <h3 class="text-white mb-4">
+                                <i class="fas fa-user-shield"></i>
+                                Administrator
+                            </h3>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">Administrator Email</label>
+                                        <input type="email" class="form-control" name="admin_email" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">Password</label>
+                                        <input type="password" class="form-control" name="admin_password" required>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">Confirm Password</label>
+                                        <input type="password" class="form-control" name="admin_password_confirm" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label text-white">API Key</label>
+                                        <div class="input-group">
+                                            <input type="text" class="form-control" name="api_key" id="api-key" required>
+                                            <button type="button" class="btn btn-outline-light" onclick="generateApiKey()">
+                                                <i class="fas fa-refresh"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Navigation -->
+                        <div class="d-flex justify-content-between mt-4">
+                            <button type="button" class="btn btn-outline-light" id="prevBtn" onclick="previousStep()" style="display: none;">
+                                <i class="fas fa-arrow-left"></i> Back
+                            </button>
+                            <button type="button" class="btn btn-primary" id="nextBtn" onclick="nextStep()">
+                                Next <i class="fas fa-arrow-right"></i>
+                            </button>
+                            <button type="submit" class="btn btn-success d-none" id="installBtn">
+                                <i class="fas fa-download"></i> Install
+                            </button>
+                        </div>
+                    </form>
+
+                    <!-- Installation Progress -->
+                    <div class="d-none" id="installProgress">
+                        <h3 class="text-white mb-4">
+                            <i class="fas fa-cog fa-spin"></i>
+                            Installation...
+                        </h3>
+                        <div class="progress mb-3">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                 role="progressbar" style="width: 0%" id="progressBar"></div>
+                        </div>
+                        <p class="text-white-50" id="progressText">Initializing...</p>
+                    </div>
+
+                    <!-- Installation Result -->
+                    <div class="d-none" id="installResult">
+                        <div class="text-center">
+                            <i class="fas fa-check-circle text-success" style="font-size: 4rem;"></i>
+                            <h3 class="text-white mt-3">Installation Complete!</h3>
+                            <p class="text-white-50 mb-4">Your blockchain platform is ready to use</p>
+                            <div class="row">
+                                <div class="col-md-4">
+                                    <a href="../wallet/" class="btn btn-primary w-100 mb-2">
+                                        <i class="fas fa-wallet"></i> Wallet
+                                    </a>
+                                </div>
+                                <div class="col-md-4">
+                                    <a href="../explorer/" class="btn btn-info w-100 mb-2">
+                                        <i class="fas fa-search"></i> Explorer
+                                    </a>
+                                </div>
+                                <div class="col-md-4">
+                                    <a href="../admin/" class="btn btn-warning w-100 mb-2">
+                                        <i class="fas fa-cog"></i> Admin Panel
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="install.js"></script>
+</body>
+</html>
