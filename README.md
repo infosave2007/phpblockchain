@@ -35,9 +35,28 @@ A professional blockchain platform built with PHP 8+, featuring Proof of Stake c
 ## 🚀 Quick Start
 
 ### Requirements
-- PHP 8.0 or higher
-- OpenSSL extension
-- Composer
+
+#### System Requirements
+- **PHP 8.0 or higher** with the following extensions:
+  - OpenSSL (for cryptographic operations)
+  - cURL (for network communications)
+  - JSON (for data serialization)
+  - mbstring (for string manipulation)
+  - MySQLi or PDO (for database operations)
+- **Composer** (dependency management)
+- **MySQL 8.0+** or **MariaDB 10.4+** (optional, for persistent storage)
+- **Redis** (optional, for caching and session storage)
+
+#### Development Requirements
+- **Git** (for version control)
+- **Docker & Docker Compose** (optional, for containerized deployment)
+- **Node.js 16+** (optional, for frontend tools)
+
+#### Production Requirements
+- **Web server** (Apache/Nginx)
+- **SSL certificate** (for HTTPS)
+- **Firewall configuration** (ports 8545, 8546)
+- **Backup solution** (for blockchain data)
 
 ### Installation
 
@@ -49,11 +68,86 @@ cd phpblockchain
 # Install dependencies
 composer install
 
+# Copy environment configuration
+cp .env.example .env
+
+# Set proper permissions
+chmod +x server.php cli.php crypto-cli.php check.php
+chmod -R 755 storage/ logs/
+
+# Create required directories
+mkdir -p storage/blocks storage/state storage/cache
+mkdir -p logs/blockchain logs/transactions
+
+# Run system check
+php check.php
+
+# Initialize configuration (optional - use web installer instead)
+php cli.php init --network="My Network" --symbol="MBC"
+```
+
+### Configuration
+
+#### Environment Variables (.env)
+```bash
+# Blockchain Configuration
+BLOCKCHAIN_NETWORK=mainnet
+BLOCKCHAIN_SYMBOL=MBC
+CONSENSUS_ALGORITHM=pos
+BLOCK_TIME=10
+INITIAL_SUPPLY=1000000
+
+# Database Configuration
+DB_HOST=localhost
+DB_PORT=3306
+DB_DATABASE=blockchain
+DB_USERNAME=blockchain_user
+DB_PASSWORD=your_secure_password
+
+# Network Configuration
+P2P_PORT=8545
+RPC_PORT=8546
+MAX_PEERS=25
+
+# Security
+API_KEY=your_secure_api_key_32_chars_min
+ADMIN_EMAIL=admin@yourdomain.com
+RATE_LIMIT_ENABLED=true
+```
+
+#### Web-based Installation
+For easier setup, use the web installer:
+```bash
+# Start development server
+php server.php
+
+# Open browser and navigate to:
+http://localhost:8080/web-installer/
+
+# Follow the installation wizard
+```
+
+#### Manual Database Setup
+```sql
+CREATE DATABASE blockchain;
+CREATE USER 'blockchain_user'@'localhost' IDENTIFIED BY 'your_secure_password';
+GRANT ALL PRIVILEGES ON blockchain.* TO 'blockchain_user'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+### Quick Verification
+```bash
 # Run tests
 php simple_test.php
 
 # Start the demo
 php simple_demo.php
+
+# Test blockchain functions
+php crypto-demo.php
+
+# Check system status
+php cli.php status
 ```
 
 ### Basic Usage
@@ -151,6 +245,51 @@ php simple_demo.php
 
 # Test synchronization
 php sync_demo.php
+```
+
+## 🔧 Troubleshooting
+
+### Common Issues
+
+#### Permission Errors
+```bash
+# Fix file permissions
+chmod -R 755 storage/ logs/
+chown -R www-data:www-data storage/ logs/  # Linux/Ubuntu
+chown -R _www:_www storage/ logs/          # macOS
+```
+
+#### OpenSSL Extension Missing
+```bash
+# Ubuntu/Debian
+sudo apt-get install php-openssl
+
+# CentOS/RHEL
+sudo yum install php-openssl
+
+# macOS
+brew install openssl
+```
+
+#### Composer Issues
+```bash
+# Update Composer
+composer self-update
+
+# Clear cache
+composer clear-cache
+
+# Install with increased memory
+php -d memory_limit=2G composer install
+```
+
+#### Database Connection Issues
+```bash
+# Test database connection
+php cli.php db:test
+
+# Create database manually
+mysql -u root -p -e "CREATE DATABASE blockchain;"
 ```
 
 ## 📚 API Documentation
