@@ -6,6 +6,13 @@ declare(strict_types=1);
  * Shows core functionality without complex interfaces
  */
 
+// Helper functions
+function formatBytes($bytes) {
+    $units = ['B', 'KB', 'MB', 'GB'];
+    $factor = floor(log($bytes, 1024));
+    return sprintf('%.1f %s', $bytes / (1024 ** $factor), $units[$factor]);
+}
+
 echo "🚀 PHP BLOCKCHAIN - SIMPLE DEMONSTRATION\n";
 echo "=======================================\n\n";
 
@@ -334,12 +341,5 @@ echo "🚀 DEMONSTRATION COMPLETE! ✅\n\n";
 
 echo "🎉 The PHP blockchain core is fully functional!\n";
 echo "Ready for production deployment and further development.\n";
-
-// Helper function
-function formatBytes($bytes) {
-    $units = ['B', 'KB', 'MB', 'GB'];
-    $factor = floor(log($bytes, 1024));
-    return sprintf('%.1f %s', $bytes / (1024 ** $factor), $units[$factor]);
-}
 
 } // End of if condition for direct script execution
