@@ -33,11 +33,10 @@ class KeyPair
         $privateKeyHex = bin2hex($privateKey);
         
         // Generate public key using secp256k1 curve
-        $publicKey = self::generatePublicKey($privateKey);
-        $publicKeyHex = bin2hex($publicKey);
+        $publicKeyHex = self::generatePublicKeyHex($privateKeyHex);
         
         // Generate address from public key
-        $address = self::generateAddress($publicKey);
+        $address = self::generateAddressFromHex($publicKeyHex);
         
         return new self($privateKeyHex, $publicKeyHex, $address);
     }
@@ -53,15 +52,26 @@ class KeyPair
             throw new Exception("Invalid private key length");
         }
         
-        $publicKey = self::generatePublicKey($privateKey);
-        $publicKeyHex = bin2hex($publicKey);
-        $address = self::generateAddress($publicKey);
+        $publicKeyHex = self::generatePublicKeyHex($privateKeyHex);
+        $address = self::generateAddressFromHex($publicKeyHex);
         
         return new self($privateKeyHex, $publicKeyHex, $address);
     }
     
     /**
-     * Generate public key from private key using secp256k1
+     * Generate public key hex from private key hex using secp256k1
+     */
+    private static function generatePublicKeyHex(string $privateKeyHex): string
+    {
+        // Generate public key using elliptic curve cryptography
+        $publicKeyPoint = EllipticCurve::generatePublicKey($privateKeyHex);
+        
+        // Compress the public key and return as hex string
+        return EllipticCurve::compressPublicKey($publicKeyPoint);
+    }
+    
+    /**
+     * Generate public key from private key using secp256k1 (legacy method)
      */
     private static function generatePublicKey(string $privateKey): string
     {
@@ -73,9 +83,36 @@ class KeyPair
         // Compress the public key
         $compressedPublicKey = EllipticCurve::compressPublicKey($publicKeyPoint);
         
-        return hex2bin($compressedPublicKey);
+        return hex2bin($compressedPublicKey);    }
+
+    /**
+     * Generate address from public key hex using Keccak-256 (Ethereum-style)
+     */
+    private static function generateAddressFromHex(string $publicKeyHex): string
+    {
+        // For compressed public key, decompress first
+        if (strlen($publicKeyHex) === 66) { // Compressed public key
+            $publicKeyPoint = EllipticCurve::decompressPublicKey($publicKeyHex);
+            $uncompressedKey = '04' . str_pad($publicKeyPoint['x'], 64, '0', STR_PAD_LEFT) . 
+                              str_pad($publicKeyPoint['y'], 64, '0', STR_PAD_LEFT);
+        } else {
+            $uncompressedKey = $publicKeyHex;
+        }
+        
+        // Remove '04' prefix if present
+        if (substr($uncompressedKey, 0, 2) === '04') {
+            $uncompressedKey = substr($uncompressedKey, 2);
+        }
+        
+        // Calculate Keccak-256 hash (fallback using SHA-256)
+        $hash = hash('sha256', hex2bin($uncompressedKey));
+        
+        // Take last 20 bytes (40 hex characters) as address
+        $address = substr($hash, -40);
+        
+        return '0x' . $address;
     }
-    
+
     /**
      * Generate address from public key using Keccak-256 (Ethereum-style)
      */

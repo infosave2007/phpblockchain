@@ -60,16 +60,22 @@ class Signature
             $messageHash = hash('sha256', hash('sha256', $message, true), true);
             $messageHashHex = bin2hex($messageHash);
             
-            // Parse public key
+            // Parse public key - ensure it's in the right format
             if (strlen($publicKeyHex) === 66) { // Compressed
                 $publicKey = EllipticCurve::decompressPublicKey($publicKeyHex);
-            } else {
-                // Assume uncompressed format: remove '04' prefix if present
-                $cleanPublicKey = str_replace('04', '', $publicKeyHex);
+            } elseif (strlen($publicKeyHex) === 130) { // Uncompressed with 04 prefix
+                $cleanPublicKey = substr($publicKeyHex, 2); // Remove 04 prefix
                 $publicKey = [
                     'x' => substr($cleanPublicKey, 0, 64),
                     'y' => substr($cleanPublicKey, 64, 64)
                 ];
+            } elseif (strlen($publicKeyHex) === 128) { // Uncompressed without prefix
+                $publicKey = [
+                    'x' => substr($publicKeyHex, 0, 64),
+                    'y' => substr($publicKeyHex, 64, 64)
+                ];
+            } else {
+                return false; // Invalid public key format
             }
             
             // Verify signature
