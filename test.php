@@ -92,6 +92,28 @@ test("Performance Benchmark", function() {
     return $executionTime < 2.0;
 });
 
+test("Smart Contract VM", function() {
+    $vm = new \Blockchain\Core\SmartContract\VirtualMachine(100000);
+    
+    // Test simple ADD operation: PUSH1 5, PUSH1 3, ADD
+    $bytecode = '60056003' . '01';
+    $result = $vm->execute($bytecode);
+    
+    return $result['success'] && $result['gasUsed'] > 0;
+});
+
+test("Smart Contract Compilation", function() {
+    $compiler = new \Blockchain\Core\SmartContract\Compiler();
+    
+    $code = 'contract Test { uint256 value; function setValue(uint256 v) public { value = v; } }';
+    $result = $compiler->compile($code);
+    
+    return is_array($result) && 
+           isset($result['bytecode']) && 
+           isset($result['abi']) &&
+           !empty($result['bytecode']);
+});
+
 // ===========================================
 // RESULTS
 // ===========================================
