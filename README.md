@@ -141,13 +141,13 @@ FLUSH PRIVILEGES;
 ### Quick Verification
 ```bash
 # Run tests
-php simple_test.php
+php test.php
 
 # Start the demo
-php simple_demo.php
+php demo.php
 
-# Test blockchain functions
-php crypto-demo.php
+# Professional unit tests
+./vendor/bin/phpunit
 
 # Check system status
 php cli.php status
@@ -241,13 +241,10 @@ echo "Block hash: " . $block->getHash() . "\n";
 ./vendor/bin/phpunit
 
 # Run simple tests
-php simple_test.php
+php test.php
 
 # Run performance demo
-php simple_demo.php
-
-# Test synchronization
-php sync_demo.php
+php demo.php
 ```
 
 ## 🔧 Troubleshooting
