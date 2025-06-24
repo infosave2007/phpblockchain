@@ -1,12 +1,33 @@
 <?php
+// Disable any output buffering that might interfere
+if (ob_get_level()) {
+    ob_end_clean();
+}
+
+// Set headers first
 header('Content-Type: application/json');
 header('Cache-Control: no-cache, no-store, must-revalidate');
 header('Pragma: no-cache');
 header('Expires: 0');
 
+// Turn off error reporting to prevent HTML error pages
+error_reporting(0);
+ini_set('display_errors', 0);
+
 try {
     // Get database connection parameters from POST
-    $input = json_decode(file_get_contents('php://input'), true);
+    $rawInput = file_get_contents('php://input');
+    
+    // Debug: Check if we received data
+    if (empty($rawInput)) {
+        throw new Exception('No data received in request body');
+    }
+    
+    $input = json_decode($rawInput, true);
+    
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        throw new Exception('Invalid JSON data: ' . json_last_error_msg());
+    }
     
     if (!$input) {
         throw new Exception('No database configuration provided');
@@ -88,6 +109,20 @@ try {
         'status' => 'error',
         'message' => $e->getMessage(),
         'suggestion' => 'Please check your database credentials and ensure MySQL server is running.'
+    ]);
+} catch (Error $e) {
+    // Handle fatal errors
+    echo json_encode([
+        'status' => 'error',
+        'message' => 'Fatal error: ' . $e->getMessage(),
+        'suggestion' => 'Please check your PHP configuration and MySQL extensions.'
+    ]);
+} catch (Throwable $e) {
+    // Handle any other throwable
+    echo json_encode([
+        'status' => 'error',
+        'message' => 'Unexpected error: ' . $e->getMessage(),
+        'suggestion' => 'Please contact support.'
     ]);
 }
 ?>

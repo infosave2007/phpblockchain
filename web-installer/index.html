@@ -10,13 +10,7 @@
     <title>Modern Blockchain Platform - Installation</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <script>
-        // Load CSS with cache-busting timestamp
-        var link = document.createElement('link');
-        link.rel = 'stylesheet';
-        link.href = 'css/installer.css?v=' + Date.now();
-        document.head.appendChild(link);
-    </script>
+    <link href="css/installer.css?v=20250624001" rel="stylesheet">
 </head>
 <body class="gradient-bg">
     <div class="container py-5">
@@ -125,7 +119,7 @@
                                 <ul class="text-white-50 mb-0" style="font-size: 0.9rem;">
                                     <li><strong>Required:</strong> PHP 8.1+, OpenSSL, cURL, Write permissions</li>
                                     <li><strong>Optional:</strong> MySQL (for database storage), Node.js (for advanced features)</li>
-                                    <li><strong>Note:</strong> MySQL is recommended for production. File storage will be used as fallback if MySQL is unavailable.</li>
+                                    <li><strong>Note:</strong> The blockchain can work with file-based storage if MySQL is not available</li>
                                 </ul>
                             </div>
                         </div>
@@ -341,11 +335,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // Load JS with cache-busting timestamp
-        var script = document.createElement('script');
-        script.src = 'install.js?v=' + Date.now();
-        document.body.appendChild(script);
-    </script>
+    <script src="install.js?v=20250624001"></script>
 </body>
 </html>

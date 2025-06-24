@@ -139,7 +139,7 @@ function updateSystemCheckStatus() {
 }
 
 // Go to next step
-function nextStep() {
+async function nextStep() {
     if (currentStep === 1) {
         // Check required system requirements
         const requiredChecks = ['php-version', 'openssl-check', 'curl-check', 'write-check'];
@@ -153,7 +153,8 @@ function nextStep() {
 
     if (currentStep === 2) {
         // Check database connection
-        if (!validateDatabaseConnection()) {
+        const isValid = await validateDatabaseConnection();
+        if (!isValid) {
             return;
         }
     }
@@ -240,11 +241,13 @@ async function validateDatabaseConnection() {
     };
 
     try {
-        const response = await fetch('check_database.php', {
+        const response = await fetch('check_database.php?t=' + Date.now(), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Cache-Control': 'no-cache'
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache',
+                'Expires': '0'
             },
             body: JSON.stringify(dbData)
         });
