@@ -1,0 +1,435 @@
+/* Modern Blockchain Platform - Web Installer Styles */
+
+.gradient-bg {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+}
+
+.install-card {
+    backdrop-filter: blur(10px);
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 20px;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+}
+
+/* Step Indicator */
+.step-indicator {
+    position: relative;
+    display: flex;
+    justify-content: center;
+    margin-bottom: 2rem;
+}
+
+.step {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+    margin: 0 10px;
+    position: relative;
+}
+
+.step.active {
+    background: #28a745;
+}
+
+.step.completed {
+    background: #007bff;
+}
+
+.step.pending {
+    background: #6c757d;
+}
+
+.step::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 100%;
+    width: 20px;
+    height: 2px;
+    background: #6c757d;
+    transform: translateY(-50%);
+}
+
+.step:last-child::after {
+    display: none;
+}
+
+/* Form Controls */
+.form-control {
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: white;
+}
+
+.form-control:focus {
+    background: rgba(255, 255, 255, 0.2);
+    border-color: #667eea;
+    color: white;
+    box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+}
+
+.form-control::placeholder {
+    color: rgba(255, 255, 255, 0.7);
+}
+
+/* Buttons */
+.btn-primary {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border: none;
+}
+
+.btn-primary:hover {
+    background: linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+/* System Requirements Status */
+.system-status {
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: white;
+    border-radius: 10px;
+}
+
+.system-status.success {
+    background: rgba(40, 167, 69, 0.2);
+    border-color: rgba(40, 167, 69, 0.4);
+    color: #d4edda;
+}
+
+.system-status.warning {
+    background: rgba(255, 193, 7, 0.2);
+    border-color: rgba(255, 193, 7, 0.4);
+    color: #fff3cd;
+}
+
+.system-status.error {
+    background: rgba(220, 53, 69, 0.2);
+    border-color: rgba(220, 53, 69, 0.4);
+    color: #f8d7da;
+}
+
+/* Requirement Check Items */
+.requirement-check {
+    padding: 12px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    transition: all 0.3s ease;
+}
+
+.requirement-check:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+/* Status Badges - High Specificity */
+span.badge.status-available,
+.badge.status-available {
+    background: linear-gradient(135deg, #28a745, #20c997) !important;
+    color: white !important;
+    border: 1px solid rgba(40, 167, 69, 0.3) !important;
+    box-shadow: 0 2px 8px rgba(40, 167, 69, 0.3) !important;
+    font-weight: 600 !important;
+    padding: 0.5rem 0.75rem !important;
+    border-radius: 20px !important;
+}
+
+span.badge.status-unavailable,
+.badge.status-unavailable {
+    background: linear-gradient(135deg, #dc3545, #c82333) !important;
+    color: white !important;
+    border: 1px solid rgba(220, 53, 69, 0.3) !important;
+    box-shadow: 0 2px 8px rgba(220, 53, 69, 0.3) !important;
+    font-weight: 600 !important;
+    padding: 0.5rem 0.75rem !important;
+    border-radius: 20px !important;
+}
+
+span.badge.status-optional,
+.badge.status-optional {
+    background: linear-gradient(135deg, #ffc107, #e0a800) !important;
+    color: #212529 !important;
+    border: 1px solid rgba(255, 193, 7, 0.3) !important;
+    box-shadow: 0 2px 8px rgba(255, 193, 7, 0.3) !important;
+    font-weight: 600 !important;
+    padding: 0.5rem 0.75rem !important;
+    border-radius: 20px !important;
+}
+
+span.badge.status-partial,
+.badge.status-partial {
+    background: linear-gradient(135deg, #fd7e14, #e8570e) !important;
+    color: white !important;
+    border: 1px solid rgba(253, 126, 20, 0.3) !important;
+    box-shadow: 0 2px 8px rgba(253, 126, 20, 0.3) !important;
+    font-weight: 600 !important;
+    padding: 0.5rem 0.75rem !important;
+    border-radius: 20px !important;
+}
+
+span.badge.status-checking,
+.badge.status-checking {
+    background: linear-gradient(135deg, #6c757d, #545b62) !important;
+    color: white !important;
+    border: 1px solid rgba(108, 117, 125, 0.3) !important;
+    font-weight: 600 !important;
+    padding: 0.5rem 0.75rem !important;
+    border-radius: 20px !important;
+    animation: pulse-checking 1.5s infinite !important;
+}
+
+/* Enhanced Status Badges with better visibility */
+.badge.status-available {
+    background: linear-gradient(135deg, #28a745, #20c997) !important;
+    color: white !important;
+    border: 1px solid rgba(40, 167, 69, 0.3);
+    box-shadow: 0 2px 8px rgba(40, 167, 69, 0.3);
+    font-weight: 600;
+    padding: 0.5rem 0.75rem;
+    border-radius: 20px;
+}
+
+.badge.status-unavailable {
+    background: linear-gradient(135deg, #dc3545, #c82333) !important;
+    color: white !important;
+    border: 1px solid rgba(220, 53, 69, 0.3);
+    box-shadow: 0 2px 8px rgba(220, 53, 69, 0.3);
+    font-weight: 600;
+    padding: 0.5rem 0.75rem;
+    border-radius: 20px;
+}
+
+.badge.status-optional {
+    background: linear-gradient(135deg, #ffc107, #e0a800) !important;
+    color: #212529 !important;
+    border: 1px solid rgba(255, 193, 7, 0.3);
+    box-shadow: 0 2px 8px rgba(255, 193, 7, 0.3);
+    font-weight: 600;
+    padding: 0.5rem 0.75rem;
+    border-radius: 20px;
+}
+
+.badge.status-partial {
+    background: linear-gradient(135deg, #fd7e14, #e8570e) !important;
+    color: white !important;
+    border: 1px solid rgba(253, 126, 20, 0.3);
+    box-shadow: 0 2px 8px rgba(253, 126, 20, 0.3);
+    font-weight: 600;
+    padding: 0.5rem 0.75rem;
+    border-radius: 20px;
+}
+
+.badge.status-checking {
+    background: linear-gradient(135deg, #6c757d, #545b62) !important;
+    color: white !important;
+    border: 1px solid rgba(108, 117, 125, 0.3);
+    font-weight: 600;
+    padding: 0.5rem 0.75rem;
+    border-radius: 20px;
+    animation: pulse-checking 1.5s infinite;
+}
+
+@keyframes pulse-checking {
+    0% { 
+        transform: scale(1);
+        box-shadow: 0 2px 8px rgba(108, 117, 125, 0.3);
+    }
+    50% { 
+        transform: scale(1.02);
+        box-shadow: 0 3px 12px rgba(108, 117, 125, 0.5);
+    }
+    100% { 
+        transform: scale(1);
+        box-shadow: 0 2px 8px rgba(108, 117, 125, 0.3);
+    }
+}
+
+/* Enhanced Badge Styles for Better Text Handling */
+.badge {
+    max-width: 200px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: inline-block;
+    vertical-align: middle;
+}
+
+.badge:hover {
+    max-width: none;
+    white-space: normal;
+    word-break: break-word;
+    z-index: 1000;
+    position: relative;
+}
+
+/* Requirement check layout fix */
+.requirement-check .d-flex {
+    align-items: flex-start !important;
+}
+
+.requirement-check .badge {
+    flex-shrink: 0;
+    margin-left: 10px;
+}
+
+/* Responsive badge sizing */
+@media (max-width: 768px) {
+    .badge {
+        max-width: 120px;
+        font-size: 0.7rem;
+    }
+    
+    .requirement-check {
+        flex-direction: column;
+        align-items: flex-start !important;
+    }
+    
+    .requirement-check .badge {
+        margin-top: 0.5rem;
+        max-width: 100%;
+    }
+}
+
+/* Progress Bar */
+.progress {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 10px;
+    height: 10px;
+}
+
+.progress-bar {
+    background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+    border-radius: 10px;
+}
+
+/* Info Box */
+.info-box {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    border-left: 4px solid #17a2b8;
+    padding: 15px;
+    margin: 20px 0;
+}
+
+/* Alerts */
+.alert {
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: white;
+    border-radius: 10px;
+}
+
+.alert-success {
+    background: rgba(40, 167, 69, 0.2);
+    border-color: rgba(40, 167, 69, 0.4);
+    color: #d4edda;
+}
+
+.alert-warning {
+    background: rgba(255, 193, 7, 0.2);
+    border-color: rgba(255, 193, 7, 0.4);
+    color: #fff3cd;
+}
+
+.alert-danger {
+    background: rgba(220, 53, 69, 0.2);
+    border-color: rgba(220, 53, 69, 0.4);
+    color: #f8d7da;
+}
+
+.alert-info {
+    background: rgba(23, 162, 184, 0.2);
+    border-color: rgba(23, 162, 184, 0.4);
+    color: #d1ecf1;
+}
+
+/* Installation Steps */
+.install-step {
+    animation: fadeIn 0.5s ease-in-out;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .install-card {
+        margin: 10px;
+        padding: 20px !important;
+    }
+    
+    .step-indicator {
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+    
+    .step {
+        margin: 5px;
+    }
+    
+    .requirement-check {
+        margin-bottom: 15px !important;
+    }
+}
+
+/* Loading Animation */
+.fa-spin {
+    animation: fa-spin 2s infinite linear;
+}
+
+@keyframes fa-spin {
+    0% {
+        transform: rotate(0deg);
+    }
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+/* Tooltip */
+.tooltip-inner {
+    background-color: rgba(0, 0, 0, 0.8);
+    color: white;
+    border-radius: 6px;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.3);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.5);
+}
+
+/* Prevent Bootstrap bg-* overrides on custom badges */
+.badge.bg-danger, .badge.bg-success, .badge.bg-warning, .badge.bg-info, .badge.bg-secondary {
+    background: none !important;
+    color: inherit !important;
+}

@@ -22,7 +22,12 @@ function enforceHTTPS() {
 // Add CSRF protection
 async function addCSRFProtection() {
     try {
-        const response = await fetch('get_csrf_token.php');
+        const response = await fetch('get_csrf_token.php?v=' + Date.now(), {
+            headers: {
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache'
+            }
+        });
         const data = await response.json();
         
         // Add CSRF token to all forms
@@ -40,34 +45,95 @@ async function addCSRFProtection() {
 // System requirements check
 async function checkSystemRequirements() {
     const checks = [
-        { id: 'php-version', endpoint: 'check_php.php' },
-        { id: 'mysql-check', endpoint: 'check_mysql.php' },
-        { id: 'openssl-check', endpoint: 'check_openssl.php' },
-        { id: 'curl-check', endpoint: 'check_curl.php' },
-        { id: 'write-check', endpoint: 'check_permissions.php' },
-        { id: 'node-check', endpoint: 'check_node.php' }
+        { id: 'php-version', endpoint: 'check_php.php', required: true },
+        { id: 'mysql-check', endpoint: 'check_mysql.php', required: false },
+        { id: 'openssl-check', endpoint: 'check_openssl.php', required: true },
+        { id: 'curl-check', endpoint: 'check_curl.php', required: true },
+        { id: 'write-check', endpoint: 'check_permissions.php', required: true },
+        { id: 'node-check', endpoint: 'check_node.php', required: false }
     ];
 
     for (const check of checks) {
         try {
-            const response = await fetch(check.endpoint);
+            const response = await fetch(check.endpoint + '?v=' + Date.now(), {
+                headers: {
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache'
+                }
+            });
             const result = await response.json();
             
             const element = document.getElementById(check.id);
-            if (result.status === 'ok') {
-                element.className = 'badge bg-success';
-                element.textContent = result.message || 'OK';
+            
+            // Reset badge classes and apply only custom status
+            if (result.status === 'available') {
+                element.setAttribute('class', 'badge status-available');
+                element.innerHTML = '<i class="fas fa-check"></i> ' + (result.message || 'Available');
                 systemChecks[check.id] = true;
+            } else if (result.status === 'optional') {
+                element.setAttribute('class', 'badge status-optional');
+                element.innerHTML = '<i class="fas fa-info-circle"></i> ' + (result.message || 'Optional');
+                systemChecks[check.id] = true; // Optional checks pass
+            } else if (result.status === 'partial') {
+                element.setAttribute('class', 'badge status-partial');
+                element.innerHTML = '<i class="fas fa-exclamation-triangle"></i> ' + (result.message || 'Partial');
+                systemChecks[check.id] = !check.required; // Pass if not required
             } else {
-                element.className = 'badge bg-danger';
-                element.textContent = result.message || 'Error';
-                systemChecks[check.id] = false;
+                element.setAttribute('class', 'badge status-unavailable');
+                element.innerHTML = '<i class="fas fa-times"></i> ' + (result.message || 'Unavailable');
+                systemChecks[check.id] = !check.required; // Pass if not required
             }
+            
+            // Add tooltip with details
+            if (result.details || result.message) {
+                element.title = result.details || result.message;
+                if (result.solution) {
+                    element.title += '\nSolution: ' + result.solution;
+                }
+                if (result.note) {
+                    element.title += '\nNote: ' + result.note;
+                }
+            }
+            
         } catch (error) {
             const element = document.getElementById(check.id);
-            element.className = 'badge bg-warning';
-            element.textContent = 'Unavailable';
-            systemChecks[check.id] = false;
+            // On error, reset and mark as checking
+            element.setAttribute('class', 'badge status-checking');
+            element.innerHTML = '<i class="fas fa-question-circle"></i> Check Failed';
+            systemChecks[check.id] = !check.required;
+            element.title = 'Failed to check: ' + error.message;
+        }
+    }
+    
+    // Update overall status
+    updateSystemCheckStatus();
+}
+
+// Update overall system check status
+function updateSystemCheckStatus() {
+    const requiredChecks = ['php-version', 'openssl-check', 'curl-check', 'write-check'];
+    const optionalChecks = ['mysql-check', 'node-check'];
+    
+    const requiredPassed = requiredChecks.every(check => systemChecks[check] === true);
+    const totalPassed = Object.values(systemChecks).filter(passed => passed === true).length;
+    const totalChecks = Object.keys(systemChecks).length;
+    
+    const statusElement = document.querySelector('.system-status');
+    if (statusElement) {
+        if (requiredPassed) {
+            statusElement.className = 'system-status alert alert-success mb-4';
+            statusElement.innerHTML = `
+                <i class="fas fa-check-circle"></i> 
+                System Ready (${totalPassed}/${totalChecks} checks passed)
+                <br><small>All required components are available</small>
+            `;
+        } else {
+            statusElement.className = 'system-status alert alert-warning mb-4';
+            statusElement.innerHTML = `
+                <i class="fas fa-exclamation-triangle"></i> 
+                System Issues (${totalPassed}/${totalChecks} checks passed)
+                <br><small>Some required components are missing</small>
+            `;
         }
     }
 }
@@ -75,10 +141,12 @@ async function checkSystemRequirements() {
 // Go to next step
 function nextStep() {
     if (currentStep === 1) {
-        // Check system requirements
-        const allPassed = Object.values(systemChecks).every(check => check === true);
-        if (!allPassed) {
-            alert('Not all system requirements are met. Please fix the errors before continuing.');
+        // Check required system requirements
+        const requiredChecks = ['php-version', 'openssl-check', 'curl-check', 'write-check'];
+        const requiredPassed = requiredChecks.every(check => systemChecks[check] === true);
+        
+        if (!requiredPassed) {
+            alert('Required system components are missing. Please install them before continuing.\n\nRequired: PHP 8.1+, OpenSSL, cURL, Write permissions');
             return;
         }
     }
@@ -163,27 +231,38 @@ function updateNavigation() {
 
 // Database connection check
 async function validateDatabaseConnection() {
-    const formData = new FormData();
-    formData.append('host', document.querySelector('[name="db_host"]').value);
-    formData.append('port', document.querySelector('[name="db_port"]').value);
-    formData.append('username', document.querySelector('[name="db_username"]').value);
-    formData.append('password', document.querySelector('[name="db_password"]').value);
-    formData.append('database', document.querySelector('[name="db_name"]').value);
+    const dbData = {
+        db_host: document.querySelector('[name="db_host"]').value,
+        db_port: document.querySelector('[name="db_port"]').value,
+        db_username: document.querySelector('[name="db_username"]').value,
+        db_password: document.querySelector('[name="db_password"]').value,
+        db_name: document.querySelector('[name="db_name"]').value
+    };
 
     try {
-        const response = await fetch('test_db_connection.php', {
+        const response = await fetch('check_database.php', {
             method: 'POST',
-            body: formData
+            headers: {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-cache'
+            },
+            body: JSON.stringify(dbData)
         });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
         const result = await response.json();
 
         if (result.status === 'success') {
             return true;
         } else {
-            alert('Database connection error: ' + result.message);
+            alert('Database connection error: ' + result.message + '\n\nSuggestion: ' + (result.suggestion || ''));
             return false;
         }
     } catch (error) {
+        console.error('Database check error:', error);
         alert('Database check error: ' + error.message);
         return false;
     }

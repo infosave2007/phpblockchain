@@ -3,84 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Prevent caching -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>Modern Blockchain Platform - Installation</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <style>
-        .gradient-bg {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-        }
-        .install-card {
-            backdrop-filter: blur(10px);
-            background: rgba(255, 255, 255, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 20px;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
-        }
-        .step-indicator {
-            position: relative;
-            display: flex;
-            justify-content: center;
-            margin-bottom: 2rem;
-        }
-        .step {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-weight: bold;
-            margin: 0 10px;
-            position: relative;
-        }
-        .step.active {
-            background: #28a745;
-        }
-        .step.completed {
-            background: #007bff;
-        }
-        .step.pending {
-            background: #6c757d;
-        }
-        .step::after {
-            content: '';
-            position: absolute;
-            top: 50%;
-            left: 100%;
-            width: 20px;
-            height: 2px;
-            background: #6c757d;
-            transform: translateY(-50%);
-        }
-        .step:last-child::after {
-            display: none;
-        }
-        .form-control {
-            background: rgba(255, 255, 255, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            color: white;
-        }
-        .form-control:focus {
-            background: rgba(255, 255, 255, 0.2);
-            border-color: #667eea;
-            color: white;
-        }
-        .form-control::placeholder {
-            color: rgba(255, 255, 255, 0.7);
-        }
-        .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border: none;
-        }
-        .alert {
-            background: rgba(255, 255, 255, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            color: white;
-        }
-    </style>
+    <script>
+        // Load CSS with cache-busting timestamp
+        var link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = 'css/installer.css?v=' + Date.now();
+        document.head.appendChild(link);
+    </script>
 </head>
 <body class="gradient-bg">
     <div class="container py-5">
@@ -104,55 +40,93 @@
                         <div class="step pending" id="step5">5</div>
                     </div>
 
-                    <!-- Installation form -->
-                    <form id="installForm">
+            <div class="installer-body">
+
+                <!-- Installation form -->
+                <form id="installForm">
                         <!-- Step 1: System Requirements -->
                         <div class="install-step" id="step-1">
                             <h3 class="text-white mb-4">
                                 <i class="fas fa-server"></i>
                                 System Check
                             </h3>
+                            
+                            <!-- Overall system status -->
+                            <div class="system-status alert alert-info mb-4" role="alert">
+                                <i class="fas fa-spinner fa-spin"></i> 
+                                Checking system requirements...
+                            </div>
+                            
                             <div class="row">
                                 <div class="col-md-6">
                                     <div class="requirement-check mb-3">
                                         <div class="d-flex justify-content-between align-items-center">
-                                            <span class="text-white">PHP version (>=8.0)</span>
-                                            <span class="badge bg-success" id="php-version">Checking...</span>
+                                            <span class="text-white">
+                                                <strong>PHP version (>=8.1)</strong>
+                                                <small class="d-block text-white-50">Required</small>
+                                            </span>
+                                            <span class="badge status-checking" id="php-version">Checking...</span>
                                         </div>
                                     </div>
                                     <div class="requirement-check mb-3">
                                         <div class="d-flex justify-content-between align-items-center">
-                                            <span class="text-white">MySQL availability</span>
-                                            <span class="badge bg-success" id="mysql-check">Checking...</span>
+                                            <span class="text-white">
+                                                <strong>MySQL availability</strong>
+                                                <small class="d-block text-white-50">Optional - can use file storage</small>
+                                            </span>
+                                            <span class="badge status-checking" id="mysql-check">Checking...</span>
                                         </div>
                                     </div>
                                     <div class="requirement-check mb-3">
                                         <div class="d-flex justify-content-between align-items-center">
-                                            <span class="text-white">OpenSSL extension</span>
-                                            <span class="badge bg-success" id="openssl-check">Checking...</span>
+                                            <span class="text-white">
+                                                <strong>OpenSSL extension</strong>
+                                                <small class="d-block text-white-50">Required for cryptography</small>
+                                            </span>
+                                            <span class="badge status-checking" id="openssl-check">Checking...</span>
                                         </div>
                                     </div>
                                 </div>
                                 <div class="col-md-6">
                                     <div class="requirement-check mb-3">
                                         <div class="d-flex justify-content-between align-items-center">
-                                            <span class="text-white">cURL extension</span>
-                                            <span class="badge bg-success" id="curl-check">Checking...</span>
+                                            <span class="text-white">
+                                                <strong>cURL extension</strong>
+                                                <small class="d-block text-white-50">Required for networking</small>
+                                            </span>
+                                            <span class="badge status-checking" id="curl-check">Checking...</span>
                                         </div>
                                     </div>
                                     <div class="requirement-check mb-3">
                                         <div class="d-flex justify-content-between align-items-center">
-                                            <span class="text-white">Write permissions</span>
-                                            <span class="badge bg-success" id="write-check">Checking...</span>
+                                            <span class="text-white">
+                                                <strong>Write permissions</strong>
+                                                <small class="d-block text-white-50">Required for data storage</small>
+                                            </span>
+                                            <span class="badge status-checking" id="write-check">Checking...</span>
                                         </div>
                                     </div>
                                     <div class="requirement-check mb-3">
                                         <div class="d-flex justify-content-between align-items-center">
-                                            <span class="text-white">Node.js (>=16.0)</span>
-                                            <span class="badge bg-success" id="node-check">Checking...</span>
+                                            <span class="text-white">
+                                                <strong>Node.js (>=16.0)</strong>
+                                                <small class="d-block text-white-50">Optional - for advanced features</small>
+                                            </span>
+                                            <span class="badge status-checking" id="node-check">Checking...</span>
                                         </div>
                                     </div>
                                 </div>
+                            </div>
+                            
+                            <div class="mt-4 p-3" style="background: rgba(255,255,255,0.1); border-radius: 8px;">
+                                <h6 class="text-white mb-2">
+                                    <i class="fas fa-info-circle"></i> Installation Requirements
+                                </h6>
+                                <ul class="text-white-50 mb-0" style="font-size: 0.9rem;">
+                                    <li><strong>Required:</strong> PHP 8.1+, OpenSSL, cURL, Write permissions</li>
+                                    <li><strong>Optional:</strong> MySQL (for database storage), Node.js (for advanced features)</li>
+                                    <li><strong>Note:</strong> MySQL is recommended for production. File storage will be used as fallback if MySQL is unavailable.</li>
+                                </ul>
                             </div>
                         </div>
 
@@ -367,6 +341,11 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="install.js"></script>
+    <script>
+        // Load JS with cache-busting timestamp
+        var script = document.createElement('script');
+        script.src = 'install.js?v=' + Date.now();
+        document.body.appendChild(script);
+    </script>
 </body>
 </html>
