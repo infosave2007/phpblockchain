@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blockchain API</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .gradient-bg {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            min-height: 100vh;
+        }
+        .api-card {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+        }
+        .endpoint-card {
+            background: #f8f9fa;
+            border-left: 4px solid #007bff;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body class="gradient-bg">
+    <div class="container py-5">
+        <div class="row justify-content-center">
+            <div class="col-md-10">
+                <div class="api-card p-5">
+                    <div class="text-center mb-4">
+                        <h1 class="text-primary mb-3">
+                            <i class="fas fa-code"></i>
+                            Blockchain API
+                        </h1>
+                        <p class="text-muted">RESTful API for blockchain interaction</p>
+                    </div>
+                    
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle"></i>
+                        <strong>API Documentation</strong><br>
+                        The API endpoints are being implemented. Available endpoints will include:
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h5>Blockchain Endpoints</h5>
+                            <div class="endpoint-card p-3">
+                                <strong>GET /api/blocks</strong><br>
+                                <small class="text-muted">Get all blocks</small>
+                            </div>
+                            <div class="endpoint-card p-3">
+                                <strong>GET /api/blocks/{id}</strong><br>
+                                <small class="text-muted">Get specific block</small>
+                            </div>
+                            <div class="endpoint-card p-3">
+                                <strong>GET /api/transactions</strong><br>
+                                <small class="text-muted">Get all transactions</small>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <h5>Wallet Endpoints</h5>
+                            <div class="endpoint-card p-3">
+                                <strong>POST /api/wallet/create</strong><br>
+                                <small class="text-muted">Create new wallet</small>
+                            </div>
+                            <div class="endpoint-card p-3">
+                                <strong>GET /api/wallet/{address}</strong><br>
+                                <small class="text-muted">Get wallet balance</small>
+                            </div>
+                            <div class="endpoint-card p-3">
+                                <strong>POST /api/transaction/send</strong><br>
+                                <small class="text-muted">Send transaction</small>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="text-center mt-4">
+                        <div class="btn-group" role="group">
+                            <a href="../" class="btn btn-primary">
+                                <i class="fas fa-home"></i> Back to Main
+                            </a>
+                            <a href="../admin/" class="btn btn-warning">
+                                <i class="fas fa-cog"></i> Admin Panel
+                            </a>
+                            <a href="BlockchainAPI.php" class="btn btn-success">
+                                <i class="fas fa-file-code"></i> API File
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

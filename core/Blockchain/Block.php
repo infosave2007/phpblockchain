@@ -14,7 +14,7 @@ use Blockchain\Core\Cryptography\MerkleTree;
 class Block implements BlockInterface
 {
     private int $index;
-    private string $timestamp;
+    private int $timestamp;
     private array $transactions;
     private string $previousHash;
     private string $hash;
@@ -37,7 +37,7 @@ class Block implements BlockInterface
         array $stakes = []
     ) {
         $this->index = $index;
-        $this->timestamp = date('c');
+        $this->timestamp = time();
         $this->transactions = $transactions;
         $this->previousHash = $previousHash;
         $this->validators = $validators;
@@ -59,7 +59,7 @@ class Block implements BlockInterface
         return $this->index;
     }
 
-    public function getTimestamp(): string
+    public function getTimestamp(): int
     {
         return $this->timestamp;
     }

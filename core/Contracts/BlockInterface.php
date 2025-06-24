@@ -26,9 +26,9 @@ interface BlockInterface
     /**
      * Get block timestamp
      *
-     * @return string Block timestamp (ISO format)
+     * @return int Block timestamp (Unix timestamp)
      */
-    public function getTimestamp(): string;
+    public function getTimestamp(): int;
 
     /**
      * Get block transactions

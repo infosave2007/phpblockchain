@@ -16,7 +16,7 @@ class Migration
     private PDO $database;
     private string $migrationsPath;
     
-    public function __construct(PDO $database, string $migrationsPath = null)
+    public function __construct(PDO $database, ?string $migrationsPath = null)
     {
         $this->database = $database;
         $this->migrationsPath = $migrationsPath ?? __DIR__ . '/../../database/migrations';
@@ -43,7 +43,6 @@ class Migration
                 
                 if (!in_array($migrationName, $executedMigrations)) {
                     $this->runMigration($file, $migrationName);
-                    echo "Executed migration: {$migrationName}\n";
                 }
             }
             
@@ -64,14 +63,10 @@ class Migration
             $schema = $this->getInitialSchema();
             $this->database->exec($schema);
             
-            // Mark initial migrations as executed
-            $this->markAsExecuted('001_initial_schema');
-            
             return true;
             
         } catch (Exception $e) {
-            echo "Schema creation failed: " . $e->getMessage() . "\n";
-            return false;
+            throw new Exception('Schema creation failed: ' . $e->getMessage());
         }
     }
     
@@ -350,6 +345,19 @@ class Migration
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_level (level),
                 INDEX idx_created_at (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            
+            -- Users table (for admin and user management)
+            CREATE TABLE IF NOT EXISTS users (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                api_key VARCHAR(64) UNIQUE,
+                role ENUM('admin', 'user') DEFAULT 'user',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_email (email),
+                INDEX idx_role (role)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             
             -- Insert default configuration

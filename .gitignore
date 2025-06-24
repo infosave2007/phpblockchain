@@ -109,3 +109,10 @@ phpstan.neon.dist
 # Runtime files
 *.pid
 *.lock
+blockchain.sql
+.htaccess
+.gitignore
+storage/blockchain/genesis.json
+.gitignore
+storage/blockchain/chain.json
+storage/state/blockchain_state.json
