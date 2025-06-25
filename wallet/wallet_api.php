@@ -14,6 +14,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
+/**
+ * Функция для записи логов в файл
+ */
+function writeLog($message, $level = 'INFO') {
+    $baseDir = dirname(__DIR__);
+    $logDir = $baseDir . '/logs';
+    
+    // Создаем папку logs если её нет
+    if (!is_dir($logDir)) {
+        mkdir($logDir, 0755, true);
+    }
+    
+    $logFile = $logDir . '/wallet_api.log';
+    $timestamp = date('Y-m-d H:i:s');
+    $logMessage = "[{$timestamp}] [{$level}] {$message}" . PHP_EOL;
+    
+    file_put_contents($logFile, $logMessage, FILE_APPEND | LOCK_EX);
+}
+
 try {
     // Определяем базовую директорию проекта
     $baseDir = dirname(__DIR__);
@@ -133,10 +152,28 @@ try {
     ]);
     
 } catch (Exception $e) {
+    // Логирование полной информации об ошибке
+    $errorInfo = [
+        'message' => $e->getMessage(),
+        'file' => $e->getFile(),
+        'line' => $e->getLine(),
+        'trace' => $e->getTraceAsString(),
+        'action' => $input['action'] ?? 'unknown',
+        'timestamp' => date('Y-m-d H:i:s')
+    ];
+    
+    // Записываем в файл логов
+    writeLog("Wallet API Error: " . json_encode($errorInfo), 'ERROR');
+    
     http_response_code(400);
     echo json_encode([
         'success' => false,
-        'error' => $e->getMessage()
+        'error' => $e->getMessage(),
+        'debug_info' => [
+            'file' => $e->getFile(),
+            'line' => $e->getLine(),
+            'trace' => explode("\n", $e->getTraceAsString())
+        ]
     ]);
 }
 
@@ -285,42 +322,18 @@ function validateMnemonic(array $mnemonic) {
  */
 function restoreWalletFromMnemonic($walletManager, array $mnemonic) {
     try {
-        // Сначала проверяем валидность
-        if (!\Blockchain\Core\Cryptography\Mnemonic::validate($mnemonic)) {
-            throw new Exception('Invalid mnemonic phrase');
-        }
-
-        // Получаем ключи из мнемоники
-        require_once __DIR__ . '/../core/cryptography/KeyPair.php';
-        $keyPair = \Blockchain\Core\Cryptography\KeyPair::fromMnemonic($mnemonic);
-        $address = $keyPair->getAddress();
-
-        // Попытаемся создать кошелек (или найти существующий)
-        try {
-            $walletData = $walletManager->createWalletFromMnemonic($mnemonic);
-            return [
-                'wallet' => $walletData,
-                'restored' => true
-            ];
-        } catch (Exception $e) {
-            // Если кошелек уже существует, это нормально для восстановления
-            if (strpos($e->getMessage(), 'already exists') !== false) {
-                $walletInfo = $walletManager->getWalletInfo($address);
-                if ($walletInfo) {
-                    return [
-                        'wallet' => [
-                            'address' => $address,
-                            'public_key' => $keyPair->getPublicKey(),
-                            'private_key' => $keyPair->getPrivateKey()
-                        ],
-                        'restored' => true,
-                        'existing' => true
-                    ];
-                }
-            }
-            throw $e;
-        }
+        writeLog("Starting wallet restoration from mnemonic", 'INFO');
+        
+        $walletData = $walletManager->restoreWalletFromMnemonic($mnemonic);
+        
+        writeLog("Wallet restored successfully: " . $walletData['address'], 'INFO');
+        
+        return [
+            'wallet' => $walletData,
+            'restored' => true
+        ];
     } catch (Exception $e) {
+        writeLog("Exception in restoreWalletFromMnemonic: " . $e->getMessage(), 'ERROR');
         throw new Exception('Failed to restore wallet: ' . $e->getMessage());
     }
 }
@@ -337,4 +350,3 @@ function getConfigInfo(array $config) {
         ]
     ];
 }
-?>

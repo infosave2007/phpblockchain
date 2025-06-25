@@ -422,6 +422,44 @@
         // Запускаем загрузку конфига при загрузке страницы
         document.addEventListener('DOMContentLoaded', loadConfig);
 
+        // Функции для показа/скрытия спиннера
+        function showSpinner() {
+            // Можно добавить глобальный спиннер, пока используем локальные
+        }
+
+        function hideSpinner() {
+            // Можно добавить глобальный спиннер, пока используем локальные
+        }
+
+        // Функция показа уведомлений
+        function showAlert(message, type = 'info') {
+            const alertClass = type === 'danger' ? 'alert-danger' : 
+                              type === 'success' ? 'alert-success' : 
+                              type === 'warning' ? 'alert-warning' : 'alert-info';
+            
+            const notification = document.createElement('div');
+            notification.className = `alert ${alertClass} position-fixed`;
+            notification.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+            notification.innerHTML = `
+                <i class="fas fa-${type === 'danger' ? 'exclamation-triangle' : type === 'success' ? 'check' : 'info'}-circle me-2"></i>
+                ${message}
+                <button type="button" class="btn-close ms-2" onclick="this.parentElement.remove()"></button>
+            `;
+            document.body.appendChild(notification);
+            
+            // Автоудаление через 5 секунд
+            setTimeout(() => {
+                if (notification.parentElement) {
+                    notification.remove();
+                }
+            }, 5000);
+        }
+
+        // Функция загрузки списка кошельков (заглушка)
+        function loadWallets() {
+            // Заглушка для совместимости
+        }
+
         async function createWallet() {
             const resultsDiv = document.getElementById('results');
             resultsDiv.innerHTML = '<div class="text-center"><div class="spinner-border text-primary" role="status"></div><p>Создание кошелька...</p></div>';
@@ -1095,7 +1133,22 @@
                     })
                 });
                 
-                const data = await response.json();
+                // Получаем текст ответа для отладки
+                const text = await response.text();
+                console.log('Validate mnemonic response:', text);
+                
+                // Проверяем статус ответа
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}. Response: ${text.substring(0, 200)}`);
+                }
+                
+                // Пытаемся распарсить JSON
+                let data;
+                try {
+                    data = JSON.parse(text);
+                } catch (e) {
+                    throw new Error(`Invalid JSON response: ${text.substring(0, 200)}`);
+                }
                 
                 if (data.success && data.valid) {
                     validationDiv.innerHTML = '<div class="alert alert-success"><i class="fas fa-check me-2"></i>Сид-фраза действительна!</div>';
@@ -1130,7 +1183,22 @@
                     })
                 });
                 
-                const data = await response.json();
+                // Получаем текст ответа для отладки
+                const text = await response.text();
+                console.log('Raw API response:', text);
+                
+                // Проверяем статус ответа
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}. Response: ${text.substring(0, 200)}`);
+                }
+                
+                // Пытаемся распарсить JSON
+                let data;
+                try {
+                    data = JSON.parse(text);
+                } catch (e) {
+                    throw new Error(`Invalid JSON response: ${text.substring(0, 200)}`);
+                }
                 
                 if (data.success && data.wallet) {
                     const statusText = data.existing ? 'восстановлен' : 'создан';
@@ -1375,162 +1443,6 @@
             }).catch(() => {
                 showAlert('Не удалось скопировать', 'warning');
             });
-        }
-
-        // Функции восстановления кошелька
-        async function restoreWalletFromMnemonic() {
-            const mnemonicText = document.getElementById('restoreMnemonic').value.trim();
-            const mnemonic = mnemonicText.split(/\s+/);
-            const resultDiv = document.getElementById('restoreResult');
-            
-            try {
-                showSpinner();
-                
-                const response = await fetch('wallet_api.php', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        action: 'restore_wallet_from_mnemonic',
-                        mnemonic: mnemonic
-                    })
-                });
-
-                const data = await response.json();
-                hideSpinner();
-
-                if (data.success) {
-                    showWalletRestoredResult(data);
-                    loadWallets();
-                } else {
-                    resultDiv.innerHTML = '<div class="alert alert-danger">Ошибка восстановления: ' + (data.error || 'Неизвестная ошибка') + '</div>';
-                }
-            } catch (error) {
-                hideSpinner();
-                resultDiv.innerHTML = '<div class="alert alert-danger">Ошибка восстановления: ' + error.message + '</div>';
-            }
-        }
-
-        function showWalletRestoredResult(walletData) {
-            let resultHtml = '<div class="alert alert-success mb-3"><i class="fas fa-check-circle me-2"></i>Кошелек успешно восстановлен!</div>';
-            
-            // Показываем адрес
-            if (walletData.address) {
-                resultHtml += `
-                    <div class="mb-3">
-                        <label class="form-label"><strong>Адрес кошелька:</strong></label>
-                        <div class="input-group">
-                            <input type="text" class="form-control" value="${walletData.address}" readonly>
-                            <button class="btn btn-outline-secondary" type="button" onclick="copyToClipboard('${walletData.address}')">
-                                <i class="fas fa-copy"></i>
-                            </button>
-                        </div>
-                    </div>
-                `;
-            }
-            
-            // Показываем публичный ключ
-            if (walletData.public_key) {
-                resultHtml += `
-                    <div class="mb-3">
-                        <label class="form-label"><strong>Публичный ключ:</strong></label>
-                        <div class="input-group">
-                            <textarea class="form-control" rows="2" readonly>${walletData.public_key}</textarea>
-                            <button class="btn btn-outline-secondary" type="button" onclick="copyToClipboard('${walletData.public_key}')">
-                                <i class="fas fa-copy"></i>
-                            </button>
-                        </div>
-                    </div>
-                `;
-            }
-            
-            // Показываем приватный ключ
-            if (walletData.private_key) {
-                resultHtml += `
-                    <div class="mb-3">
-                        <label class="form-label"><strong>Приватный ключ:</strong></label>
-                        <div class="alert alert-warning small mb-2">
-                            <i class="fas fa-exclamation-triangle me-1"></i>
-                            Никому не показывайте приватный ключ! Сохраните его в безопасном месте.
-                        </div>
-                        <div class="input-group">
-                            <textarea class="form-control" rows="3" readonly>${walletData.private_key}</textarea>
-                            <button class="btn btn-outline-secondary" type="button" onclick="copyToClipboard('${walletData.private_key}')">
-                                <i class="fas fa-copy"></i>
-                            </button>
-                        </div>
-                    </div>
-                `;
-            }
-            
-            // Закрываем модал восстановления
-            const restoreModal = bootstrap.Modal.getInstance(document.getElementById('restoreWalletModal'));
-            restoreModal.hide();
-            
-            document.getElementById('walletRestoredContent').innerHTML = resultHtml;
-            
-            const resultModal = new bootstrap.Modal(document.getElementById('walletRestoredModal'));
-            resultModal.show();
-        }
-
-        // Функция показа модального окна восстановления
-        function showRestoreModal() {
-            const modal = new bootstrap.Modal(document.getElementById('restoreWalletModal'));
-            modal.show();
-            
-            // Очищаем поля
-            document.getElementById('restoreMnemonic').value = '';
-            document.getElementById('restoreValidation').innerHTML = '';
-            document.getElementById('restoreResult').innerHTML = '';
-            document.getElementById('restoreBtn').disabled = true;
-        }
-
-        // Функция валидации мнемоники для восстановления
-        async function validateRestoreMnemonic() {
-            const mnemonicText = document.getElementById('restoreMnemonic').value.trim();
-            const validationDiv = document.getElementById('restoreValidation');
-            const restoreBtn = document.getElementById('restoreBtn');
-            
-            if (!mnemonicText) {
-                validationDiv.innerHTML = '<div class="alert alert-warning">Введите сид-фразу</div>';
-                restoreBtn.disabled = true;
-                return;
-            }
-            
-            const mnemonic = mnemonicText.split(/\s+/);
-            
-            if (mnemonic.length !== 12) {
-                validationDiv.innerHTML = '<div class="alert alert-danger">Сид-фраза должна содержать ровно 12 слов</div>';
-                restoreBtn.disabled = true;
-                return;
-            }
-
-            try {
-                const response = await fetch('wallet_api.php', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        action: 'validate_mnemonic',
-                        mnemonic: mnemonic
-                    })
-                });
-
-                const data = await response.json();
-
-                if (data.success && data.valid) {
-                    validationDiv.innerHTML = '<div class="alert alert-success"><i class="fas fa-check me-2"></i>Сид-фраза валидна</div>';
-                    restoreBtn.disabled = false;
-                } else {
-                    validationDiv.innerHTML = '<div class="alert alert-danger"><i class="fas fa-times me-2"></i>Сид-фраза невалидна</div>';
-                    restoreBtn.disabled = true;
-                }
-            } catch (error) {
-                validationDiv.innerHTML = '<div class="alert alert-danger">Ошибка проверки: ' + error.message + '</div>';
-                restoreBtn.disabled = true;
-            }
         }
     </script>
 </body>

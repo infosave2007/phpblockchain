@@ -103,6 +103,56 @@ class WalletManager
             throw new Exception("Failed to create wallet from mnemonic: " . $e->getMessage());
         }
     }
+
+    /**
+     * Restore wallet from mnemonic phrase
+     */
+    public function restoreWalletFromMnemonic(array $mnemonic): array
+    {
+        try {
+            // Validate mnemonic
+            if (!Mnemonic::validate($mnemonic)) {
+                throw new Exception('Invalid mnemonic phrase');
+            }
+
+            // Generate KeyPair from mnemonic
+            $keyPair = KeyPair::fromMnemonic($mnemonic);
+            $address = $keyPair->getAddress();
+
+            // Check if wallet already exists
+            $existingWallet = $this->getWalletInfo($address);
+            if ($existingWallet) {
+                return [
+                    'address' => $address,
+                    'public_key' => $keyPair->getPublicKey(),
+                    'private_key' => $keyPair->getPrivateKey(),
+                    'balance' => $existingWallet['balance'] ?? 0,
+                    'existing' => true
+                ];
+            }
+
+            // Create new wallet record
+            $stmt = $this->database->prepare("
+                INSERT INTO wallets (address, public_key, balance) 
+                VALUES (?, ?, 0)
+            ");
+            
+            $stmt->execute([
+                $address,
+                $keyPair->getPublicKey()
+            ]);
+
+            return [
+                'address' => $address,
+                'public_key' => $keyPair->getPublicKey(),
+                'private_key' => $keyPair->getPrivateKey(),
+                'balance' => 0,
+                'restored' => true
+            ];
+        } catch (Exception $e) {
+            throw new Exception('Failed to restore wallet from mnemonic: ' . $e->getMessage());
+        }
+    }
     
     /**
      * Get wallet balance
