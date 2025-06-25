@@ -69,10 +69,10 @@ class BlockchainExplorer {
             const response = await fetch(`${this.apiEndpoint}/stats?network=${this.currentNetwork}`);
             const stats = await response.json();
             
-            document.getElementById('blockHeight').textContent = stats.block_height.toLocaleString();
-            document.getElementById('totalTx').textContent = stats.total_transactions.toLocaleString();
-            document.getElementById('hashRate').textContent = this.formatHashRate(stats.hash_rate);
-            document.getElementById('activeNodes').textContent = stats.active_nodes;
+            document.getElementById('blockHeight').textContent = (stats.current_height || 0).toLocaleString();
+            document.getElementById('totalTx').textContent = (stats.total_transactions || 0).toLocaleString();
+            document.getElementById('hashRate').textContent = this.formatHashRate(stats.hash_rate || '0 H/s');
+            document.getElementById('activeNodes').textContent = stats.active_nodes || 0;
         } catch (error) {
             console.error('Failed to load network stats:', error);
         }
@@ -81,7 +81,8 @@ class BlockchainExplorer {
     async loadLatestBlocks() {
         try {
             const response = await fetch(`${this.apiEndpoint}/blocks?network=${this.currentNetwork}&page=${this.currentBlockPage}&limit=${this.pageSize}`);
-            const blocks = await response.json();
+            const data = await response.json();
+            const blocks = data.blocks || [];
             
             const container = document.getElementById('latestBlocks');
             if (this.currentBlockPage === 0) {
@@ -99,7 +100,8 @@ class BlockchainExplorer {
     async loadLatestTransactions() {
         try {
             const response = await fetch(`${this.apiEndpoint}/transactions?network=${this.currentNetwork}&page=${this.currentTxPage}&limit=${this.pageSize}`);
-            const transactions = await response.json();
+            const data = await response.json();
+            const transactions = data.transactions || [];
             
             const container = document.getElementById('latestTransactions');
             if (this.currentTxPage === 0) {

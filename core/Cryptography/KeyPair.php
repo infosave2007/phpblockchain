@@ -59,6 +59,17 @@ class KeyPair
     }
     
     /**
+     * Create key pair from mnemonic phrase
+     */
+    public static function fromMnemonic(array $mnemonic, string $passphrase = ''): self
+    {
+        $seed = Mnemonic::toSeed($mnemonic, $passphrase);
+        $privateKeyHex = substr($seed, 0, 64);
+        
+        return self::fromPrivateKey($privateKeyHex);
+    }
+    
+    /**
      * Generate public key hex from private key hex using secp256k1
      */
     private static function generatePublicKeyHex(string $privateKeyHex): string

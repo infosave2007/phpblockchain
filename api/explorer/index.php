@@ -106,6 +106,7 @@ function getNetworkStats(PDO $pdo, string $network): array
         'last_block_time' => null,
         'hash_rate' => '0 H/s',
         'difficulty' => 1,
+        'active_nodes' => 1,
         'consensus' => 'pos',
         'version' => '1.0.0'
     ];
@@ -155,10 +156,10 @@ function getNetworkStats(PDO $pdo, string $network): array
             $stats['current_height'] = max($stats['current_height'], ($result['count'] ?? 1) - 1);
             
             // Get latest block
-            $stmt = $pdo->query("SELECT * FROM blocks ORDER BY block_index DESC LIMIT 1");
+            $stmt = $pdo->query("SELECT * FROM blocks ORDER BY height DESC LIMIT 1");
             $latestBlock = $stmt->fetch(PDO::FETCH_ASSOC);
             if ($latestBlock) {
-                $stats['last_block_time'] = strtotime($latestBlock['created_at'] ?? 'now');
+                $stats['last_block_time'] = (int)$latestBlock['timestamp'];
             }
         }
         
@@ -215,7 +216,7 @@ function getBlocks(PDO $pdo, string $network, int $page, int $limit): array
         if ($stmt->rowCount() > 0) {
             $offset = $page * $limit;
             $stmt = $pdo->prepare(
-                "SELECT * FROM blocks ORDER BY block_index DESC LIMIT ? OFFSET ?"
+                "SELECT * FROM blocks ORDER BY height DESC LIMIT ? OFFSET ?"
             );
             $stmt->execute([$limit, $offset]);
             $dbBlocks = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -223,15 +224,17 @@ function getBlocks(PDO $pdo, string $network, int $page, int $limit): array
             if (!empty($dbBlocks)) {
                 $blocks = array_map(function($block) {
                     return [
-                        'index' => (int)$block['block_index'],
+                        'index' => (int)$block['height'],
                         'hash' => $block['hash'],
-                        'previous_hash' => $block['previous_hash'],
-                        'timestamp' => strtotime($block['created_at']),
-                        'transaction_count' => (int)$block['transaction_count'],
+                        'previous_hash' => $block['parent_hash'],
+                        'timestamp' => (int)$block['timestamp'],
+                        'transaction_count' => (int)$block['transactions_count'],
                         'merkle_root' => $block['merkle_root'] ?? '',
-                        'nonce' => (int)($block['nonce'] ?? 0),
-                        'difficulty' => $block['difficulty'] ?? 1,
-                        'size' => strlen($block['data'] ?? '{}')
+                        'nonce' => 0,
+                        'difficulty' => 1,
+                        'size' => strlen($block['metadata'] ?? '{}'),
+                        'validator' => $block['validator'] ?? '',
+                        'signature' => $block['signature'] ?? ''
                     ];
                 }, $dbBlocks);
             }
@@ -301,7 +304,7 @@ function getTransactions(PDO $pdo, string $network, int $page, int $limit): arra
         if ($stmt->rowCount() > 0) {
             $offset = $page * $limit;
             $stmt = $pdo->prepare(
-                "SELECT * FROM transactions ORDER BY created_at DESC LIMIT ? OFFSET ?"
+                "SELECT * FROM transactions ORDER BY timestamp DESC LIMIT ? OFFSET ?"
             );
             $stmt->execute([$limit, $offset]);
             $dbTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -310,14 +313,15 @@ function getTransactions(PDO $pdo, string $network, int $page, int $limit): arra
                 $transactions = array_map(function($tx) {
                     return [
                         'hash' => $tx['hash'],
-                        'type' => $tx['type'] ?? 'transfer',
+                        'type' => 'transfer',
                         'from' => $tx['from_address'],
                         'to' => $tx['to_address'],
                         'amount' => (float)$tx['amount'],
-                        'timestamp' => strtotime($tx['created_at']),
-                        'block_index' => (int)($tx['block_index'] ?? 0),
-                        'block_hash' => $tx['block_hash'] ?? '',
-                        'status' => $tx['status'] ?? 'confirmed'
+                        'fee' => (float)$tx['fee'],
+                        'timestamp' => (int)$tx['timestamp'],
+                        'block_height' => (int)$tx['block_height'],
+                        'block_hash' => $tx['block_hash'],
+                        'status' => $tx['status']
                     ];
                 }, $dbTransactions);
             }
