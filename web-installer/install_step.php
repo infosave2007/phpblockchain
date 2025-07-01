@@ -916,7 +916,7 @@ function createConfig(): array
     }
     
     // Create environment file with flexible database config handling
-    $envPath = '../.env';
+    $envPath = '../config/.env';
     $envContent = "# Auto-generated environment file\n";
     $envContent .= "APP_KEY={$appKey}\n";
     $envContent .= "JWT_SECRET={$jwtSecret}\n";

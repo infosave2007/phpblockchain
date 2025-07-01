@@ -62,7 +62,7 @@
     },
     "scripts": {
         "post-install-cmd": [
-            "php -r \"if (!file_exists('.env')) copy('.env.example', '.env');\""
+            "php -r \"if (!file_exists('config/.env') && !file_exists('.env')) { if (!is_dir('config')) mkdir('config', 0755, true); copy('.env.example', 'config/.env'); }\""
         ],
         "test": "phpunit",
         "cs-fix": "php-cs-fixer fix",

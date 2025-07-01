@@ -68,15 +68,16 @@ if (file_exists('vendor/autoload.php')) {
 }
 
 // Configuration Check
-if (file_exists('.env')) {
+if (file_exists('config/.env') || file_exists('.env')) {
     $checks[] = "✓ Environment: .env file exists";
 } else {
-    $warnings[] = "⚠ Environment: No .env file (copy from .env.example)";
+    $warnings[] = "⚠ Environment: No .env file (copy from .env.example to config/.env)";
 }
 
 // Database Configuration Check
-if (file_exists('.env')) {
-    $envContent = file_get_contents('.env');
+$envPath = file_exists('config/.env') ? 'config/.env' : '.env';
+if (file_exists($envPath)) {
+    $envContent = file_get_contents($envPath);
     if (strpos($envContent, 'DB_HOST=') !== false) {
         $checks[] = "✓ Database: Configuration present";
     } else {
@@ -110,7 +111,7 @@ if (!empty($errors)) {
 } else {
     echo "\n✅ System ready! You can now:\n";
     echo "   1. Run web installer: Visit /web-installer/ in browser\n";
-    echo "   2. Or configure manually: Copy .env.example to .env\n";
+    echo "   2. Or configure manually: Copy .env.example to config/.env\n";
     echo "   3. Initialize: php cli.php blockchain init\n";
     echo "   4. Start node: php cli.php node start\n";
     exit(0);

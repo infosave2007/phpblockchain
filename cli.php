@@ -296,8 +296,11 @@ function handleInstall() {
     success("Directory structure created");
     
     // Create .env file if it doesn't exist
-    if (!file_exists(__DIR__ . '/.env')) {
-        copy(__DIR__ . '/.env.example', __DIR__ . '/.env');
+    if (!file_exists(__DIR__ . '/config/.env') && !file_exists(__DIR__ . '/.env')) {
+        if (!is_dir(__DIR__ . '/config')) {
+            mkdir(__DIR__ . '/config', 0755, true);
+        }
+        copy(__DIR__ . '/.env.example', __DIR__ . '/config/.env');
         info("Created .env file from .env.example");
     }
     

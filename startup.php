@@ -421,17 +421,25 @@ class BlockchainNodeManager
     
     private function loadConfig(): array
     {
+        // Load environment variables first
+        require_once __DIR__ . '/core/Environment/EnvironmentLoader.php';
+        \Blockchain\Core\Environment\EnvironmentLoader::load(__DIR__);
+        
         $configFile = __DIR__ . '/config/config.php';
         
         if (file_exists($configFile)) {
             return include $configFile;
         }
         
-        // Default config
+        // Default config with environment variable support
         return [
             'database' => [
-                'type' => 'sqlite',
-                'file' => __DIR__ . '/storage/blockchain.db'
+                'type' => 'mysql',
+                'host' => \Blockchain\Core\Environment\EnvironmentLoader::get('DB_HOST', 'localhost'),
+                'port' => (int)\Blockchain\Core\Environment\EnvironmentLoader::get('DB_PORT', 3306),
+                'database' => \Blockchain\Core\Environment\EnvironmentLoader::get('DB_DATABASE', 'blockchain'),
+                'username' => \Blockchain\Core\Environment\EnvironmentLoader::get('DB_USERNAME', 'root'),
+                'password' => \Blockchain\Core\Environment\EnvironmentLoader::get('DB_PASSWORD', ''),
             ],
             'node' => [
                 'id' => 'node_' . uniqid(),

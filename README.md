@@ -72,7 +72,7 @@ composer install --ignore-platform-req=ext-mysqli --ignore-platform-req=ext-pdo_
 # composer install --ignore-platform-req=ext-mysqli --ignore-platform-req=ext-pdo_mysql --ignore-platform-req=ext-gmp
 
 # Copy environment configuration
-cp .env.example .env
+cp .env.example config/.env
 
 # Set proper permissions
 chmod +x server.php cli.php crypto-cli.php check.php
@@ -91,7 +91,7 @@ php cli.php init --network="My Network" --symbol="MBC"
 
 ### Configuration
 
-#### Environment Variables (.env)
+#### Environment Variables (config/.env)
 ```bash
 # Blockchain Configuration
 BLOCKCHAIN_NETWORK=mainnet

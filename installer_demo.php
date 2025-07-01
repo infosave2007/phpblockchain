@@ -102,7 +102,7 @@ $files = [
     'storage/blockchain/blockchain.bin' => 'Binary blockchain file (append-only)',
     'storage/blockchain/blockchain.idx' => 'Block index for fast lookups',
     'config/config.php' => 'Main configuration with binary storage settings',
-    '.env' => 'Environment variables',
+    'config/.env' => 'Environment variables',
     'logs/app.log' => 'Application log file'
 ];
 

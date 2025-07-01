@@ -170,6 +170,10 @@ function getAPIInfo(): array
 
 function getSystemStatus(): array
 {
+    // Load environment variables
+    require_once '../core/Environment/EnvironmentLoader.php';
+    \Blockchain\Core\Environment\EnvironmentLoader::load(dirname(__DIR__));
+    
     // Load configuration
     $configExists = file_exists('../config/config.php');
     $dbStatus = 'unknown';
