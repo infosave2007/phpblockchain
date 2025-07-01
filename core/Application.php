@@ -15,6 +15,7 @@ use Blockchain\Core\Network\MultiCurl;
 use Blockchain\Contracts\SmartContractManager;
 use Blockchain\Core\Consensus\ProofOfStake;
 use Blockchain\Core\Cryptography\MessageEncryption;
+use Core\Recovery\BlockchainRecoveryManager;
 use Exception;
 use PDO;
 
@@ -32,6 +33,7 @@ class Application
     private ?SmartContractManager $contractManager = null;
     private ?ProofOfStake $consensus = null;
     private ?BlockchainAPI $api = null;
+    private ?BlockchainRecoveryManager $recoveryManager = null;
 
     public function __construct(array $config)
     {
@@ -625,5 +627,21 @@ class Application
         
         $stmt->execute([$address]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Set recovery manager
+     */
+    public function setRecoveryManager(BlockchainRecoveryManager $recoveryManager): void
+    {
+        $this->recoveryManager = $recoveryManager;
+    }
+    
+    /**
+     * Get recovery manager
+     */
+    public function getRecoveryManager(): ?BlockchainRecoveryManager
+    {
+        return $this->recoveryManager;
     }
 }

@@ -77,22 +77,77 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 // For production installer, you might want to add proper CSRF protection
 
 try {
+    // Start session to save config as backup
+    session_start();
+    
+    // Add debugging
+    file_put_contents('install_debug.log', "=== New Installation Request ===\n", FILE_APPEND);
+    file_put_contents('install_debug.log', "Timestamp: " . date('Y-m-d H:i:s') . "\n", FILE_APPEND);
+    file_put_contents('install_debug.log', "POST Data: " . print_r($_POST, true) . "\n", FILE_APPEND);
+    
     // Get form data
     $config = [
+        'db_host' => $_POST['db_host'] ?? 'localhost',
+        'db_port' => (int)($_POST['db_port'] ?? 3306),
+        'db_username' => $_POST['db_username'] ?? '',
+        'db_password' => $_POST['db_password'] ?? '',
+        'db_name' => $_POST['db_name'] ?? 'blockchain_modern',
+        'node_type' => $_POST['node_type'] ?? 'primary',
+        'network_name' => $_POST['network_name'] ?? 'My Blockchain Network',
+        'token_symbol' => $_POST['token_symbol'] ?? 'MBC',
+        'consensus_algorithm' => 'pos', // Fixed to Proof of Stake
+        'initial_supply' => (float)($_POST['initial_supply'] ?? 1000000),
+        'primary_wallet_amount' => (float)($_POST['primary_wallet_amount'] ?? 100000),
+        'node_wallet_amount' => (float)($_POST['node_wallet_amount'] ?? 5000),
+        'staking_amount' => (float)($_POST['staking_amount'] ?? 1000),
+        'min_stake_amount' => (float)($_POST['min_stake_amount'] ?? 1000),
+        'block_time' => (int)($_POST['block_time'] ?? 10),
+        'block_reward' => (float)($_POST['block_reward'] ?? 10),
+        'known_nodes' => $_POST['known_nodes'] ?? '',
+        'node_domain' => $_POST['node_domain'] ?? '',
+        'protocol' => $_POST['protocol'] ?? 'http',
+        'max_peers' => (int)($_POST['max_peers'] ?? 10),
+        'api_endpoint' => $_POST['api_endpoint'] ?? '/api',
+        'enable_binary_storage' => isset($_POST['enable_binary_storage']) && $_POST['enable_binary_storage'] === 'on',
+        'enable_encryption' => isset($_POST['enable_encryption']) && $_POST['enable_encryption'] === 'on',
+        'blockchain_data_dir' => $_POST['blockchain_data_dir'] ?? 'storage/blockchain',
+        'admin_email' => $_POST['admin_email'] ?? '',
+        'admin_password' => $_POST['admin_password'] ?? '',
+        'api_key' => $_POST['api_key'] ?? ''
+    ];
+    
+    // Save config to session as backup
+    $_SESSION['install_config'] = $config;
+    
+    // Legacy format for compatibility
+    $legacyConfig = [
         'database' => [
-            'host' => $_POST['db_host'] ?? 'localhost',
-            'port' => (int)($_POST['db_port'] ?? 3306),
-            'username' => $_POST['db_username'] ?? '',
-            'password' => $_POST['db_password'] ?? '',
-            'database' => $_POST['db_name'] ?? 'blockchain_modern'
+            'host' => $config['db_host'],
+            'port' => $config['db_port'],
+            'username' => $config['db_username'],
+            'password' => $config['db_password'],
+            'database' => $config['db_name'],
+            'options' => [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
+            ]
         ],
         'blockchain' => [
-            'network_name' => $_POST['network_name'] ?? 'My Blockchain Network',
-            'token_symbol' => $_POST['token_symbol'] ?? 'MBC',
-            'consensus_algorithm' => $_POST['consensus_algorithm'] ?? 'pos',
-            'initial_supply' => (float)($_POST['initial_supply'] ?? 1000000),
-            'block_time' => (int)($_POST['block_time'] ?? 10),
-            'block_reward' => (float)($_POST['block_reward'] ?? 10)
+            'network_name' => $config['network_name'],
+            'token_symbol' => $config['token_symbol'],
+            'consensus_algorithm' => 'pos',
+            'initial_supply' => $config['initial_supply'],
+            'block_time' => $config['block_time'],
+            'block_reward' => $config['block_reward'],
+            'enable_binary_storage' => $config['enable_binary_storage'],
+            'enable_encryption' => isset($_POST['enable_encryption']) && $_POST['enable_encryption'] === 'on',
+            'data_dir' => $_POST['blockchain_data_dir'] ?? 'storage/blockchain',
+            'encryption_key' => bin2hex(random_bytes(32)) // Generate random encryption key
+        ],
+        'crypto' => [
+            'name' => $_POST['network_name'] ?? 'My Blockchain Network',
+            'symbol' => $_POST['token_symbol'] ?? 'MBC',
+            'network' => 'mainnet'
         ],
         'network' => [
             'node_type' => $_POST['node_type'] ?? 'full',
@@ -109,7 +164,9 @@ try {
     ];
 
     // Data validation
+    file_put_contents('install_debug.log', "Config before validation: " . print_r($config, true) . "\n", FILE_APPEND);
     validateConfig($config);
+    file_put_contents('install_debug.log', "Validation passed\n", FILE_APPEND);
 
     // Define installation steps
     $steps = [
@@ -117,7 +174,9 @@ try {
         ['id' => 'install_dependencies', 'description' => 'Installing dependencies...'],
         ['id' => 'create_database', 'description' => 'Creating database...'],
         ['id' => 'create_tables', 'description' => 'Creating tables...'],
+        ['id' => 'create_wallet', 'description' => 'Creating node wallet...'],
         ['id' => 'generate_genesis', 'description' => 'Generating genesis block...'],
+        ['id' => 'initialize_binary_storage', 'description' => 'Initializing binary blockchain storage...'],
         ['id' => 'create_config', 'description' => 'Creating configuration...'],
         ['id' => 'setup_admin', 'description' => 'Setting up administrator...'],
         ['id' => 'initialize_blockchain', 'description' => 'Initializing blockchain...'],
@@ -126,7 +185,27 @@ try {
     ];
 
     // Save configuration for subsequent steps
-    file_put_contents('../config/install_config.json', json_encode($config, JSON_PRETTY_PRINT));
+    $configPath = '../config/install_config.json';
+    $configDir = dirname($configPath);
+    
+    // Ensure config directory exists
+    if (!is_dir($configDir)) {
+        if (!mkdir($configDir, 0755, true)) {
+            throw new Exception('Failed to create config directory: ' . $configDir);
+        }
+    }
+    
+    // Log configuration being saved
+    error_log("Saving installation config to: " . $configPath);
+    error_log("Config data: " . json_encode($config));
+    
+    // Save the simplified config format (not legacy format)
+    $result = file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT));
+    if ($result === false) {
+        throw new Exception('Failed to save installation configuration');
+    }
+    
+    error_log("Configuration saved successfully (" . $result . " bytes)");
 
     echo json_encode([
         'status' => 'success',
@@ -135,6 +214,8 @@ try {
     ]);
 
 } catch (Exception $e) {
+    file_put_contents('install_debug.log', "Error: " . $e->getMessage() . "\n", FILE_APPEND);
+    file_put_contents('install_debug.log', "Stack trace: " . $e->getTraceAsString() . "\n", FILE_APPEND);
     echo json_encode([
         'status' => 'error',
         'message' => $e->getMessage()
@@ -143,47 +224,34 @@ try {
 
 function validateConfig(array $config): void
 {
-    // Database check
-    if (empty($config['database']['username'])) {
+    // Database check - use the correct format
+    if (empty($config['db_username'])) {
         throw new Exception('Database username not specified');
     }
 
-    if (empty($config['database']['database'])) {
+    if (empty($config['db_name'])) {
         throw new Exception('Database name not specified');
     }
 
-    // Blockchain check
-    if (empty($config['blockchain']['network_name'])) {
+    // Network check
+    if (empty($config['network_name'])) {
         throw new Exception('Network name not specified');
     }
 
-    if (empty($config['blockchain']['token_symbol'])) {
+    if (empty($config['token_symbol'])) {
         throw new Exception('Token symbol not specified');
     }
 
-    if (!in_array($config['blockchain']['consensus_algorithm'], ['pos', 'pow', 'poa'])) {
-        throw new Exception('Unsupported consensus algorithm');
-    }
-
-    // Network check
-    if ($config['network']['p2p_port'] < 1024 || $config['network']['p2p_port'] > 65535) {
-        throw new Exception('Invalid P2P port');
-    }
-
-    if ($config['network']['rpc_port'] < 1024 || $config['network']['rpc_port'] > 65535) {
-        throw new Exception('Invalid RPC port');
-    }
-
     // Administrator check
-    if (empty($config['admin']['email']) || !filter_var($config['admin']['email'], FILTER_VALIDATE_EMAIL)) {
+    if (empty($config['admin_email']) || !filter_var($config['admin_email'], FILTER_VALIDATE_EMAIL)) {
         throw new Exception('Invalid administrator email');
     }
 
-    if (strlen($config['admin']['password']) < 8) {
+    if (strlen($config['admin_password']) < 8) {
         throw new Exception('Administrator password must contain at least 8 characters');
     }
 
-    if (empty($config['admin']['api_key']) || strlen($config['admin']['api_key']) < 16) {
+    if (empty($config['api_key']) || strlen($config['api_key']) < 16) {
         throw new Exception('API key must contain at least 16 characters');
     }
 }

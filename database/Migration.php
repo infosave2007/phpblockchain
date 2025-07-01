@@ -303,7 +303,7 @@ class Migration
                 UNIQUE KEY unique_node (ip_address, port)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             
-            -- Mempool table
+            -- Mempool table (consensus-critical)
             CREATE TABLE IF NOT EXISTS mempool (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
                 tx_hash VARCHAR(64) NOT NULL UNIQUE,
@@ -318,10 +318,21 @@ class Migration
                 signature TEXT NOT NULL,
                 priority_score INT NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP NULL,
+                status ENUM('pending', 'processing', 'failed') DEFAULT 'pending',
+                retry_count INT DEFAULT 0,
+                last_retry_at TIMESTAMP NULL,
+                node_id VARCHAR(64) NULL,
+                broadcast_count INT DEFAULT 0,
+                
                 INDEX idx_tx_hash (tx_hash),
                 INDEX idx_from_address (from_address),
-                INDEX idx_priority_score (priority_score),
-                INDEX idx_created_at (created_at)
+                INDEX idx_to_address (to_address),
+                INDEX idx_priority_score (priority_score DESC),
+                INDEX idx_created_at (created_at),
+                INDEX idx_status (status),
+                INDEX idx_expires_at (expires_at),
+                INDEX idx_nonce_from (from_address, nonce)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             
             -- Configuration table

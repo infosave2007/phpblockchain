@@ -6,6 +6,7 @@ namespace Blockchain\Core\Blockchain;
 use Blockchain\Core\Contracts\BlockchainInterface;
 use Blockchain\Core\Contracts\BlockInterface;
 use Blockchain\Core\Contracts\TransactionInterface;
+use Blockchain\Core\Transaction\Transaction;
 use Blockchain\Core\Storage\BlockStorage;
 use Blockchain\Core\Consensus\ProofOfStake;
 use Blockchain\Core\Network\NodeManager;
@@ -249,7 +250,7 @@ class Blockchain implements BlockchainInterface
     /**
      * Add transaction to pending pool
      */
-    public function addTransaction(TransactionInterface $transaction): bool
+    public function addTransaction(Transaction $transaction): bool
     {
         if (!$transaction->isValid()) {
             return false;
@@ -307,16 +308,19 @@ class Blockchain implements BlockchainInterface
     /**
      * Get latest block
      */
-    public function getLatestBlock(): BlockInterface
+    public function getLatestBlock(): ?Block
     {
         $blockCount = $this->storage->getBlockCount();
+        if ($blockCount === 0) {
+            return null;
+        }
         return $this->storage->getBlockByIndex($blockCount - 1);
     }
 
     /**
      * Get block by index
      */
-    public function getBlock(int $index): ?BlockInterface
+    public function getBlock(int $index): ?Block
     {
         if ($index < 0 || $index >= $this->storage->getBlockCount()) {
             return null;
@@ -328,7 +332,7 @@ class Blockchain implements BlockchainInterface
     /**
      * Get block by hash
      */
-    public function getBlockByHash(string $hash): ?BlockInterface
+    public function getBlockByHash(string $hash): ?Block
     {
         return $this->storage->getBlockByHash($hash);
     }
@@ -360,7 +364,51 @@ class Blockchain implements BlockchainInterface
     /**
      * Check entire chain validity
      */
-    public function isChainValid(): bool
+    public function isValid(): bool
+    {
+        return $this->isChainValid();
+    }
+
+    /**
+     * Get blockchain height
+     */
+    public function getHeight(): int
+    {
+        return $this->storage->getBlockCount();
+    }
+
+    /**
+     * Mine a new block with pending transactions
+     */
+    public function mineBlock(string $minerAddress): ?Block
+    {
+        return $this->createBlock($minerAddress);
+    }
+
+    /**
+     * Get transaction by hash
+     */
+    public function getTransaction(string $hash): ?Transaction
+    {
+        $blockCount = $this->storage->getBlockCount();
+        
+        for ($i = 0; $i < $blockCount; $i++) {
+            $block = $this->storage->getBlockByIndex($i);
+            
+            foreach ($block->getTransactions() as $transaction) {
+                if ($transaction instanceof Transaction && $transaction->getHash() === $hash) {
+                    return $transaction;
+                }
+            }
+        }
+        
+        return null;
+    }
+
+    /**
+     * Check entire chain validity (private method)
+     */
+    private function isChainValid(): bool
     {
         $blockCount = $this->storage->getBlockCount();
         
@@ -493,5 +541,212 @@ class Blockchain implements BlockchainInterface
     public function getBlockTime(): int
     {
         return $this->blockTime;
+    }
+
+    /**
+     * Create genesis block with database configuration
+     */
+    public static function createGenesisWithDatabase(\PDO $database, array $config = []): Block
+    {
+        // Add logging
+        $logFile = __DIR__ . '/../../web-installer/install_debug.log';
+        $logMessage = "\n=== BLOCKCHAIN CLASS DEBUG " . date('Y-m-d H:i:s') . " ===\n";
+        file_put_contents($logFile, $logMessage, FILE_APPEND);
+        
+        $logMessage = "createGenesisWithDatabase called with config: " . json_encode($config) . "\n";
+        file_put_contents($logFile, $logMessage, FILE_APPEND);
+        
+        try {
+            $genesisTransactions = [
+                [
+                    'hash' => hash('sha256', 'genesis_network_' . time()),
+                    'type' => 'genesis',
+                    'from' => 'genesis',
+                    'to' => 'genesis_address',
+                    'amount' => (float)($config['initial_supply'] ?? 1000000),
+                    'timestamp' => time(),
+                    'network_name' => $config['network_name'] ?? 'Blockchain Network',
+                    'token_symbol' => $config['token_symbol'] ?? 'TOKEN',
+                    'consensus' => $config['consensus_algorithm'] ?? 'pos'
+                ]
+            ];
+            
+            $logMessage = "Genesis transactions array created\n";
+            file_put_contents($logFile, $logMessage, FILE_APPEND);
+            
+            // Add wallet funding transaction if specified
+            if (!empty($config['wallet_address']) && !empty($config['primary_wallet_amount'])) {
+                $genesisTransactions[] = [
+                    'hash' => hash('sha256', 'genesis_wallet_' . $config['wallet_address'] . '_' . time()),
+                    'type' => 'transfer',
+                    'from' => 'genesis_address',
+                    'to' => $config['wallet_address'],
+                    'amount' => (float)$config['primary_wallet_amount'],
+                    'timestamp' => time() + 1
+                ];
+                
+                $logMessage = "Added wallet funding transaction for: " . $config['wallet_address'] . "\n";
+                file_put_contents($logFile, $logMessage, FILE_APPEND);
+                
+                // Add staking transaction to genesis block
+                if (!empty($config['staking_amount'])) {
+                    $genesisTransactions[] = [
+                        'hash' => hash('sha256', 'genesis_stake_' . $config['wallet_address'] . '_' . time()),
+                        'type' => 'stake',
+                        'from' => $config['wallet_address'],
+                        'to' => 'staking_contract',
+                        'amount' => (float)$config['staking_amount'],
+                        'timestamp' => time() + 2,
+                        'metadata' => [
+                            'action' => 'stake',
+                            'validator' => $config['wallet_address'],
+                            'min_stake' => $config['min_stake_amount'] ?? 1000
+                        ]
+                    ];
+                    
+                    $logMessage = "Added staking transaction for: " . $config['staking_amount'] . " tokens\n";
+                    file_put_contents($logFile, $logMessage, FILE_APPEND);
+                }
+                
+                // Add validator registration transaction
+                $genesisTransactions[] = [
+                    'hash' => hash('sha256', 'genesis_validator_' . $config['wallet_address'] . '_' . time()),
+                    'type' => 'register_validator',
+                    'from' => $config['wallet_address'],
+                    'to' => 'validator_registry',
+                    'amount' => 0.0,
+                    'timestamp' => time() + 3,
+                    'metadata' => [
+                        'action' => 'register_validator',
+                        'validator_address' => $config['wallet_address'],
+                        'commission_rate' => 0.1,
+                        'min_delegation' => $config['min_stake_amount'] ?? 1000
+                    ]
+                ];
+                
+                $logMessage = "Added validator registration transaction\n";
+                file_put_contents($logFile, $logMessage, FILE_APPEND);
+                
+                // Add genesis node registration transaction
+                $genesisTransactions[] = [
+                    'hash' => hash('sha256', 'genesis_node_' . $config['wallet_address'] . '_' . time()),
+                    'type' => 'register_node',
+                    'from' => $config['wallet_address'],
+                    'to' => 'node_registry',
+                    'amount' => 0.0,
+                    'timestamp' => time() + 4,
+                    'metadata' => [
+                        'action' => 'register_node',
+                        'node_type' => 'primary',
+                        'node_domain' => $config['node_domain'] ?? 'localhost',
+                        'protocol' => $config['protocol'] ?? 'https',
+                        'version' => '1.0.0',
+                        'public_key' => 'genesis_public_key_placeholder'
+                    ]
+                ];
+                
+                $logMessage = "Added genesis node registration transaction\n";
+                file_put_contents($logFile, $logMessage, FILE_APPEND);
+            }
+            
+            $logMessage = "Creating Block instance...\n";
+            file_put_contents($logFile, $logMessage, FILE_APPEND);
+            
+            $genesisBlock = new Block(0, $genesisTransactions, '0');
+            
+            $logMessage = "Block instance created successfully\n";
+            file_put_contents($logFile, $logMessage, FILE_APPEND);
+            
+            // Save to database using BlockStorage
+            $logMessage = "Creating BlockStorage instance...\n";
+            file_put_contents($logFile, $logMessage, FILE_APPEND);
+            
+            $blockStorage = new \Blockchain\Core\Storage\BlockStorage('blockchain.json', $database);
+            
+            $logMessage = "BlockStorage created, calling saveToDatabaseStorage...\n";
+            file_put_contents($logFile, $logMessage, FILE_APPEND);
+            
+            $result = $blockStorage->saveToDatabaseStorage($genesisBlock);
+            
+            $logMessage = "saveToDatabaseStorage result: " . ($result ? 'SUCCESS' : 'FAILED') . "\n";
+            file_put_contents($logFile, $logMessage, FILE_APPEND);
+            
+            // Update config table with genesis hash
+            try {
+                $logMessage = "Updating config table...\n";
+                file_put_contents($logFile, $logMessage, FILE_APPEND);
+                
+                $stmt = $database->prepare("UPDATE config SET value = ? WHERE key_name = 'blockchain.genesis_block'");
+                $configResult = $stmt->execute([$genesisBlock->getHash()]);
+                
+                $logMessage = "Config update result: " . ($configResult ? 'SUCCESS' : 'FAILED') . "\n";
+                file_put_contents($logFile, $logMessage, FILE_APPEND);
+                
+            } catch (\PDOException $e) {
+                $logMessage = "Config update failed: " . $e->getMessage() . "\n";
+                file_put_contents($logFile, $logMessage, FILE_APPEND);
+                // Continue if config update fails
+            }
+            
+            $logMessage = "createGenesisWithDatabase completed successfully\n";
+            file_put_contents($logFile, $logMessage, FILE_APPEND);
+            
+            // Also initialize binary storage if enabled
+            if (!empty($config['enable_binary_storage'])) {
+                try {
+                    $logMessage = "Initializing binary storage...\n";
+                    file_put_contents($logFile, $logMessage, FILE_APPEND);
+                    
+                    $dataDir = dirname($logFile) . '/../storage/blockchain';
+                    if (!is_dir($dataDir)) {
+                        mkdir($dataDir, 0755, true);
+                    }
+                    
+                    $binaryConfig = [
+                        'enable_binary_storage' => true,
+                        'enable_encryption' => $config['enable_encryption'] ?? false,
+                        'data_dir' => 'storage/blockchain',
+                        'network_name' => $config['network_name'] ?? 'Blockchain Network',
+                        'token_symbol' => $config['token_symbol'] ?? 'TOKEN'
+                    ];
+                    
+                    if (class_exists('\\Blockchain\\Core\\Storage\\BlockchainBinaryStorage')) {
+                        $binaryStorage = new \Blockchain\Core\Storage\BlockchainBinaryStorage(
+                            $dataDir,
+                            $binaryConfig,
+                            false
+                        );
+                        
+                        // Convert genesis block to binary format
+                        $binaryGenesisData = [
+                            'index' => $genesisBlock->getIndex(),
+                            'timestamp' => $genesisBlock->getTimestamp(),
+                            'previous_hash' => $genesisBlock->getPreviousHash(),
+                            'hash' => $genesisBlock->getHash(),
+                            'merkle_root' => $genesisBlock->getMerkleRoot(),
+                            'nonce' => $genesisBlock->getNonce(),
+                            'transactions' => $genesisTransactions // Changed from 'data' to 'transactions'
+                        ];
+                        
+                        $binaryResult = $binaryStorage->appendBlock($binaryGenesisData);
+                        $logMessage = "Binary storage result: " . ($binaryResult ? 'SUCCESS' : 'FAILED') . "\n";
+                        file_put_contents($logFile, $logMessage, FILE_APPEND);
+                    }
+                    
+                } catch (\Exception $e) {
+                    $logMessage = "Binary storage initialization failed: " . $e->getMessage() . "\n";
+                    file_put_contents($logFile, $logMessage, FILE_APPEND);
+                    // Continue even if binary storage fails
+                }
+            }
+            
+            return $genesisBlock;
+            
+        } catch (\Exception $e) {
+            $logMessage = "ERROR in createGenesisWithDatabase: " . $e->getMessage() . "\n";
+            $logMessage .= "Stack trace: " . $e->getTraceAsString() . "\n";
+            file_put_contents($logFile, $logMessage, FILE_APPEND);
+            throw $e;
+        }
     }
 }

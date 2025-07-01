@@ -142,6 +142,27 @@ try {
             $result = restoreWalletFromMnemonic($walletManager, $mnemonic);
             break;
             
+        case 'sync_binary_to_db':
+            $result = syncBinaryToDatabase($walletManager);
+            break;
+            
+        case 'sync_db_to_binary':
+            $result = syncDatabaseToBinary($walletManager);
+            break;
+            
+        case 'validate_blockchain':
+            $result = validateBlockchain($walletManager);
+            break;
+            
+        case 'blockchain_stats':
+            $result = getBlockchainStats($walletManager);
+            break;
+            
+        case 'create_backup':
+            $backupPath = $input['backup_path'] ?? null;
+            $result = createBackup($walletManager, $backupPath);
+            break;
+            
         default:
             throw new Exception('Unknown action: ' . $action);
     }
@@ -349,4 +370,144 @@ function getConfigInfo(array $config) {
             'network' => $config['crypto']['network'] ?? 'mainnet'
         ]
     ];
+}
+
+/**
+ * Synchronize binary blockchain to database
+ */
+function syncBinaryToDatabase($walletManager) {
+    try {
+        writeLog("Starting binary to database synchronization", 'INFO');
+        
+        $result = $walletManager->syncBinaryToDatabase();
+        
+        writeLog("Binary to database sync completed: {$result['exported']} exported, {$result['errors']} errors", 'INFO');
+        
+        return [
+            'sync_result' => $result,
+            'success' => $result['errors'] === 0
+        ];
+    } catch (Exception $e) {
+        writeLog("Binary to database sync failed: " . $e->getMessage(), 'ERROR');
+        throw new Exception('Failed to sync binary to database: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Synchronize database to binary blockchain
+ */
+function syncDatabaseToBinary($walletManager) {
+    try {
+        writeLog("Starting database to binary synchronization", 'INFO');
+        
+        $result = $walletManager->syncDatabaseToBinary();
+        
+        writeLog("Database to binary sync completed: {$result['imported']} imported, {$result['errors']} errors", 'INFO');
+        
+        return [
+            'sync_result' => $result,
+            'success' => $result['errors'] === 0
+        ];
+    } catch (Exception $e) {
+        writeLog("Database to binary sync failed: " . $e->getMessage(), 'ERROR');
+        throw new Exception('Failed to sync database to binary: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Validate blockchain integrity
+ */
+function validateBlockchain($walletManager) {
+    try {
+        writeLog("Starting blockchain validation", 'INFO');
+        
+        $validation = $walletManager->validateBlockchain();
+        
+        $status = $validation['valid'] ? 'valid' : 'invalid';
+        writeLog("Blockchain validation completed: $status", $validation['valid'] ? 'INFO' : 'ERROR');
+        
+        return [
+            'validation' => $validation,
+            'is_valid' => $validation['valid'],
+            'errors_count' => count($validation['errors'] ?? []),
+            'warnings_count' => count($validation['warnings'] ?? [])
+        ];
+    } catch (Exception $e) {
+        writeLog("Blockchain validation failed: " . $e->getMessage(), 'ERROR');
+        throw new Exception('Failed to validate blockchain: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Get comprehensive blockchain statistics
+ */
+function getBlockchainStats($walletManager) {
+    try {
+        writeLog("Retrieving blockchain statistics", 'DEBUG');
+        
+        $stats = $walletManager->getBlockchainStats();
+        
+        return [
+            'stats' => $stats,
+            'summary' => [
+                'total_blocks' => $stats['binary']['total_blocks'] ?? 0,
+                'total_transactions' => $stats['binary']['total_transactions'] ?? 0,
+                'blockchain_size' => $stats['binary']['size_formatted'] ?? '0 B',
+                'database_blocks' => $stats['database']['blocks'] ?? 0,
+                'database_transactions' => $stats['database']['transactions'] ?? 0,
+                'database_wallets' => $stats['database']['wallets'] ?? 0
+            ]
+        ];
+    } catch (Exception $e) {
+        writeLog("Failed to get blockchain stats: " . $e->getMessage(), 'ERROR');
+        throw new Exception('Failed to get blockchain statistics: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Create blockchain backup
+ */
+function createBackup($walletManager, ?string $customPath = null) {
+    try {
+        $backupPath = $customPath ?? dirname(__DIR__) . '/storage/backups/blockchain_backup_' . date('Y-m-d_H-i-s') . '.zip';
+        
+        writeLog("Creating blockchain backup at: $backupPath", 'INFO');
+        
+        // Ensure backup directory exists
+        $backupDir = dirname($backupPath);
+        if (!is_dir($backupDir)) {
+            mkdir($backupDir, 0755, true);
+        }
+        
+        $success = $walletManager->createBackup($backupPath);
+        
+        if ($success) {
+            $backupSize = file_exists($backupPath) ? filesize($backupPath) : 0;
+            writeLog("Backup created successfully: " . number_format($backupSize) . " bytes", 'INFO');
+            
+            return [
+                'backup_created' => true,
+                'backup_path' => $backupPath,
+                'backup_size' => $backupSize,
+                'backup_size_formatted' => formatBytes($backupSize)
+            ];
+        } else {
+            throw new Exception('Backup creation returned false');
+        }
+        
+    } catch (Exception $e) {
+        writeLog("Backup creation failed: " . $e->getMessage(), 'ERROR');
+        throw new Exception('Failed to create backup: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Format bytes to human readable format
+ */
+function formatBytes(int $bytes): string {
+    if ($bytes === 0) return '0 B';
+    
+    $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    $factor = floor(log($bytes, 1024));
+    return sprintf('%.1f %s', $bytes / (1024 ** $factor), $units[$factor] ?? 'TB');
 }
