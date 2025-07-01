@@ -44,31 +44,52 @@ try {
     }
     require_once $autoloader;
     
-    // Подключаем конфиг (без fallback паролей!)
+    // Подключаем EnvironmentLoader для загрузки переменных окружения
+    require_once $baseDir . '/core/Environment/EnvironmentLoader.php';
+    \Blockchain\Core\Environment\EnvironmentLoader::load($baseDir);
+    
+    // Подключаем конфиг
     $configFile = $baseDir . '/config/config.php';
-    if (!file_exists($configFile)) {
-        throw new Exception('Configuration file not found. Please check config/config.php');
+    $config = [];
+    if (file_exists($configFile)) {
+        $config = require $configFile;
     }
     
-    $config = require $configFile;
+    // Создаем конфигурацию базы данных с приоритетом: config.php -> .env -> defaults
+    $dbConfig = $config['database'] ?? [];
     
-    // Подключение к базе данных из конфига (без fallback паролей!)
-    $dbConfig = $config['database'];
-    $pdo = new PDO(
-        "mysql:host={$dbConfig['host']};port={$dbConfig['port']};dbname={$dbConfig['database']};charset=utf8mb4",
-        $dbConfig['username'],
-        $dbConfig['password'],
-        $dbConfig['options'] ?? [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-        ]
-    );
+    // Если конфигурация пустая, используем переменные окружения
+    if (empty($dbConfig) || !isset($dbConfig['host'])) {
+        $dbConfig = [
+            'host' => \Blockchain\Core\Environment\EnvironmentLoader::get('DB_HOST', 'localhost'),
+            'port' => (int)\Blockchain\Core\Environment\EnvironmentLoader::get('DB_PORT', 3306),
+            'database' => \Blockchain\Core\Environment\EnvironmentLoader::get('DB_DATABASE', 'blockchain'),
+            'username' => \Blockchain\Core\Environment\EnvironmentLoader::get('DB_USERNAME', 'root'),
+            'password' => \Blockchain\Core\Environment\EnvironmentLoader::get('DB_PASSWORD', ''),
+            'charset' => 'utf8mb4',
+            'options' => [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_EMULATE_PREPARES => false
+            ]
+        ];
+    }
+    
+    // Логируем попытку подключения (без пароля)
+    writeLog("Attempting DB connection to {$dbConfig['host']}:{$dbConfig['port']}/{$dbConfig['database']} as {$dbConfig['username']}");
+    
+    // Подключение к базе данных
+    $dsn = "mysql:host={$dbConfig['host']};port={$dbConfig['port']};dbname={$dbConfig['database']};charset={$dbConfig['charset']}";
+    $pdo = new PDO($dsn, $dbConfig['username'], $dbConfig['password'], $dbConfig['options']);
+    
+    writeLog("Database connection successful");
     
     // Подключаем класс WalletManager
     require_once $baseDir . '/wallet/WalletManager.php';
     
-    // Создаём экземпляр WalletManager
-    $walletManager = new \Blockchain\Wallet\WalletManager($pdo, $config);
+    // Создаём экземпляр WalletManager с полной конфигурацией
+    $fullConfig = array_merge($config, ['database' => $dbConfig]);
+    $walletManager = new \Blockchain\Wallet\WalletManager($pdo, $fullConfig);
     
     // Получение данных запроса
     $input = json_decode(file_get_contents('php://input'), true);
