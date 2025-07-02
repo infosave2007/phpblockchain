@@ -25,22 +25,85 @@ class Mnemonic
             throw new Exception('Invalid strength, must be 12, 15, 18, 21, or 24.');
         }
 
-        $entropyBytes = $strength * 4 / 3;
+        // Правильный расчет энтропии для BIP39
+        $entropyLengthBits = match($strength) {
+            12 => 128,
+            15 => 160, 
+            18 => 192,
+            21 => 224,
+            24 => 256
+        };
+        
+        $entropyBytes = $entropyLengthBits / 8;
         $entropy = random_bytes((int)$entropyBytes);
+        
+        error_log("Mnemonic::generate - Entropy bytes: " . $entropyBytes . ", hex: " . bin2hex($entropy));
+        
         $entropyBits = self::bytesToBits($entropy);
-
         $checksumBits = self::deriveChecksumBits($entropy);
         $bits = $entropyBits . $checksumBits;
+        
+        error_log("Mnemonic::generate - Total bits length: " . strlen($bits) . " (expected: " . ($strength * 11) . ")");
 
         $chunks = str_split($bits, 11);
         $words = [];
         self::loadWordList();
 
-        foreach ($chunks as $chunk) {
-            $index = bindec($chunk);
-            $words[] = self::$wordList[$index];
-        }
+        $usedIndices = []; // Отслеживаем использованные индексы
+        $maxAttempts = 10;
+        $attempt = 0;
+        
+        do {
+            $attempt++;
+            if ($attempt > 1) {
+                // Генерируем новую энтропию при повторных попытках
+                $entropy = random_bytes((int)$entropyBytes);
+                $entropyBits = self::bytesToBits($entropy);
+                $checksumBits = self::deriveChecksumBits($entropy);
+                $bits = $entropyBits . $checksumBits;
+                $chunks = str_split($bits, 11);
+                error_log("Mnemonic::generate - Regenerating entropy, attempt $attempt");
+            }
+            
+            $words = [];
+            $usedIndices = [];
+            $isValid = true;
+            
+            foreach ($chunks as $chunk) {
+                $index = bindec($chunk);
+                
+                // Проверяем, что индекс валидный и не повторяется
+                if ($index >= count(self::$wordList)) {
+                    error_log("WARNING: Invalid word index: $index (max: " . (count(self::$wordList) - 1) . ")");
+                    $isValid = false;
+                    break;
+                }
+                
+                if (in_array($index, $usedIndices)) {
+                    error_log("WARNING: Duplicate word index $index detected, attempt $attempt");
+                    $isValid = false;
+                    break;
+                }
+                
+                $usedIndices[] = $index;
+                $words[] = self::$wordList[$index];
+            }
+            
+            // Дополнительная проверка на уникальность слов
+            if ($isValid && count($words) === count(array_unique($words))) {
+                error_log("Mnemonic::generate - Successfully generated " . count($words) . " unique words on attempt $attempt: " . implode(' ', $words));
+                return $words;
+            }
+            
+            if ($isValid) {
+                error_log("WARNING: Duplicate words found in mnemonic, attempt $attempt");
+            }
+            
+        } while ($attempt < $maxAttempts);
+        
+        throw new Exception('Failed to generate valid mnemonic after ' . $maxAttempts . ' attempts');
 
+        error_log("Mnemonic::generate - Generated " . count($words) . " unique words: " . implode(' ', $words));
         return $words;
     }
 
@@ -53,9 +116,16 @@ class Mnemonic
      */
     public static function toSeed(array $mnemonic, string $passphrase = ''): string
     {
+        error_log("Mnemonic::toSeed - Starting with " . count($mnemonic) . " words");
+        
         $mnemonicString = implode(' ', $mnemonic);
+        error_log("Mnemonic::toSeed - Mnemonic string: " . $mnemonicString);
+        
         $salt = 'mnemonic' . $passphrase;
-        return bin2hex(hash_pbkdf2('sha512', $mnemonicString, $salt, 2048, 64, true));
+        $result = bin2hex(hash_pbkdf2('sha512', $mnemonicString, $salt, 2048, 64, true));
+        
+        error_log("Mnemonic::toSeed - Generated seed length: " . strlen($result));
+        return $result;
     }
 
     /**
@@ -94,6 +164,23 @@ class Mnemonic
         } catch (Exception $e) {
             return false;
         }
+    }
+
+    /**
+     * Get word list (public access)
+     */
+    public static function getWordList(): array
+    {
+        self::loadWordList();
+        return self::$wordList;
+    }
+    
+    /**
+     * Load word list (public access)
+     */
+    public static function loadWordListPublic(): void
+    {
+        self::loadWordList();
     }
 
     private static function deriveChecksumBits(string $entropy): string

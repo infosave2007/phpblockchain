@@ -32,8 +32,11 @@ class WalletManager
     public function createWallet(?string $password = null): array
     {
         try {
-            // Generate key pair
-            $keyPair = KeyPair::generate();
+            // Generate proper mnemonic first
+            $mnemonic = Mnemonic::generate();
+            
+            // Create key pair from mnemonic  
+            $keyPair = KeyPair::fromMnemonic($mnemonic);
             $address = $keyPair->getAddress();
             
             // Store wallet in database
@@ -50,8 +53,8 @@ class WalletManager
             return [
                 'address' => $address,
                 'public_key' => $keyPair->getPublicKey(),
-                'private_key' => $keyPair->getPrivateKey(), // In production, encrypt this
-                'mnemonic' => $keyPair->getMnemonic()
+                'private_key' => $keyPair->getPrivateKey(),
+                'mnemonic' => $mnemonic // Use the generated mnemonic, not KeyPair's getMnemonic()
             ];
             
         } catch (Exception $e) {
@@ -110,45 +113,94 @@ class WalletManager
     public function restoreWalletFromMnemonic(array $mnemonic): array
     {
         try {
+            // Debug: проверим что получили
+            error_log("WalletManager::restoreWalletFromMnemonic - Received mnemonic count: " . count($mnemonic));
+            error_log("WalletManager::restoreWalletFromMnemonic - Mnemonic words: " . implode(' ', $mnemonic));
+            
             // Validate mnemonic
-            if (!Mnemonic::validate($mnemonic)) {
+            $isValid = Mnemonic::validate($mnemonic);
+            error_log("WalletManager::restoreWalletFromMnemonic - Mnemonic validation result: " . ($isValid ? 'true' : 'false'));
+            
+            if (!$isValid) {
                 throw new Exception('Invalid mnemonic phrase');
             }
 
-            // Generate KeyPair from mnemonic
-            $keyPair = KeyPair::fromMnemonic($mnemonic);
+            // Generate KeyPair from mnemonic - это чисто математическая операция
+            try {
+                $keyPair = KeyPair::fromMnemonic($mnemonic);
+                error_log("WalletManager::restoreWalletFromMnemonic - KeyPair generated successfully");
+            } catch (Exception $e) {
+                error_log("WalletManager::restoreWalletFromMnemonic - KeyPair generation failed: " . $e->getMessage());
+                throw new Exception('Failed to generate keys from mnemonic: ' . $e->getMessage());
+            }
+            
             $address = $keyPair->getAddress();
+            error_log("WalletManager::restoreWalletFromMnemonic - Generated address: " . $address);
 
-            // Check if wallet already exists
+            // Проверяем существующий кошелек в БД
             $existingWallet = $this->getWalletInfo($address);
+            
+            // Получаем баланс из блокчейна (если есть транзакции)
+            $blockchainBalance = $this->calculateBalanceFromBlockchain($address);
+            $blockchainStaked = $this->calculateStakedBalanceFromBlockchain($address);
+            
             if ($existingWallet) {
+                // Кошелек уже есть в БД - обновляем данные из блокчейна
+                if ($blockchainBalance > 0 || $blockchainStaked > 0) {
+                    $this->updateBalance($address, $blockchainBalance);
+                    $this->updateStakedBalance($address, $blockchainStaked);
+                }
+                
                 return [
                     'address' => $address,
                     'public_key' => $keyPair->getPublicKey(),
                     'private_key' => $keyPair->getPrivateKey(),
-                    'balance' => $existingWallet['balance'] ?? 0,
-                    'existing' => true
+                    'balance' => max($existingWallet['balance'] ?? 0, $blockchainBalance),
+                    'staked_balance' => max($existingWallet['staked_balance'] ?? 0, $blockchainStaked),
+                    'existing' => true,
+                    'restored_from' => 'database'
                 ];
             }
-
-            // Create new wallet record
-            $stmt = $this->database->prepare("
-                INSERT INTO wallets (address, public_key, balance) 
-                VALUES (?, ?, 0)
-            ");
             
-            $stmt->execute([
-                $address,
-                $keyPair->getPublicKey()
-            ]);
+            // Кошелек не найден в БД, но может существовать в блокчейне
+            if ($blockchainBalance > 0 || $blockchainStaked > 0) {
+                // Кошелек существует в блокчейне - восстанавливаем в БД
+                $stmt = $this->database->prepare("
+                    INSERT INTO wallets (address, public_key, balance, staked_balance, created_at, updated_at) 
+                    VALUES (?, ?, ?, ?, NOW(), NOW())
+                ");
+                
+                $stmt->execute([
+                    $address,
+                    $keyPair->getPublicKey(),
+                    $blockchainBalance,
+                    $blockchainStaked
+                ]);
 
+                return [
+                    'address' => $address,
+                    'public_key' => $keyPair->getPublicKey(),
+                    'private_key' => $keyPair->getPrivateKey(),
+                    'balance' => $blockchainBalance,
+                    'staked_balance' => $blockchainStaked,
+                    'restored' => true,
+                    'restored_from' => 'blockchain'
+                ];
+            }
+            
+            // Кошелек не найден ни в БД, ни в блокчейне
+            // Возвращаем только параметры кошелька без создания записи
             return [
                 'address' => $address,
                 'public_key' => $keyPair->getPublicKey(),
                 'private_key' => $keyPair->getPrivateKey(),
                 'balance' => 0,
-                'restored' => true
+                'staked_balance' => 0,
+                'restored' => true,
+                'restored_from' => 'mnemonic_only',
+                'note' => 'Wallet restored from mnemonic but no transactions found. Use this wallet to receive funds.'
             ];
+            
         } catch (Exception $e) {
             throw new Exception('Failed to restore wallet from mnemonic: ' . $e->getMessage());
         }
@@ -804,5 +856,49 @@ class WalletManager
         } catch (Exception $e) {
             return null;
         }
+    }
+
+    /**
+     * Get database connection
+     */
+    public function getDatabase(): PDO
+    {
+        return $this->database;
+    }
+    
+    /**
+     * Get transaction by hash
+     */
+    public function getTransactionByHash(string $hash): ?array
+    {
+        $stmt = $this->database->prepare("
+            SELECT 
+                hash,
+                block_hash,
+                block_height,
+                from_address,
+                to_address,
+                amount,
+                fee,
+                status,
+                timestamp,
+                data,
+                signature
+            FROM transactions 
+            WHERE hash = ?
+        ");
+        
+        $stmt->execute([$hash]);
+        $transaction = $stmt->fetch();
+        
+        if (!$transaction) {
+            return null;
+        }
+        
+        // Parse data field to get memo
+        $transactionData = json_decode($transaction['data'] ?? '{}', true);
+        $transaction['memo'] = $transactionData['memo'] ?? '';
+        
+        return $transaction;
     }
 }

@@ -379,7 +379,14 @@ class Migration
             ('consensus.min_stake', '1000', 'Minimum stake required for validation', TRUE),
             ('consensus.reward_rate', '0.05', 'Annual staking reward rate', TRUE),
             ('network.max_peers', '50', 'Maximum number of peer connections', TRUE),
-            ('network.sync_batch_size', '100', 'Number of blocks to sync at once', TRUE);
+            ('network.sync_batch_size', '100', 'Number of blocks to sync at once', TRUE),
+            ('network.name', 'Blockchain Network', 'Network name', FALSE),
+            ('network.token_symbol', 'COIN', 'Token symbol', FALSE),
+            ('network.token_name', 'Blockchain Coin', 'Token full name', FALSE),
+            ('network.initial_supply', '1000000', 'Initial token supply', FALSE),
+            ('network.decimals', '8', 'Token decimal places', FALSE),
+            ('network.chain_id', '1', 'Network chain ID', TRUE),
+            ('network.protocol_version', '1.0.0', 'Protocol version', TRUE);
         ";
     }
 }

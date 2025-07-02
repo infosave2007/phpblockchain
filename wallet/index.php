@@ -91,7 +91,34 @@ function loadLanguage($lang) {
             'success' => 'Success',
             'wallet_address' => 'Wallet Address:',
             'wallet_info' => 'Wallet Information',
-            'check_balance' => 'Check Balance'
+            'check_balance' => 'Check Balance',
+            'transfer_tokens' => 'Transfer Tokens',
+            'transfer_tokens_desc' => 'Send tokens to another wallet',
+            'stake_tokens' => 'Stake Tokens',
+            'stake_tokens_desc' => 'Earn rewards by staking',
+            'recipient_address' => 'Recipient Address',
+            'transfer_amount' => 'Amount to Transfer',
+            'memo_optional' => 'Memo (optional)',
+            'memo_placeholder' => 'Enter memo for transfer...',
+            'send_transfer' => 'Send Transfer',
+            'transfer_successful' => 'Transfer Successful!',
+            'transfer_failed' => 'Transfer Failed',
+            'staking_period' => 'Staking Period',
+            'start_staking' => 'Start Staking',
+            'staking_successful' => 'Staking Successful!',
+            'staking_failed' => 'Staking Failed',
+            'unstake_tokens' => 'Unstake Tokens',
+            'unstake_amount' => 'Amount to Unstake',
+            'unstake_successful' => 'Unstaking Successful!',
+            'view_staking' => 'View Staking',
+            'private_key_required' => 'Private key required for transactions',
+            'enter_private_key' => 'Enter your private key',
+            'insufficient_balance' => 'Insufficient balance',
+            'invalid_address' => 'Invalid wallet address',
+            'transaction_confirmed' => 'Transaction confirmed in blockchain',
+            'rewards_earned' => 'Rewards Earned',
+            'total_received' => 'Total Received',
+            'days_until_unlock' => 'Days Until Unlock'
         ],
         'ru' => [
             'title' => 'Blockchain Кошелёк',
@@ -161,7 +188,34 @@ function loadLanguage($lang) {
             'success' => 'Успех',
             'wallet_address' => 'Адрес кошелька:',
             'wallet_info' => 'Информация о кошельке',
-            'check_balance' => 'Проверить баланс'
+            'check_balance' => 'Проверить баланс',
+            'transfer_tokens' => 'Перевести токены',
+            'transfer_tokens_desc' => 'Отправить токены в другой кошелёк',
+            'stake_tokens' => 'Заблокировать токены',
+            'stake_tokens_desc' => 'Получайте награды через стейкинг',
+            'recipient_address' => 'Адрес получателя',
+            'transfer_amount' => 'Сумма перевода',
+            'memo_optional' => 'Заметка (необязательно)',
+            'memo_placeholder' => 'Введите заметку к переводу...',
+            'send_transfer' => 'Отправить перевод',
+            'transfer_successful' => 'Перевод выполнен!',
+            'transfer_failed' => 'Ошибка перевода',
+            'staking_period' => 'Период стейкинга',
+            'start_staking' => 'Начать стейкинг',
+            'staking_successful' => 'Стейкинг успешен!',
+            'staking_failed' => 'Ошибка стейкинга',
+            'unstake_tokens' => 'Разблокировать токены',
+            'unstake_amount' => 'Сумма для разблокировки',
+            'unstake_successful' => 'Разблокировка успешна!',
+            'view_staking' => 'Просмотр стейкинга',
+            'private_key_required' => 'Требуется приватный ключ для транзакций',
+            'enter_private_key' => 'Введите ваш приватный ключ',
+            'insufficient_balance' => 'Недостаточно средств',
+            'invalid_address' => 'Неверный адрес кошелька',
+            'transaction_confirmed' => 'Транзакция подтверждена в блокчейне',
+            'rewards_earned' => 'Заработанные награды',
+            'total_received' => 'Получено всего',
+            'days_until_unlock' => 'Дней до разблокировки'
         ]
     ];
     
@@ -424,7 +478,6 @@ function getLanguageOptions($currentLang) {
             background: linear-gradient(135deg, #fff 0%, #f8f9fa 100%);
             border: 2px solid #e9ecef;
             border-radius: 10px;
-            padding: 15px;
             text-align: center;
             font-family: 'Courier New', monospace;
             font-weight: bold;
@@ -716,6 +769,149 @@ function getLanguageOptions($currentLang) {
         </div>
     </div>
 
+    <!-- Transfer Tokens Modal -->
+    <div class="modal fade" id="transferModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="fas fa-paper-plane me-2"></i><?php echo $t['transfer_tokens']; ?>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-info alert-modern">
+                        <i class="fas fa-info-circle me-2"></i>
+                        <?php echo $t['transfer_tokens_desc']; ?>
+                    </div>
+                    
+                    <form id="transferForm">
+                        <div class="mb-3">
+                            <label for="fromAddress" class="form-label fw-bold"><?php echo $t['wallet_address']; ?></label>
+                            <select class="form-select" id="fromAddress" required>
+                                <option value="">Select wallet...</option>
+                            </select>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="toAddress" class="form-label fw-bold"><?php echo $t['recipient_address']; ?></label>
+                            <input type="text" class="form-control" id="toAddress" required 
+                                   placeholder="Enter recipient wallet address...">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="transferAmount" class="form-label fw-bold"><?php echo $t['transfer_amount']; ?></label>
+                            <div class="input-group">
+                                <input type="number" class="form-control" id="transferAmount" 
+                                       step="0.01" min="0.01" required>
+                                <span class="input-group-text" id="transferSymbol">COIN</span>
+                            </div>
+                            <div class="form-text">Available: <span id="availableBalance">0</span> <span id="availableSymbol">COIN</span></div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="transferMemo" class="form-label fw-bold"><?php echo $t['memo_optional']; ?></label>
+                            <textarea class="form-control" id="transferMemo" rows="2" 
+                                      placeholder="<?php echo $t['memo_placeholder']; ?>"></textarea>
+                            <div class="form-text">
+                                <i class="fas fa-lock text-success me-1"></i>
+                                Messages are automatically encrypted for security
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="transferPrivateKey" class="form-label fw-bold"><?php echo $t['private_key']; ?></label>
+                            <input type="password" class="form-control" id="transferPrivateKey" required 
+                                   placeholder="<?php echo $t['enter_private_key']; ?>">
+                        </div>
+                    </form>
+                    
+                    <div id="transferResult"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary btn-modern" data-bs-dismiss="modal"><?php echo $t['cancel']; ?></button>
+                    <button type="button" class="btn btn-success btn-modern" onclick="executeTransfer()" id="transferBtn">
+                        <i class="fas fa-paper-plane me-2"></i><?php echo $t['send_transfer']; ?>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Staking Modal -->
+    <div class="modal fade" id="stakingModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="fas fa-coins me-2"></i><?php echo $t['stake_tokens']; ?>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-info alert-modern">
+                        <i class="fas fa-info-circle me-2"></i>
+                        <?php echo $t['stake_tokens_desc']; ?>
+                    </div>
+                    
+                    <form id="stakingForm">
+                        <div class="mb-3">
+                            <label for="stakingAddress" class="form-label fw-bold"><?php echo $t['wallet_address']; ?></label>
+                            <select class="form-select" id="stakingAddress" required>
+                                <option value="">Select wallet...</option>
+                            </select>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="stakingAmount" class="form-label fw-bold"><?php echo $t['stake_amount']; ?></label>
+                            <div class="input-group">
+                                <input type="number" class="form-control" id="stakingAmount" 
+                                       step="0.01" min="100" required>
+                                <span class="input-group-text" id="stakingSymbol">COIN</span>
+                            </div>
+                            <div class="form-text"><?php echo $t['min_amount']; ?> 100 COIN</div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="stakingPeriod" class="form-label fw-bold"><?php echo $t['staking_period']; ?></label>
+                            <select class="form-select" id="stakingPeriod" required>
+                                <option value="7">7 <?php echo $t['days_apy']; ?>4%)</option>
+                                <option value="30">30 <?php echo $t['days_apy']; ?>6%)</option>
+                                <option value="90">90 <?php echo $t['days_apy']; ?>8%)</option>
+                                <option value="180">180 <?php echo $t['days_apy']; ?>10%)</option>
+                                <option value="365">365 <?php echo $t['days_apy']; ?>12%)</option>
+                            </select>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="stakingPrivateKey" class="form-label fw-bold"><?php echo $t['private_key']; ?></label>
+                            <input type="password" class="form-control" id="stakingPrivateKey" required 
+                                   placeholder="<?php echo $t['enter_private_key']; ?>">
+                        </div>
+                        
+                        <div id="stakingPreview" class="alert alert-success alert-modern" style="display: none;">
+                            <h6>Staking Preview:</h6>
+                            <div class="row">
+                                <div class="col-6">Amount: <span id="previewAmount">0</span> COIN</div>
+                                <div class="col-6">Period: <span id="previewPeriod">0</span> days</div>
+                                <div class="col-6">APY: <span id="previewAPY">0</span>%</div>
+                                <div class="col-6">Expected Rewards: <span id="previewRewards">0</span> COIN</div>
+                            </div>
+                        </div>
+                    </form>
+                    
+                    <div id="stakingResult"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary btn-modern" data-bs-dismiss="modal"><?php echo $t['cancel']; ?></button>
+                    <button type="button" class="btn btn-warning btn-modern" onclick="executeStaking()" id="stakingBtn">
+                        <i class="fas fa-coins me-2"></i><?php echo $t['start_staking']; ?>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         // Global variables
@@ -746,10 +942,36 @@ function getLanguageOptions($currentLang) {
                 const data = await response.json();
                 if (data.success && data.config) {
                     cryptoSymbol = data.config.crypto_symbol || 'COIN';
+                    
+                    // Update all symbol displays
+                    updateSymbolDisplays(cryptoSymbol);
+                    
+                    console.log('Config loaded:', data.config);
+                } else {
+                    console.log('Config load failed, using defaults');
                 }
             } catch (error) {
-                console.log('Config load failed, using defaults');
+                console.log('Config load failed, using defaults:', error);
             }
+        }
+        
+        // Update all symbol displays in the interface
+        function updateSymbolDisplays(symbol) {
+            // Update transfer modal
+            const transferSymbol = document.getElementById('transferSymbol');
+            if (transferSymbol) transferSymbol.textContent = symbol;
+            
+            const availableSymbol = document.getElementById('availableSymbol');
+            if (availableSymbol) availableSymbol.textContent = symbol;
+            
+            // Update staking modal
+            const stakingSymbol = document.getElementById('stakingSymbol');
+            if (stakingSymbol) stakingSymbol.textContent = symbol;
+            
+            // Update all static symbol references
+            document.querySelectorAll('.crypto-symbol').forEach(el => {
+                el.textContent = symbol;
+            });
         }
         
         // Initialize
@@ -1017,7 +1239,7 @@ function getLanguageOptions($currentLang) {
                 
                 if (data.success) {
                     currentWalletData = data.wallet;
-                    showRestoreResult(data.wallet);
+                    showRestoreResult(data.wallet, data.verification);
                 } else {
                     showNotification(t.error + ' ' + data.error, 'danger');
                 }
@@ -1030,11 +1252,30 @@ function getLanguageOptions($currentLang) {
         }
         
         // Show restore result
-        function showRestoreResult(wallet) {
+        function showRestoreResult(wallet, verification = {}) {
+            const isActive = verification?.exists_in_blockchain || false;
+            const txCount = verification?.transaction_count || 0;
+            const statusIcon = isActive ? 'check-circle text-success' : 'info-circle text-warning';
+            const statusText = isActive ? 'Active in blockchain' : 'Ready for activation';
+            
+            let activationButton = '';
+            if (!isActive) {
+                activationButton = `
+                    <button class="btn btn-warning btn-modern me-2" onclick="activateWallet('${wallet.address}', '${wallet.public_key}')">
+                        <i class="fas fa-play me-2"></i>Activate in Blockchain
+                    </button>
+                `;
+            }
+            
             document.getElementById('restoreResult').innerHTML = `
                 <div class="alert alert-success alert-modern text-center">
                     <i class="fas fa-download fa-3x mb-3"></i>
                     <h4>${t.wallet_restored}</h4>
+                    <div class="mt-2">
+                        <i class="fas fa-${statusIcon} me-2"></i>
+                        <span class="fw-bold">${statusText}</span>
+                    </div>
+                    ${txCount > 0 ? `<small class="text-muted">Found ${txCount} transaction(s)</small>` : ''}
                 </div>
                 
                 <div class="wallet-info">
@@ -1052,16 +1293,70 @@ function getLanguageOptions($currentLang) {
                         <label class="form-label fw-bold">${t.balance}:</label>
                         <div class="balance-display">
                             <span class="h5 text-success">${wallet.balance || 0} ${cryptoSymbol}</span>
+                            ${wallet.staked_balance > 0 ? `<br><small class="text-info">Staked: ${wallet.staked_balance} ${cryptoSymbol}</small>` : ''}
                         </div>
                     </div>
                     
+                    ${wallet.note ? `
+                    <div class="alert alert-info alert-modern mb-3">
+                        <i class="fas fa-info-circle me-2"></i>
+                        ${wallet.note}
+                    </div>
+                    ` : ''}
+                    
                     <div class="text-center">
+                        ${activationButton}
                         <button class="btn btn-primary btn-modern" onclick="addToWalletList('${wallet.address}', '${wallet.private_key}')">
                             <i class="fas fa-save me-2"></i>${t.save_wallet}
                         </button>
                     </div>
                 </div>
             `;
+        }
+        
+        // Activate wallet in blockchain
+        async function activateWallet(address, publicKey) {
+            const button = event.target;
+            const originalText = button.innerHTML;
+            button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Activating...';
+            button.disabled = true;
+            
+            try {
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'activate_restored_wallet',
+                        address: address,
+                        public_key: publicKey
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    if (data.data.already_active) {
+                        showNotification('Wallet is already active in blockchain', 'info');
+                    } else if (data.data.activated) {
+                        showNotification('Wallet successfully activated in blockchain!', 'success');
+                        // Refresh the display
+                        button.style.display = 'none';
+                        // Update status indicator
+                        const statusElements = document.querySelectorAll('.fa-info-circle.text-warning');
+                        statusElements.forEach(el => {
+                            el.className = 'fas fa-check-circle text-success me-2';
+                            el.nextSibling.textContent = 'Active in blockchain';
+                        });
+                    }
+                } else {
+                    showNotification('Error: ' + data.error, 'danger');
+                }
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'danger');
+            } finally {
+                button.innerHTML = originalText;
+                button.disabled = false;
+            }
         }
         
         // List all wallets
@@ -1136,11 +1431,35 @@ function getLanguageOptions($currentLang) {
                                     </button>
                                 </div>
                                 <div class="address-display small mb-2">${wallet.address}</div>
-                                <div class="d-flex justify-content-between align-items-center">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
                                     <span class="fw-bold text-success">${wallet.balance || 0} ${cryptoSymbol}</span>
                                     <button class="btn btn-sm btn-primary" onclick="checkBalance('${wallet.address}')">
                                         <i class="fas fa-refresh me-1"></i>${t.check_balance}
                                     </button>
+                                </div>
+                                ${wallet.staked_balance > 0 ? `
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <small class="text-info">Staked: ${wallet.staked_balance} ${cryptoSymbol}</small>
+                                    </div>
+                                ` : ''}
+                                <div class="btn-group w-100 mt-2" role="group">
+                                    <button class="btn btn-sm btn-success" onclick="showTransferModal('${wallet.address}')" title="${t.transfer_tokens}">
+                                        <i class="fas fa-paper-plane"></i>
+                                    </button>
+                                    <button class="btn btn-sm btn-warning" onclick="showStakingModal('${wallet.address}')" title="${t.stake_tokens}">
+                                        <i class="fas fa-coins"></i>
+                                    </button>
+                                    <button class="btn btn-sm btn-info" onclick="showStakingInfo('${wallet.address}')" title="${t.view_staking}">
+                                        <i class="fas fa-chart-line"></i>
+                                    </button>
+                                    <button class="btn btn-sm btn-secondary" onclick="showTransactionHistory('${wallet.address}')" title="Transaction History">
+                                        <i class="fas fa-history"></i>
+                                    </button>
+                                    ${wallet.type === 'saved' ? `
+                                        <button class="btn btn-sm btn-danger" onclick="deleteWalletFromList('${wallet.address}')" title="Delete Wallet">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    ` : ''}
                                 </div>
                             </div>
                         </div>
@@ -1155,7 +1474,12 @@ function getLanguageOptions($currentLang) {
         // Show my wallets from localStorage
         function showMyWallets() {
             const wallets = JSON.parse(localStorage.getItem('myWallets') || '[]');
-            displayWalletList(wallets, t.my_wallets);
+            // Mark all wallets as 'saved' type for display
+            const walletsWithType = wallets.map(wallet => ({
+                ...wallet,
+                type: 'saved'
+            }));
+            displayWalletList(walletsWithType, t.my_wallets);
         }
         
         // Add wallet to localStorage
@@ -1199,14 +1523,33 @@ function getLanguageOptions($currentLang) {
                 const data = await response.json();
                 
                 if (data.success) {
-                    showNotification(`${t.balance}: ${data.balance} ${cryptoSymbol}`, 'success');
+                    // Правильно извлекаем данные баланса
+                    const balanceData = data.balance;
+                    const availableBalance = balanceData.available || 0;
+                    const stakedBalance = balanceData.staked || 0;
+                    const totalBalance = balanceData.total || 0;
+                    
+                    showNotification(`${t.balance}: ${totalBalance} ${cryptoSymbol} (Available: ${availableBalance}, Staked: ${stakedBalance})`, 'success');
                     
                     // Update balance in the display
                     const walletCard = button.closest('.card-body');
                     if (walletCard) {
                         const balanceSpan = walletCard.querySelector('.text-success');
                         if (balanceSpan) {
-                            balanceSpan.textContent = `${data.balance} ${cryptoSymbol}`;
+                            balanceSpan.textContent = `${totalBalance} ${cryptoSymbol}`;
+                        }
+                        
+                        // Update or add staked balance display
+                        let stakedDiv = walletCard.querySelector('.staked-balance');
+                        if (stakedBalance > 0) {
+                            if (!stakedDiv) {
+                                stakedDiv = document.createElement('div');
+                                stakedDiv.className = 'staked-balance d-flex justify-content-between align-items-center mb-2';
+                                balanceSpan.parentElement.insertAdjacentElement('afterend', stakedDiv);
+                            }
+                            stakedDiv.innerHTML = `<small class="text-info">Staked: ${stakedBalance} ${cryptoSymbol}</small>`;
+                        } else if (stakedDiv) {
+                            stakedDiv.remove();
                         }
                     }
                 } else {
@@ -1217,6 +1560,591 @@ function getLanguageOptions($currentLang) {
             } finally {
                 button.innerHTML = originalText;
                 button.disabled = false;
+            }
+        }
+        
+        // Show transfer modal
+        function showTransferModal(fromAddress = '') {
+            const modal = new bootstrap.Modal(document.getElementById('transferModal'));
+            modal.show();
+            
+            // Clear previous data
+            document.getElementById('transferForm').reset();
+            document.getElementById('transferResult').innerHTML = '';
+            
+            // Populate wallet selector
+            populateWalletSelector('fromAddress', fromAddress);
+            
+            // Update available balance when from address changes
+            document.getElementById('fromAddress').addEventListener('change', updateAvailableBalance);
+        }
+        
+        // Show staking modal
+        function showStakingModal(address = '') {
+            const modal = new bootstrap.Modal(document.getElementById('stakingModal'));
+            modal.show();
+            
+            // Clear previous data
+            document.getElementById('stakingForm').reset();
+            document.getElementById('stakingResult').innerHTML = '';
+            document.getElementById('stakingPreview').style.display = 'none';
+            
+            // Populate wallet selector
+            populateWalletSelector('stakingAddress', address);
+            
+            // Add event listeners for preview
+            document.getElementById('stakingAmount').addEventListener('input', updateStakingPreview);
+            document.getElementById('stakingPeriod').addEventListener('change', updateStakingPreview);
+        }
+        
+        // Populate wallet selector
+        function populateWalletSelector(selectId, selectedAddress = '') {
+            const select = document.getElementById(selectId);
+            const myWallets = JSON.parse(localStorage.getItem('myWallets') || '[]');
+            
+            select.innerHTML = '<option value="">Select wallet...</option>';
+            
+            myWallets.forEach(wallet => {
+                const option = document.createElement('option');
+                option.value = wallet.address;
+                option.textContent = `${wallet.address.substring(0, 20)}... (${wallet.balance || 0} ${cryptoSymbol})`;
+                option.setAttribute('data-private-key', wallet.privateKey);
+                if (wallet.address === selectedAddress) {
+                    option.selected = true;
+                }
+                select.appendChild(option);
+            });
+            
+            // Update balance if address is pre-selected
+            if (selectedAddress) {
+                updateAvailableBalance.call(select);
+            }
+        }
+        
+        // Update available balance
+        async function updateAvailableBalance() {
+            const address = this.value;
+            if (!address) return;
+            
+            try {
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'get_balance',
+                        address: address
+                    })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    // Правильно извлекаем available balance из nested объекта
+                    const balanceData = data.balance;
+                    const availableBalance = balanceData.available || 0;
+                    const stakedBalance = balanceData.staked || 0;
+                    
+                    document.getElementById('availableBalance').textContent = availableBalance;
+                    document.getElementById('availableSymbol').textContent = cryptoSymbol;
+                    
+                    // Также обновляем информацию о стейкинге если есть
+                    const stakedElement = document.getElementById('stakedBalance');
+                    if (stakedElement) {
+                        stakedElement.textContent = stakedBalance;
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to get balance:', error);
+            }
+        }
+        
+        // Update staking preview
+        function updateStakingPreview() {
+            const amount = parseFloat(document.getElementById('stakingAmount').value) || 0;
+            const period = parseInt(document.getElementById('stakingPeriod').value) || 0;
+            
+            if (amount > 0 && period > 0) {
+                // Calculate APY based on period
+                let apy;
+                if (period >= 365) apy = 12.0;
+                else if (period >= 180) apy = 10.0;
+                else if (period >= 90) apy = 8.0;
+                else if (period >= 30) apy = 6.0;
+                else apy = 4.0;
+                
+                const expectedRewards = amount * (apy / 100) * (period / 365);
+                
+                // Update preview
+                document.getElementById('previewAmount').textContent = amount;
+                document.getElementById('previewPeriod').textContent = period;
+                document.getElementById('previewAPY').textContent = apy;
+                document.getElementById('previewRewards').textContent = expectedRewards.toFixed(4);
+                document.getElementById('stakingPreview').style.display = 'block';
+            } else {
+                document.getElementById('stakingPreview').style.display = 'none';
+            }
+        }
+        
+        // Execute transfer
+        async function executeTransfer() {
+            const fromAddress = document.getElementById('fromAddress').value;
+            const toAddress = document.getElementById('toAddress').value;
+            const amount = parseFloat(document.getElementById('transferAmount').value);
+            const memo = document.getElementById('transferMemo').value;
+            const encryptMemo = true; // Always encrypt messages
+            const privateKey = document.getElementById('transferPrivateKey').value;
+            
+            if (!fromAddress || !toAddress || !amount || !privateKey) {
+                showNotification('Please fill all required fields', 'danger');
+                return;
+            }
+            
+            const button = document.getElementById('transferBtn');
+            const originalText = button.innerHTML;
+            button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Processing...';
+            button.disabled = true;
+            
+            try {
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'transfer_tokens',
+                        from_address: fromAddress,
+                        to_address: toAddress,
+                        amount: amount,
+                        private_key: privateKey,
+                        memo: memo,
+                        encrypt_memo: encryptMemo
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    document.getElementById('transferResult').innerHTML = `
+                        <div class="alert alert-success alert-modern">
+                            <i class="fas fa-check fa-2x mb-2"></i>
+                            <h5>${t.transfer_successful}</h5>
+                            <p>Transaction Hash: <code>${data.transaction.hash}</code></p>
+                            <p>Amount: ${amount} ${cryptoSymbol}</p>
+                            <p>Fee: ${data.transaction.fee} ${cryptoSymbol}</p>
+                            ${data.blockchain.recorded ? '<p class="text-success">✅ Recorded in blockchain</p>' : ''}
+                        </div>
+                    `;
+                    showNotification(t.transfer_successful, 'success');
+                    
+                    // Clear form
+                    document.getElementById('transferForm').reset();
+                } else {
+                    showNotification(t.transfer_failed + ': ' + data.error, 'danger');
+                }
+            } catch (error) {
+                showNotification(t.error + ' ' + error.message, 'danger');
+            } finally {
+                button.innerHTML = originalText;
+                button.disabled = false;
+            }
+        }
+        
+        // Execute staking
+        async function executeStaking() {
+            const address = document.getElementById('stakingAddress').value;
+            const amount = parseFloat(document.getElementById('stakingAmount').value);
+            const period = parseInt(document.getElementById('stakingPeriod').value);
+            const privateKey = document.getElementById('stakingPrivateKey').value;
+            
+            if (!address || !amount || !period || !privateKey) {
+                showNotification('Please fill all required fields', 'danger');
+                return;
+            }
+            
+            const button = document.getElementById('stakingBtn');
+            const originalText = button.innerHTML;
+            button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Processing...';
+            button.disabled = true;
+            
+            try {
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'stake_tokens_new',
+                        address: address,
+                        amount: amount,
+                        period: period,
+                        private_key: privateKey
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    document.getElementById('stakingResult').innerHTML = `
+                        <div class="alert alert-success alert-modern">
+                            <i class="fas fa-coins fa-2x mb-2"></i>
+                            <h5>${t.staking_successful}</h5>
+                            <p>Amount Staked: ${data.staking_info.amount} ${cryptoSymbol}</p>
+                            <p>Period: ${data.staking_info.period} days</p>
+                            <p>APY: ${data.staking_info.apy}%</p>
+                            <p>Expected Rewards: ${data.staking_info.expected_rewards.toFixed(4)} ${cryptoSymbol}</p>
+                            <p>Unlock Date: ${data.staking_info.unlock_date}</p>
+                            ${data.blockchain.recorded ? '<p class="text-success">✅ Recorded in blockchain</p>' : ''}
+                        </div>
+                    `;
+                    showNotification(t.staking_successful, 'success');
+                    
+                    // Clear form
+                    document.getElementById('stakingForm').reset();
+                    document.getElementById('stakingPreview').style.display = 'none';
+                } else {
+                    showNotification(t.staking_failed + ': ' + data.error, 'danger');
+                }
+            } catch (error) {
+                showNotification(t.error + ' ' + error.message, 'danger');
+            } finally {
+                button.innerHTML = originalText;
+                button.disabled = false;
+            }
+        }
+        
+        // Show staking information
+        async function showStakingInfo(address) {
+            try {
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'get_staking_info',
+                        address: address
+                    })
+                });
+                
+                const data = await response.json();
+                console.log('Staking info response:', data); // Debug log
+                
+                if (data.success) {
+                    const stakingInfo = data.staking_info || {};
+                    
+                    // Безопасно извлекаем значения с fallback
+                    const totalStaked = stakingInfo.total_staked || 0;
+                    const totalRewards = stakingInfo.total_rewards_earning || 0;
+                    const unlockedAmount = stakingInfo.unlocked_amount || 0;
+                    const stakingAvailable = stakingInfo.staking_available || 0;
+                    const activeStakes = stakingInfo.active_stakes || [];
+                    
+                    let stakingHtml = `
+                        <div class="action-card">
+                            <h5><i class="fas fa-chart-line me-2"></i>Staking Information - ${address.substring(0, 20)}...</h5>
+                            
+                            <div class="row mb-4">
+                                <div class="col-md-3">
+                                    <div class="text-center">
+                                        <h6 class="text-primary">Total Staked</h6>
+                                        <h4 class="text-success">${totalStaked} ${cryptoSymbol}</h4>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="text-center">
+                                        <h6 class="text-primary">Expected Rewards</h6>
+                                        <h4 class="text-warning">${totalRewards.toFixed(4)} ${cryptoSymbol}</h4>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="text-center">
+                                        <h6 class="text-primary">Unlocked Amount</h6>
+                                        <h4 class="text-info">${unlockedAmount} ${cryptoSymbol}</h4>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="text-center">
+                                        <h6 class="text-primary">Available to Stake</h6>
+                                        <h4 class="text-secondary">${stakingAvailable} ${cryptoSymbol}</h4>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <h6>Active Stakes:</h6>
+                            <div class="row">
+                    `;
+                    
+                    if (activeStakes.length > 0) {
+                        activeStakes.forEach(stake => {
+                            const isUnlocked = stake.lock_status === 'unlocked' || stake.lock_status === 'pending';
+                            const statusClass = isUnlocked ? 'success' : 'warning';
+                            const statusIcon = isUnlocked ? 'unlock' : 'lock';
+                            
+                            stakingHtml += `
+                                <div class="col-md-6 mb-3">
+                                    <div class="card border-${statusClass}">
+                                        <div class="card-body">
+                                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                                <h6 class="mb-0">${stake.amount || 0} ${cryptoSymbol}</h6>
+                                                <span class="badge bg-${statusClass}">
+                                                    <i class="fas fa-${statusIcon} me-1"></i>${stake.lock_status || 'active'}
+                                                </span>
+                                            </div>
+                                            <p class="mb-1">Reward Rate: ${((stake.reward_rate || stake.apy || 0) * 100).toFixed(2)}%</p>
+                                            <p class="mb-1">Expected Rewards: ${stake.rewards_earned || 0} ${cryptoSymbol}</p>
+                                            <p class="mb-1">Created: ${stake.created_at || 'N/A'}</p>
+                                            <p class="mb-0">
+                                                ${isUnlocked ? 
+                                                    'Ready to unstake!' : 
+                                                    `Unlock date: ${stake.unlock_date || 'N/A'}`
+                                                }
+                                            </p>
+                                            ${isUnlocked ? `
+                                                <button class="btn btn-sm btn-success mt-2" onclick="showUnstakeModal('${address}', ${stake.amount || 0})">
+                                                    <i class="fas fa-unlock me-1"></i>Unstake
+                                                </button>
+                                            ` : ''}
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        });
+                    } else {
+                        stakingHtml += '<div class="col-12"><p class="text-muted">No active stakes found.</p></div>';
+                    }
+                    
+                    stakingHtml += '</div></div>';
+                    
+                    document.getElementById('results').innerHTML = stakingHtml;
+                } else {
+                    showNotification('Failed to load staking info: ' + data.error, 'danger');
+                }
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'danger');
+            }
+        }
+        
+        // Show unstake modal (simplified - you can create a full modal like others)
+        function showUnstakeModal(address, maxAmount) {
+            const amount = prompt(`Enter amount to unstake (max: ${maxAmount} ${cryptoSymbol}):`);
+            if (amount && parseFloat(amount) > 0) {
+                const privateKey = prompt('Enter your private key:');
+                if (privateKey) {
+                    executeUnstake(address, parseFloat(amount), privateKey);
+                }
+            }
+        }
+        
+        // Execute unstaking
+        async function executeUnstake(address, amount, privateKey) {
+            try {
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'unstake_tokens',
+                        address: address,
+                        amount: amount,
+                        private_key: privateKey
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showNotification(`${t.unstake_successful} Received: ${data.total_received} ${cryptoSymbol}`, 'success');
+                    // Refresh staking info
+                    showStakingInfo(address);
+                } else {
+                    showNotification('Unstaking failed: ' + data.error, 'danger');
+                }
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'danger');
+            }
+        }
+        
+        // Show transaction history with encrypted message support
+        async function showTransactionHistory(address) {
+            try {
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'get_transaction_history',
+                        address: address
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    displayTransactionHistory(data.transactions, address);
+                } else {
+                    showNotification('Failed to load transaction history: ' + data.error, 'danger');
+                }
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'danger');
+            }
+        }
+        
+        // Display transaction history
+        function displayTransactionHistory(transactions, address) {
+            const resultsDiv = document.getElementById('results');
+            
+            let html = `
+                <div class="action-card">
+                    <h5><i class="fas fa-history me-2"></i>Transaction History - ${address.substring(0, 20)}...</h5>
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Type</th>
+                                    <th>From/To</th>
+                                    <th>Amount</th>
+                                    <th>Message</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+            `;
+            
+            if (transactions.length === 0) {
+                html += '<tr><td colspan="6" class="text-center text-muted">No transactions found</td></tr>';
+            } else {
+                transactions.forEach(tx => {
+                    const isIncoming = tx.to_address === address;
+                    const direction = isIncoming ? 'Received from' : 'Sent to';
+                    const otherAddress = isIncoming ? tx.from_address : tx.to_address;
+                    const amountClass = isIncoming ? 'text-success' : 'text-danger';
+                    const amountSign = isIncoming ? '+' : '-';
+                    
+                    const hasEncryptedMemo = tx.memo && tx.memo.startsWith('ENCRYPTED:');
+                    const memoDisplay = hasEncryptedMemo ? 
+                        '<i class="fas fa-lock text-warning" title="Encrypted message"></i> Encrypted' : 
+                        (tx.memo || 'No message');
+                    
+                    html += `
+                        <tr>
+                            <td>${new Date(tx.timestamp * 1000).toLocaleDateString()}</td>
+                            <td>${direction}</td>
+                            <td>${otherAddress.substring(0, 15)}...</td>
+                            <td class="${amountClass}">${amountSign}${tx.amount} ${cryptoSymbol}</td>
+                            <td>${memoDisplay}</td>
+                            <td>
+                                ${hasEncryptedMemo ? `
+                                    <button class="btn btn-sm btn-warning" onclick="decryptTransactionMessage('${tx.hash}', '${address}')">
+                                        <i class="fas fa-unlock"></i>
+                                    </button>
+                                ` : ''}
+                                <button class="btn btn-sm btn-info" onclick="copyToClipboard('${tx.hash}')">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                });
+            }
+            
+            html += `
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+            
+            resultsDiv.innerHTML = html;
+        }
+        
+        // Decrypt transaction message
+        async function decryptTransactionMessage(txHash, walletAddress) {
+            const privateKey = prompt('Enter your private key to decrypt the message:');
+            if (!privateKey) return;
+            
+            try {
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'decrypt_transaction_message',
+                        tx_hash: txHash,
+                        wallet_address: walletAddress,
+                        private_key: privateKey
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    if (data.decrypted) {
+                        alert(`Decrypted message: ${data.message}`);
+                    } else {
+                        alert(`Message: ${data.message}`);
+                    }
+                } else {
+                    showNotification('Failed to decrypt message: ' + data.error, 'danger');
+                }
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'danger');
+            }
+        }
+        
+        // Delete wallet from local list
+        function deleteWalletFromList(address) {
+            if (!confirm('Are you sure you want to remove this wallet from your saved list?\n\nNote: This only removes it from your browser storage, the wallet will still exist in the blockchain.')) {
+                return;
+            }
+            
+            let wallets = JSON.parse(localStorage.getItem('myWallets') || '[]');
+            wallets = wallets.filter(w => w.address !== address);
+            localStorage.setItem('myWallets', JSON.stringify(wallets));
+            
+            showNotification('Wallet removed from your list', 'success');
+            
+            // Refresh the display if currently showing my wallets
+            const resultsDiv = document.getElementById('results');
+            if (resultsDiv.innerHTML.includes('My Wallets')) {
+                showMyWallets();
+            }
+        }
+        
+        // Delete wallet completely (from blockchain) - requires confirmation
+        async function deleteWalletCompletely(address, privateKey) {
+            // First check if wallet has any balance or staked tokens
+            if (!confirm('WARNING: This will permanently delete the wallet from the blockchain!\n\nThis action cannot be undone. Are you absolutely sure?')) {
+                return;
+            }
+            
+            const finalConfirm = prompt('Type "DELETE" to confirm permanent wallet deletion:');
+            if (finalConfirm !== 'DELETE') {
+                showNotification('Wallet deletion cancelled', 'info');
+                return;
+            }
+            
+            try {
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'delete_wallet',
+                        address: address,
+                        private_key: privateKey
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showNotification('Wallet permanently deleted from blockchain', 'success');
+                    
+                    // Also remove from local storage
+                    deleteWalletFromList(address);
+                    
+                    // Refresh current view
+                    const resultsDiv = document.getElementById('results');
+                    if (resultsDiv.innerHTML.includes('All Wallets')) {
+                        listWallets();
+                    } else if (resultsDiv.innerHTML.includes('My Wallets')) {
+                        showMyWallets();
+                    }
+                } else {
+                    showNotification('Failed to delete wallet: ' + data.error, 'danger');
+                }
+            } catch (error) {
+                showNotification('Error: ' + error.message, 'danger');
             }
         }
     </script>

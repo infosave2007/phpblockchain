@@ -728,6 +728,53 @@ function generateGenesis(): array
         $logMessage = "Genesis data extracted successfully\n";
         file_put_contents($logFile, $logMessage, FILE_APPEND);
         
+        // Save network configuration to database
+        try {
+            $configInserts = [
+                ['network.name', $genesisConfig['network_name'] ?? 'Blockchain Network'],
+                ['network.token_symbol', $genesisConfig['token_symbol'] ?? 'COIN'],
+                ['network.token_name', ($genesisConfig['token_symbol'] ?? 'COIN') . ' Token'],
+                ['network.initial_supply', $genesisConfig['initial_supply'] ?? 1000000],
+                ['blockchain.genesis_block', $genesisBlock->getHash()],
+                ['network.chain_id', '1'],
+                ['network.decimals', '8'],
+                ['consensus.algorithm', $genesisConfig['consensus_algorithm'] ?? 'pos'],
+                ['consensus.min_stake', $genesisConfig['min_stake_amount'] ?? 1000],
+                ['network.protocol_version', '1.0.0']
+            ];
+            
+            $stmt = $pdo->prepare("
+                INSERT INTO config (key_name, value, description, is_system) VALUES (?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = CURRENT_TIMESTAMP
+            ");
+            
+            foreach ($configInserts as [$key, $value]) {
+                $description = match($key) {
+                    'network.name' => 'Network display name',
+                    'network.token_symbol' => 'Token symbol (ticker)',
+                    'network.token_name' => 'Token full name',
+                    'network.initial_supply' => 'Initial token supply',
+                    'blockchain.genesis_block' => 'Genesis block hash',
+                    'network.chain_id' => 'Network chain identifier',
+                    'network.decimals' => 'Token decimal places',
+                    'consensus.algorithm' => 'Consensus algorithm type',
+                    'consensus.min_stake' => 'Minimum staking amount',
+                    'network.protocol_version' => 'Network protocol version',
+                    default => 'Network configuration'
+                };
+                
+                $isSystem = in_array($key, ['blockchain.genesis_block', 'network.chain_id', 'network.protocol_version']);
+                $stmt->execute([$key, (string)$value, $description, $isSystem]);
+            }
+            
+            $logMessage = "Network configuration saved to database successfully\n";
+            file_put_contents($logFile, $logMessage, FILE_APPEND);
+            
+        } catch (Exception $e) {
+            $logMessage = "WARNING: Failed to save network configuration: " . $e->getMessage() . "\n";
+            file_put_contents($logFile, $logMessage, FILE_APPEND);
+        }
+        
         // Save to file storage as well
         $storageDir = '../storage/blockchain';
         if (!is_dir($storageDir)) {
