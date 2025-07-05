@@ -11,6 +11,33 @@ use PDO;
 use Exception;
 
 /**
+ * Функция для записи логов в файл WalletManager
+ */
+function writeWalletLog($message, $level = 'INFO') {
+    // Проверяем режим отладки из глобального конфига
+    global $config;
+    $debugMode = $config['debug_mode'] ?? true;
+    
+    if (!$debugMode && $level === 'DEBUG') {
+        return; // Не записываем DEBUG логи если отладка выключена
+    }
+    
+    $baseDir = dirname(__DIR__);
+    $logDir = $baseDir . '/logs';
+    
+    // Создаем папку logs если её нет
+    if (!is_dir($logDir)) {
+        mkdir($logDir, 0755, true);
+    }
+    
+    $logFile = $logDir . '/wallet_api.log';
+    $timestamp = date('Y-m-d H:i:s');
+    $logMessage = "[{$timestamp}] [WalletManager] [{$level}] {$message}" . PHP_EOL;
+    
+    file_put_contents($logFile, $logMessage, FILE_APPEND | LOCK_EX);
+}
+
+/**
  * Wallet Manager
  * 
  * Handles wallet creation, management, and transactions
@@ -114,37 +141,44 @@ class WalletManager
     {
         try {
             // Debug: проверим что получили
-            error_log("WalletManager::restoreWalletFromMnemonic - Received mnemonic count: " . count($mnemonic));
-            error_log("WalletManager::restoreWalletFromMnemonic - Mnemonic words: " . implode(' ', $mnemonic));
+            writeWalletLog("WalletManager::restoreWalletFromMnemonic - Received mnemonic count: " . count($mnemonic), 'DEBUG');
+            writeWalletLog("WalletManager::restoreWalletFromMnemonic - Mnemonic words: " . implode(' ', $mnemonic), 'DEBUG');
             
             // Validate mnemonic
+            writeWalletLog("WalletManager::restoreWalletFromMnemonic - Starting mnemonic validation", 'DEBUG');
             $isValid = Mnemonic::validate($mnemonic);
-            error_log("WalletManager::restoreWalletFromMnemonic - Mnemonic validation result: " . ($isValid ? 'true' : 'false'));
+            writeWalletLog("WalletManager::restoreWalletFromMnemonic - Mnemonic validation result: " . ($isValid ? 'true' : 'false'), 'DEBUG');
             
             if (!$isValid) {
+                writeWalletLog("WalletManager::restoreWalletFromMnemonic - Invalid mnemonic phrase", 'ERROR');
                 throw new Exception('Invalid mnemonic phrase');
             }
 
             // Generate KeyPair from mnemonic - это чисто математическая операция
             try {
+                writeWalletLog("WalletManager::restoreWalletFromMnemonic - Starting KeyPair generation", 'DEBUG');
                 $keyPair = KeyPair::fromMnemonic($mnemonic);
-                error_log("WalletManager::restoreWalletFromMnemonic - KeyPair generated successfully");
+                writeWalletLog("WalletManager::restoreWalletFromMnemonic - KeyPair generated successfully", 'DEBUG');
             } catch (Exception $e) {
-                error_log("WalletManager::restoreWalletFromMnemonic - KeyPair generation failed: " . $e->getMessage());
+                writeWalletLog("WalletManager::restoreWalletFromMnemonic - KeyPair generation failed: " . $e->getMessage(), 'ERROR');
                 throw new Exception('Failed to generate keys from mnemonic: ' . $e->getMessage());
             }
             
             $address = $keyPair->getAddress();
-            error_log("WalletManager::restoreWalletFromMnemonic - Generated address: " . $address);
+            writeWalletLog("WalletManager::restoreWalletFromMnemonic - Generated address: " . $address, 'DEBUG');
 
             // Проверяем существующий кошелек в БД
+            writeWalletLog("WalletManager::restoreWalletFromMnemonic - Checking for existing wallet in database", 'DEBUG');
             $existingWallet = $this->getWalletInfo($address);
             
             // Получаем баланс из блокчейна (если есть транзакции)
+            writeWalletLog("WalletManager::restoreWalletFromMnemonic - Calculating balances from blockchain", 'DEBUG');
             $blockchainBalance = $this->calculateBalanceFromBlockchain($address);
             $blockchainStaked = $this->calculateStakedBalanceFromBlockchain($address);
+            writeWalletLog("WalletManager::restoreWalletFromMnemonic - Blockchain balance: $blockchainBalance, staked: $blockchainStaked", 'DEBUG');
             
             if ($existingWallet) {
+                writeWalletLog("WalletManager::restoreWalletFromMnemonic - Wallet exists in database, updating from blockchain", 'INFO');
                 // Кошелек уже есть в БД - обновляем данные из блокчейна
                 if ($blockchainBalance > 0 || $blockchainStaked > 0) {
                     $this->updateBalance($address, $blockchainBalance);
@@ -164,6 +198,7 @@ class WalletManager
             
             // Кошелек не найден в БД, но может существовать в блокчейне
             if ($blockchainBalance > 0 || $blockchainStaked > 0) {
+                writeWalletLog("WalletManager::restoreWalletFromMnemonic - Wallet found in blockchain, creating database record", 'INFO');
                 // Кошелек существует в блокчейне - восстанавливаем в БД
                 $stmt = $this->database->prepare("
                     INSERT INTO wallets (address, public_key, balance, staked_balance, created_at, updated_at) 
@@ -189,6 +224,7 @@ class WalletManager
             }
             
             // Кошелек не найден ни в БД, ни в блокчейне
+            writeWalletLog("WalletManager::restoreWalletFromMnemonic - Wallet not found in blockchain or database, returning mnemonic-only restore", 'INFO');
             // Возвращаем только параметры кошелька без создания записи
             return [
                 'address' => $address,
@@ -202,6 +238,8 @@ class WalletManager
             ];
             
         } catch (Exception $e) {
+            writeWalletLog("WalletManager::restoreWalletFromMnemonic - Exception: " . $e->getMessage(), 'ERROR');
+            writeWalletLog("WalletManager::restoreWalletFromMnemonic - Stack trace: " . $e->getTraceAsString(), 'DEBUG');
             throw new Exception('Failed to restore wallet from mnemonic: ' . $e->getMessage());
         }
     }
@@ -900,5 +938,87 @@ class WalletManager
         $transaction['memo'] = $transactionData['memo'] ?? '';
         
         return $transaction;
+    }
+
+    /**
+     * Calculate balance from blockchain transactions
+     */
+    public function calculateBalanceFromBlockchain(string $address): float
+    {
+        try {
+            writeWalletLog("WalletManager::calculateBalanceFromBlockchain - Calculating for address: $address", 'DEBUG');
+            
+            // Get all confirmed transactions for this address
+            $stmt = $this->database->prepare("
+                SELECT 
+                    from_address, to_address, amount, fee
+                FROM transactions 
+                WHERE (from_address = ? OR to_address = ?) 
+                AND status = 'confirmed'
+                ORDER BY timestamp ASC
+            ");
+            
+            $stmt->execute([$address, $address]);
+            $transactions = $stmt->fetchAll();
+            
+            $balance = 0.0;
+            
+            foreach ($transactions as $tx) {
+                if ($tx['to_address'] === $address) {
+                    // Incoming transaction
+                    $balance += (float)$tx['amount'];
+                    writeWalletLog("WalletManager::calculateBalanceFromBlockchain - Incoming: +" . $tx['amount'], 'DEBUG');
+                }
+                
+                if ($tx['from_address'] === $address && $tx['from_address'] !== 'genesis' && $tx['from_address'] !== 'genesis_address') {
+                    // Outgoing transaction (excluding genesis transactions)
+                    $balance -= (float)$tx['amount'] + (float)$tx['fee'];
+                    writeWalletLog("WalletManager::calculateBalanceFromBlockchain - Outgoing: -" . ($tx['amount'] + $tx['fee']), 'DEBUG');
+                }
+            }
+            
+            writeWalletLog("WalletManager::calculateBalanceFromBlockchain - Final balance: $balance", 'DEBUG');
+            return max(0.0, $balance); // Balance cannot be negative
+            
+        } catch (Exception $e) {
+            writeWalletLog("WalletManager::calculateBalanceFromBlockchain - Error: " . $e->getMessage(), 'ERROR');
+            return 0.0;
+        }
+    }
+
+    /**
+     * Calculate staked balance from blockchain staking records
+     */
+    public function calculateStakedBalanceFromBlockchain(string $address): float
+    {
+        try {
+            writeWalletLog("WalletManager::calculateStakedBalanceFromBlockchain - Calculating for address: $address", 'DEBUG');
+            
+            // Get all active staking records
+            $stmt = $this->database->prepare("
+                SELECT COALESCE(SUM(amount), 0) as total_staked 
+                FROM staking 
+                WHERE staker = ? AND status = 'active'
+            ");
+            
+            $stmt->execute([$address]);
+            $result = $stmt->fetch();
+            $stakedBalance = (float)($result['total_staked'] ?? 0);
+            
+            writeWalletLog("WalletManager::calculateStakedBalanceFromBlockchain - Staked balance: $stakedBalance", 'DEBUG');
+            return $stakedBalance;
+            
+        } catch (Exception $e) {
+            writeWalletLog("WalletManager::calculateStakedBalanceFromBlockchain - Error: " . $e->getMessage(), 'ERROR');
+            return 0.0;
+        }
+    }
+
+    /**
+     * Get wallet by address
+     */
+    public function getWalletByAddress(string $address): ?array
+    {
+        return $this->getWalletInfo($address);
     }
 }

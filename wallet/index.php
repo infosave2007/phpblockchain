@@ -30,8 +30,13 @@ function loadLanguage($lang) {
             'create_new_wallet' => 'Create New Wallet',
             'restore_wallet' => 'Restore Wallet',
             'restore_wallet_desc' => 'Restore from seed phrase',
-            'all_wallets' => 'All Wallets',
-            'show_all_wallets' => 'Show All Wallets',
+            'transaction_history' => 'Transaction History',
+            'show_transaction_history' => 'View transaction history',
+            'decrypt_message' => 'Decrypt Message',
+            'encrypted_message' => 'Encrypted Message',
+            'no_transactions_found' => 'No transactions found',
+            'transaction_details' => 'Transaction Details',
+            'select_wallet_for_history' => 'Select wallet to view history',
             'my_wallets' => 'My Wallets',
             'my_saved_wallets' => 'My Saved Wallets',
             'language' => 'Language',
@@ -84,6 +89,62 @@ function loadLanguage($lang) {
             'min_amount' => 'Minimum amount:',
             'copied' => 'Copied to clipboard!',
             'copy_mnemonic' => 'Copy Phrase',
+            'click_word_to_copy' => 'Tip: Click on any word to copy it individually',
+            'all_types' => 'All Types',
+            'sent' => 'Sent',
+            'received' => 'Received',
+            'type_filter' => 'Type Filter',
+            'clear' => 'Clear',
+            'details' => 'Details',
+            'transaction_details' => 'Transaction Details',
+            'loading_transactions' => 'Loading transactions...',
+            'error_loading_transactions' => 'Error loading transactions',
+            'no_transaction_history' => 'No transaction history found for this wallet',
+            'transactions' => 'transactions',
+            'transaction_hash' => 'Transaction Hash',
+            'from_address' => 'From Address',
+            'to_address' => 'To Address',
+            'amount' => 'Amount',
+            'fee' => 'Transaction Fee',
+            'timestamp' => 'Date & Time',
+            'block_height' => 'Block Height',
+            'confirmations' => 'Confirmations',
+            'status' => 'Status',
+            'memo' => 'Memo',
+            'encrypted_message' => 'Encrypted Message',
+            'decrypt_message' => 'Decrypt Message',
+            'enter_private_key_decrypt' => 'Enter your private key to decrypt the message',
+            'decrypted_message' => 'Decrypted Message',
+            'decrypt' => 'Decrypt',
+            'decryption_failed' => 'Decryption failed',
+            'page' => 'Page',
+            'of' => 'of',
+            'showing' => 'Showing',
+            'to' => 'to',
+            'entries' => 'entries',
+            'previous' => 'Previous',
+            'next' => 'Next',
+            'per_page' => 'Per page',
+            'view_details' => 'View Details',
+            'decrypting' => 'Decrypting...',
+            'message_decrypted' => 'Message decrypted successfully',
+            'transaction_not_found' => 'Transaction not found',
+            'pending' => 'Pending',
+            'confirmed' => 'Confirmed',
+            'unconfirmed' => 'Unconfirmed',
+            'from' => 'From',
+            'to' => 'To',
+            'has_encrypted_message' => 'Has encrypted message',
+            'click_to_decrypt' => 'Click envelope to decrypt',
+            'blockchain_info' => 'Blockchain Information',
+            'blockchain_info_description' => 'View blockchain network status and statistics',
+            'smart_contracts' => 'Smart Contracts',
+            'smart_contracts_description' => 'Deploy and interact with smart contracts',
+            'settings' => 'Settings',
+            'settings_description' => 'Configure wallet and network settings',
+            'feature_coming_soon' => 'This feature is coming soon!',
+            'message_encrypted' => 'This message is encrypted. Enter your private key to decrypt it.',
+            'block' => 'Block',
             'no_wallets_found' => 'No wallets found',
             'error_creating_wallet' => 'Error creating wallet:',
             'error_loading_wallets' => 'Error loading wallets:',
@@ -100,6 +161,7 @@ function loadLanguage($lang) {
             'transfer_amount' => 'Amount to Transfer',
             'memo_optional' => 'Memo (optional)',
             'memo_placeholder' => 'Enter memo for transfer...',
+            'memo_too_long' => 'Message is too long. Maximum 1000 characters allowed.',
             'send_transfer' => 'Send Transfer',
             'transfer_successful' => 'Transfer Successful!',
             'transfer_failed' => 'Transfer Failed',
@@ -118,7 +180,13 @@ function loadLanguage($lang) {
             'transaction_confirmed' => 'Transaction confirmed in blockchain',
             'rewards_earned' => 'Rewards Earned',
             'total_received' => 'Total Received',
-            'days_until_unlock' => 'Days Until Unlock'
+            'days_until_unlock' => 'Days Until Unlock',
+            'about' => 'About',
+            'about_description' => 'About this blockchain wallet',
+            'about_info' => 'Secure blockchain wallet for managing your digital assets',
+            'settings' => 'Settings',
+            'settings_description' => 'Configure wallet and network settings',
+            'feature_coming_soon' => 'This feature is coming soon!'
         ],
         'ru' => [
             'title' => 'Blockchain Кошелёк',
@@ -127,8 +195,13 @@ function loadLanguage($lang) {
             'create_new_wallet' => 'Создать новый кошелёк',
             'restore_wallet' => 'Восстановить кошелёк',
             'restore_wallet_desc' => 'Восстановить из сид-фразы',
-            'all_wallets' => 'Все кошельки',
-            'show_all_wallets' => 'Показать все кошельки',
+            'transaction_history' => 'История транзакций',
+            'show_transaction_history' => 'Просмотр истории транзакций',
+            'decrypt_message' => 'Расшифровать сообщение',
+            'encrypted_message' => 'Зашифрованное сообщение',
+            'no_transactions_found' => 'Транзакции не найдены',
+            'transaction_details' => 'Детали транзакции',
+            'select_wallet_for_history' => 'Выберите кошелек для просмотра истории',
             'my_wallets' => 'Мои кошельки',
             'my_saved_wallets' => 'Мои сохранённые кошельки',
             'language' => 'Язык',
@@ -181,6 +254,62 @@ function loadLanguage($lang) {
             'min_amount' => 'Минимальная сумма:',
             'copied' => 'Скопировано в буфер обмена!',
             'copy_mnemonic' => 'Скопировать фразу',
+            'click_word_to_copy' => 'Подсказка: Нажмите на любое слово, чтобы скопировать его',
+            'all_types' => 'Все типы',
+            'sent' => 'Отправлено',
+            'received' => 'Получено',
+            'type_filter' => 'Фильтр по типу',
+            'clear' => 'Очистить',
+            'details' => 'Подробности',
+            'transaction_details' => 'Детали транзакции',
+            'loading_transactions' => 'Загрузка транзакций...',
+            'error_loading_transactions' => 'Ошибка загрузки транзакций',
+            'no_transaction_history' => 'История транзакций для этого кошелька не найдена',
+            'transactions' => 'транзакций',
+            'transaction_hash' => 'Хеш транзакции',
+            'from_address' => 'Адрес отправителя',
+            'to_address' => 'Адрес получателя',
+            'amount' => 'Сумма',
+            'fee' => 'Комиссия',
+            'timestamp' => 'Дата и время',
+            'block_height' => 'Высота блока',
+            'confirmations' => 'Подтверждения',
+            'status' => 'Статус',
+            'memo' => 'Заметка',
+            'encrypted_message' => 'Зашифрованное сообщение',
+            'decrypt_message' => 'Расшифровать сообщение',
+            'enter_private_key_decrypt' => 'Введите ваш приватный ключ для расшифровки сообщения',
+            'decrypted_message' => 'Расшифрованное сообщение',
+            'decrypt' => 'Расшифровать',
+            'decryption_failed' => 'Расшифровка не удалась',
+            'page' => 'Страница',
+            'of' => 'из',
+            'showing' => 'Показано',
+            'to' => 'до',
+            'entries' => 'записей',
+            'previous' => 'Предыдущая',
+            'next' => 'Следующая',
+            'per_page' => 'На странице',
+            'view_details' => 'Подробнее',
+            'decrypting' => 'Расшифровка...',
+            'message_decrypted' => 'Сообщение успешно расшифровано',
+            'transaction_not_found' => 'Транзакция не найдена',
+            'pending' => 'Ожидает',
+            'confirmed' => 'Подтверждено',
+            'unconfirmed' => 'Не подтверждено',
+            'from' => 'От',
+            'to' => 'К',
+            'has_encrypted_message' => 'Содержит зашифрованное сообщение',
+            'click_to_decrypt' => 'Нажмите конверт для расшифровки',
+            'blockchain_info' => 'Информация о блокчейне',
+            'blockchain_info_description' => 'Просмотр статуса и статистики сети блокчейн',
+            'smart_contracts' => 'Смарт-контракты',
+            'smart_contracts_description' => 'Развертывание и взаимодействие со смарт-контрактами',
+            'settings' => 'Настройки',
+            'settings_description' => 'Настройка кошелька и параметров сети',
+            'feature_coming_soon' => 'Эта функция скоро появится!',
+            'message_encrypted' => 'Это сообщение зашифровано. Введите ваш приватный ключ для расшифровки.',
+            'block' => 'Блок',
             'no_wallets_found' => 'Кошельки не найдены',
             'error_creating_wallet' => 'Ошибка создания кошелька:',
             'error_loading_wallets' => 'Ошибка загрузки кошельков:',
@@ -197,6 +326,7 @@ function loadLanguage($lang) {
             'transfer_amount' => 'Сумма перевода',
             'memo_optional' => 'Заметка (необязательно)',
             'memo_placeholder' => 'Введите заметку к переводу...',
+            'memo_too_long' => 'Сообщение слишком длинное. Максимум 1000 символов.',
             'send_transfer' => 'Отправить перевод',
             'transfer_successful' => 'Перевод выполнен!',
             'transfer_failed' => 'Ошибка перевода',
@@ -215,7 +345,13 @@ function loadLanguage($lang) {
             'transaction_confirmed' => 'Транзакция подтверждена в блокчейне',
             'rewards_earned' => 'Заработанные награды',
             'total_received' => 'Получено всего',
-            'days_until_unlock' => 'Дней до разблокировки'
+            'days_until_unlock' => 'Дней до разблокировки',
+            'about' => 'О приложении',
+            'about_description' => 'О данном блокчейн кошельке',
+            'about_info' => 'Безопасный блокчейн кошелёк для управления цифровыми активами',
+            'settings' => 'Настройки',
+            'settings_description' => 'Настройка кошелька и сети',
+            'feature_coming_soon' => 'Эта функция скоро будет доступна!'
         ]
     ];
     
@@ -381,6 +517,7 @@ function getLanguageOptions($currentLang) {
         .icon-warning { background: var(--warning-gradient); color: white; }
         .icon-info { background: var(--info-gradient); color: #333; }
         .icon-primary { background: var(--primary-gradient); color: white; }
+        .icon-settings { background: var(--dark-gradient); color: white; }
 
         /* Button Styles */
         .btn-modern {
@@ -469,20 +606,32 @@ function getLanguageOptions($currentLang) {
         /* Mnemonic Grid */
         .mnemonic-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 10px;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 12px;
             margin: 20px 0;
+            max-width: 100%;
         }
 
         .mnemonic-word {
             background: linear-gradient(135deg, #fff 0%, #f8f9fa 100%);
             border: 2px solid #e9ecef;
             border-radius: 10px;
+            padding: 12px 8px;
             text-align: center;
             font-family: 'Courier New', monospace;
             font-weight: bold;
+            font-size: 0.9em;
+            line-height: 1.2;
+            min-height: 60px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
             transition: var(--transition);
             cursor: pointer;
+            word-break: break-word;
+            hyphens: auto;
+            overflow-wrap: break-word;
         }
 
         .mnemonic-word:hover {
@@ -491,12 +640,142 @@ function getLanguageOptions($currentLang) {
             box-shadow: 0 5px 15px rgba(0,0,0,0.1);
         }
 
+        .mnemonic-word:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            border-color: #5a67d8;
+        }
+
         .word-number {
             display: block;
-            font-size: 0.8em;
+            font-size: 0.75em;
             color: #6c757d;
             margin-bottom: 4px;
             font-weight: normal;
+            flex-shrink: 0;
+        }
+
+        .word-text {
+            font-size: 0.85em;
+            color: #495057;
+            font-weight: bold;
+            word-break: break-word;
+            hyphens: auto;
+            max-width: 100%;
+        }
+
+        /* Адаптивные стили для мнемонических слов */
+        @media (max-width: 768px) {
+            .mnemonic-grid {
+                grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+                gap: 8px;
+            }
+            
+            .mnemonic-word {
+                padding: 10px 6px;
+                min-height: 55px;
+                font-size: 0.85em;
+            }
+            
+            .word-number {
+                font-size: 0.7em;
+            }
+            
+            .word-text {
+                font-size: 0.8em;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .mnemonic-grid {
+                grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+                gap: 6px;
+            }
+            
+            .mnemonic-word {
+                padding: 8px 4px;
+                min-height: 50px;
+                font-size: 0.8em;
+            }
+            
+            .word-number {
+                font-size: 0.65em;
+                margin-bottom: 2px;
+            }
+            
+            .word-text {
+                font-size: 0.75em;
+            }
+        }
+
+        .mnemonic-word-container {
+            display: contents; /* Позволяет элементу не влиять на grid-layout */
+        }
+
+        /* Transaction and Pagination Styles */
+        .transaction-row {
+            transition: var(--transition);
+        }
+
+        .transaction-row:hover {
+            background-color: rgba(102, 126, 234, 0.05);
+            border-color: rgba(102, 126, 234, 0.2);
+        }
+
+        .pagination .page-link {
+            border-radius: 10px;
+            margin: 0 2px;
+            border: 2px solid #e9ecef;
+            color: #667eea;
+            font-weight: 500;
+            transition: var(--transition);
+        }
+
+        .pagination .page-link:hover {
+            background-color: #667eea;
+            border-color: #667eea;
+            color: white;
+            transform: translateY(-1px);
+        }
+
+        .pagination .page-item.active .page-link {
+            background: var(--primary-gradient);
+            border-color: #667eea;
+            color: white;
+        }
+
+        .pagination .page-item.disabled .page-link {
+            background-color: #f8f9fa;
+            border-color: #e9ecef;
+            color: #6c757d;
+            cursor: not-allowed;
+        }
+
+        /* Enhanced transaction details modal */
+        .font-monospace {
+            font-family: 'Courier New', Monaco, monospace !important;
+            font-size: 0.9em;
+        }
+
+        .transaction-overview .card {
+            transition: var(--transition);
+        }
+
+        .transaction-overview .card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--card-hover-shadow);
+        }
+
+        /* Copy button enhancements */
+        .btn-outline-secondary {
+            border-color: #e9ecef;
+            transition: var(--transition);
+        }
+
+        .btn-outline-secondary:hover {
+            background-color: #667eea;
+            border-color: #667eea;
+            color: white;
         }
 
         /* Alert Styles */
@@ -591,6 +870,206 @@ function getLanguageOptions($currentLang) {
                 opacity: 1;
             }
         }
+
+        /* Mobile Menu Styles */
+        .mobile-menu-toggle {
+            display: none;
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1001;
+            background: rgba(255,255,255,0.9);
+            border: none;
+            border-radius: 10px;
+            padding: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            backdrop-filter: blur(10px);
+            transition: var(--transition);
+        }
+
+        .mobile-menu-toggle:hover {
+            background: rgba(255,255,255,1);
+            transform: scale(1.1);
+        }
+
+        .mobile-menu-toggle .hamburger {
+            width: 24px;
+            height: 18px;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .mobile-menu-toggle .hamburger span {
+            display: block;
+            position: absolute;
+            height: 3px;
+            width: 100%;
+            background: #333;
+            border-radius: 2px;
+            transition: all 0.3s ease;
+        }
+
+        .mobile-menu-toggle .hamburger span:nth-child(1) { top: 0; }
+        .mobile-menu-toggle .hamburger span:nth-child(2) { top: 7px; }
+        .mobile-menu-toggle .hamburger span:nth-child(3) { top: 14px; }
+
+        .mobile-menu-toggle.active .hamburger span:nth-child(1) {
+            transform: rotate(45deg);
+            top: 7px;
+        }
+
+        .mobile-menu-toggle.active .hamburger span:nth-child(2) {
+            opacity: 0;
+        }
+
+        .mobile-menu-toggle.active .hamburger span:nth-child(3) {
+            transform: rotate(-45deg);
+            top: 7px;
+        }
+
+        .mobile-menu-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 999;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .mobile-menu-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .mobile-menu {
+            position: fixed;
+            top: 0;
+            right: -100%;
+            width: 300px;
+            max-width: 85vw;
+            height: 100vh;
+            background: white;
+            z-index: 1000;
+            padding: 80px 0 20px;
+            transition: all 0.3s ease;
+            box-shadow: -5px 0 20px rgba(0,0,0,0.2);
+            overflow-y: auto;
+            border-left: 1px solid #e9ecef;
+        }
+
+        .mobile-menu.active {
+            right: 0;
+        }
+
+        .mobile-menu-item {
+            display: block;
+            padding: 18px 25px;
+            margin: 0;
+            background: transparent;
+            border: none;
+            border-bottom: 1px solid #f0f0f0;
+            text-align: left;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            color: #333;
+            font-size: 16px;
+            font-weight: 500;
+            text-decoration: none;
+            position: relative;
+        }
+            border: none;
+            border-radius: 12px;
+            text-decoration: none;
+            color: #333;
+            font-weight: 500;
+            transition: var(--transition);
+            cursor: pointer;
+            width: 100%;
+            text-align: left;
+        }
+
+        .mobile-menu-item:hover {
+            background: var(--primary-gradient);
+            color: white;
+            transform: translateX(5px);
+        }
+
+        .mobile-menu-item i {
+            width: 20px;
+            margin-right: 10px;
+        }
+
+        /* Mobile responsive adjustments */
+        @media (max-width: 768px) {
+            .mobile-menu-toggle {
+                display: block;
+                z-index: 1001;
+            }
+
+            /* Hide action cards on mobile - use mobile menu instead */
+            #walletControls {
+                display: none !important;
+            }
+            
+            .wallet-header {
+                padding-right: 80px; /* Space for hamburger button */
+                position: relative;
+            }
+
+            .container {
+                padding-top: 20px;
+            }
+
+            /* Improve mobile layout */
+            .wallet-info {
+                margin-bottom: 1rem;
+            }
+
+            .balance-display {
+                font-size: 1.2rem;
+            }
+
+            /* Mobile menu improvements */
+            .mobile-menu-toggle {
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                z-index: 1001;
+                background: var(--primary-color);
+                border: none;
+                border-radius: 50%;
+                width: 50px;
+                height: 50px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            }
+
+            .mobile-menu {
+                top: 80px; /* Below the hamburger button */
+            }
+        }
+
+        /* Desktop - show action cards, hide mobile menu */
+        @media (min-width: 769px) {
+            .mobile-menu-toggle {
+                display: none !important;
+            }
+            
+            .mobile-menu-overlay,
+            .mobile-menu {
+                display: none !important;
+            }
+
+            #walletControls {
+                display: flex !important;
+            }
+        }
     </style>
 </head>
 <body>
@@ -604,6 +1083,66 @@ function getLanguageOptions($currentLang) {
         <div class="container text-center">
             <h1><i class="fas fa-wallet me-3"></i><?php echo $t['title']; ?></h1>
             <p class="mb-0 opacity-75"><?php echo $t['subtitle']; ?></p>
+        </div>
+    </div>
+
+    <!-- Mobile Menu Toggle -->
+    <button class="mobile-menu-toggle" onclick="toggleMobileMenu()">
+        <div class="hamburger">
+            <span></span>
+            <span></span>
+            <span></span>
+        </div>
+    </button>
+
+    <!-- Mobile Menu Overlay -->
+    <div class="mobile-menu-overlay" onclick="closeMobileMenu()"></div>
+
+    <!-- Mobile Menu -->
+    <div class="mobile-menu">
+        <div class="mobile-menu-item" onclick="startWalletCreation(); closeMobileMenu();">
+            <i class="fas fa-plus-circle"></i>
+            <?php echo $t['create_wallet']; ?>
+        </div>
+        <div class="mobile-menu-item" onclick="showRestoreModal(); closeMobileMenu();">
+            <i class="fas fa-download"></i>
+            <?php echo $t['restore_wallet']; ?>
+        </div>
+        <div class="mobile-menu-item" onclick="showTransactionHistory(); closeMobileMenu();">
+            <i class="fas fa-history"></i>
+            <?php echo $t['transaction_history']; ?>
+        </div>
+        <div class="mobile-menu-item" onclick="showMyWallets(); closeMobileMenu();">
+            <i class="fas fa-wallet"></i>
+            <?php echo $t['my_wallets']; ?>
+        </div>
+        <div class="mobile-menu-item" onclick="showTransferModal(); closeMobileMenu();">
+            <i class="fas fa-paper-plane"></i>
+            <?php echo $t['transfer'] ?? 'Send Tokens'; ?>
+        </div>
+        <div class="mobile-menu-item" onclick="showStakingModal(); closeMobileMenu();">
+            <i class="fas fa-chart-line"></i>
+            <?php echo $t['staking'] ?? 'Staking'; ?>
+        </div>
+        <div class="mobile-menu-item" onclick="showDashboard(); closeMobileMenu();">
+            <i class="fas fa-tachometer-alt"></i>
+            <?php echo $t['dashboard'] ?? 'Dashboard'; ?>
+        </div>
+        <div class="mobile-menu-item" onclick="showBlockchainInfo(); closeMobileMenu();">
+            <i class="fas fa-info-circle"></i>
+            <?php echo $t['blockchain_info'] ?? 'Blockchain Info'; ?>
+        </div>
+        <div class="mobile-menu-item" onclick="showSmartContracts(); closeMobileMenu();">
+            <i class="fas fa-file-contract"></i>
+            <?php echo $t['smart_contracts'] ?? 'Smart Contracts'; ?>
+        </div>
+        <div class="mobile-menu-item" onclick="showSettings(); closeMobileMenu();">
+            <i class="fas fa-cogs"></i>
+            <?php echo $t['settings'] ?? 'Settings'; ?>
+        </div>
+        <div class="mobile-menu-item" onclick="showAbout(); closeMobileMenu();">
+            <i class="fas fa-info-circle"></i>
+            <?php echo $t['about'] ?? 'About'; ?>
         </div>
     </div>
 
@@ -629,12 +1168,12 @@ function getLanguageOptions($currentLang) {
                 </div>
             </div>
             <div class="col-lg-3 col-md-6 mb-3">
-                <div class="action-card" onclick="listWallets()">
+                <div class="action-card" onclick="showTransactionHistory()">
                     <div class="action-icon icon-info">
-                        <i class="fas fa-list"></i>
+                        <i class="fas fa-history"></i>
                     </div>
-                    <h5 class="fw-bold"><?php echo $t['all_wallets']; ?></h5>
-                    <p class="text-muted mb-0"><?php echo $t['show_all_wallets']; ?></p>
+                    <h5 class="fw-bold"><?php echo $t['transaction_history']; ?></h5>
+                    <p class="text-muted mb-0"><?php echo $t['show_transaction_history']; ?></p>
                 </div>
             </div>
             <div class="col-lg-3 col-md-6 mb-3">
@@ -680,6 +1219,10 @@ function getLanguageOptions($currentLang) {
                                 <strong><?php echo $t['important']; ?>!</strong> <?php echo $t['mnemonic_warning']; ?>
                             </div>
                             <div class="mnemonic-grid" id="mnemonicWords"></div>
+                            <div class="alert alert-info alert-modern">
+                                <i class="fas fa-info-circle me-2"></i>
+                                <?php echo $t['click_word_to_copy']; ?>
+                            </div>
                             <div class="alert alert-danger alert-modern">
                                 <i class="fas fa-lock me-2"></i>
                                 <strong><?php echo $t['warning']; ?>:</strong> <?php echo $t['mnemonic_danger']; ?>
@@ -811,11 +1354,14 @@ function getLanguageOptions($currentLang) {
                         
                         <div class="mb-3">
                             <label for="transferMemo" class="form-label fw-bold"><?php echo $t['memo_optional']; ?></label>
-                            <textarea class="form-control" id="transferMemo" rows="2" 
+                            <textarea class="form-control" id="transferMemo" rows="2" maxlength="1000"
                                       placeholder="<?php echo $t['memo_placeholder']; ?>"></textarea>
                             <div class="form-text">
                                 <i class="fas fa-lock text-success me-1"></i>
-                                Messages are automatically encrypted for security
+                                All messages are automatically encrypted for security
+                                <span class="ms-2">
+                                    <span id="memoCharCount">0</span>/1000 characters
+                                </span>
                             </div>
                         </div>
                         
@@ -869,7 +1415,7 @@ function getLanguageOptions($currentLang) {
                                        step="0.01" min="100" required>
                                 <span class="input-group-text" id="stakingSymbol">COIN</span>
                             </div>
-                            <div class="form-text"><?php echo $t['min_amount']; ?> 100 COIN</div>
+                            <div class="form-text" id="minStakeText"><?php echo $t['min_amount']; ?> <span id="minStakeAmount">100</span> <span class="crypto-symbol">COIN</span></div>
                         </div>
                         
                         <div class="mb-3">
@@ -912,12 +1458,56 @@ function getLanguageOptions($currentLang) {
         </div>
     </div>
 
+    <!-- Decrypt Message Modal -->
+    <div class="modal fade" id="decryptMessageModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="fas fa-lock-open me-2"></i><?php echo $t['decrypt_message'] ?? 'Decrypt Message'; ?>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-info alert-modern">
+                        <i class="fas fa-info-circle me-2"></i>
+                        <?php echo $t['decrypt_message_info'] ?? 'Enter your private key to decrypt the encrypted message.'; ?>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="decryptPrivateKey" class="form-label fw-bold"><?php echo $t['private_key']; ?></label>
+                        <input type="password" class="form-control" id="decryptPrivateKey" required 
+                               placeholder="<?php echo $t['enter_private_key']; ?>">
+                    </div>
+                    
+                    <div id="decryptedMessage" style="display: none;">
+                        <div class="alert alert-success alert-modern">
+                            <h6><i class="fas fa-check-circle me-2"></i><?php echo $t['decrypted_message'] ?? 'Decrypted Message'; ?></h6>
+                            <div id="messageContent" class="mt-2"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary btn-modern" data-bs-dismiss="modal"><?php echo $t['close']; ?></button>
+                    <button type="button" class="btn btn-primary btn-modern" onclick="decryptMessageFromModal()" id="decryptBtn">
+                        <i class="fas fa-lock-open me-2"></i><?php echo $t['decrypt'] ?? 'Decrypt'; ?>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         // Global variables
         let currentMnemonic = [];
         let currentWalletData = null;
         let cryptoSymbol = 'COIN';
+        let minStakeAmount = 100;
+        let currentTransactions = [];
+        let currentPage = 1;
+        let itemsPerPage = 10;
+        let totalTransactions = 0;
         
         // Language and translation
         const translations = <?php echo json_encode(['current_lang' => $language, 'translations' => $t]); ?>;
@@ -929,6 +1519,42 @@ function getLanguageOptions($currentLang) {
             url.searchParams.set('lang', lang);
             window.location.href = url.toString();
         }
+
+        // Mobile menu functions
+        function toggleMobileMenu() {
+            const menuToggle = document.querySelector('.mobile-menu-toggle');
+            const menuOverlay = document.querySelector('.mobile-menu-overlay');
+            const menu = document.querySelector('.mobile-menu');
+
+            menuToggle.classList.toggle('active');
+            menuOverlay.classList.toggle('active');
+            menu.classList.toggle('active');
+
+            // Prevent body scroll when menu is open
+            if (menu.classList.contains('active')) {
+                document.body.style.overflow = 'hidden';
+            } else {
+                document.body.style.overflow = '';
+            }
+        }
+
+        function closeMobileMenu() {
+            const menuToggle = document.querySelector('.mobile-menu-toggle');
+            const menuOverlay = document.querySelector('.mobile-menu-overlay');
+            const menu = document.querySelector('.mobile-menu');
+
+            menuToggle.classList.remove('active');
+            menuOverlay.classList.remove('active');
+            menu.classList.remove('active');
+            document.body.style.overflow = '';
+        }
+
+        // Close mobile menu on window resize if desktop
+        window.addEventListener('resize', function() {
+            if (window.innerWidth > 768) {
+                closeMobileMenu();
+            }
+        });
         
         // Load configuration
         async function loadConfig() {
@@ -942,9 +1568,11 @@ function getLanguageOptions($currentLang) {
                 const data = await response.json();
                 if (data.success && data.config) {
                     cryptoSymbol = data.config.crypto_symbol || 'COIN';
+                    minStakeAmount = parseFloat(data.config.min_stake_amount) || 100;
                     
                     // Update all symbol displays
                     updateSymbolDisplays(cryptoSymbol);
+                    updateMinStakeDisplay();
                     
                     console.log('Config loaded:', data.config);
                 } else {
@@ -974,9 +1602,41 @@ function getLanguageOptions($currentLang) {
             });
         }
         
+        // Update minimum stake amount display
+        function updateMinStakeDisplay() {
+            const minStakeAmountElement = document.getElementById('minStakeAmount');
+            if (minStakeAmountElement) {
+                minStakeAmountElement.textContent = minStakeAmount;
+            }
+            
+            const stakingAmountInput = document.getElementById('stakingAmount');
+            if (stakingAmountInput) {
+                stakingAmountInput.min = minStakeAmount;
+            }
+        }
+        
         // Initialize
         document.addEventListener('DOMContentLoaded', loadConfig);
         
+        // UTF-8 safe base64 encoding/decoding functions
+        function utf8ToBase64(str) {
+            try {
+                return btoa(unescape(encodeURIComponent(str)));
+            } catch (e) {
+                console.error('UTF-8 to Base64 encoding failed:', e);
+                return '';
+            }
+        }
+        
+        function base64ToUtf8(str) {
+            try {
+                return decodeURIComponent(escape(atob(str)));
+            } catch (e) {
+                console.error('Base64 to UTF-8 decoding failed:', e);
+                return str;
+            }
+        }
+
         // Notification system
         function showNotification(message, type = 'info') {
             const alertClass = type === 'danger' ? 'alert-danger' : 
@@ -1008,6 +1668,21 @@ function getLanguageOptions($currentLang) {
                 document.execCommand('copy');
                 document.body.removeChild(textArea);
                 showNotification(t.copied, 'success');
+            }
+        }
+        
+        // Toggle private key visibility
+        function togglePrivateKey(elementId) {
+            const input = document.getElementById(elementId);
+            const icon = event.currentTarget.querySelector('i');
+            if (input.type === 'password') {
+                input.type = 'text';
+                icon.classList.remove('fa-eye');
+                icon.classList.add('fa-eye-slash');
+            } else {
+                input.type = 'password';
+                icon.classList.remove('fa-eye-slash');
+                icon.classList.add('fa-eye');
             }
         }
         
@@ -1059,7 +1734,7 @@ function getLanguageOptions($currentLang) {
             
             words.forEach((word, index) => {
                 const wordDiv = document.createElement('div');
-                wordDiv.className = 'col-md-3 col-6';
+                wordDiv.className = 'mnemonic-word-container';
                 wordDiv.innerHTML = `
                     <div class="mnemonic-word" onclick="copyToClipboard('${word}')">
                         <span class="word-number">${index + 1}</span>
@@ -1124,6 +1799,32 @@ function getLanguageOptions($currentLang) {
                     currentWalletData = data.wallet;
                     showWalletResult(data.wallet, 'created');
                 } else {
+                    // Check if error is about existing wallet
+                    if (data.error && data.error.includes('already exists')) {
+                        // Show special error message with restore option
+                        const restoreConfirm = confirm(
+                            'This mnemonic phrase corresponds to an existing wallet. ' +
+                            'Would you like to restore the existing wallet instead of creating a new one?\n\n' +
+                            'Click OK to restore the wallet, or Cancel to try a different mnemonic phrase.'
+                        );
+                        
+                        if (restoreConfirm) {
+                            // Close create modal and open restore modal with current mnemonic
+                            const createModal = bootstrap.Modal.getInstance(document.getElementById('createWalletModal'));
+                            createModal.hide();
+                            
+                            // Wait a bit for modal to close, then open restore modal
+                            setTimeout(() => {
+                                showRestoreModal();
+                                // Pre-fill the mnemonic
+                                document.getElementById('restoreMnemonic').value = currentMnemonic.join(' ');
+                                validateRestoreMnemonic();
+                            }, 500);
+                            
+                            return;
+                        }
+                    }
+                    
                     showNotification(t.error_creating_wallet + ' ' + data.error, 'danger');
                 }
             } catch (error) {
@@ -1152,11 +1853,26 @@ function getLanguageOptions($currentLang) {
                 <div class="wallet-info">
                     <div class="mb-3">
                         <label class="form-label fw-bold">${t.address}:</label>
-                        <div class="address-display d-flex justify-content-between align-items-center">
-                            <span class="flex-grow-1">${wallet.address}</span>
-                            <button class="btn btn-sm btn-outline-primary" onclick="copyToClipboard('${wallet.address}')">
-                                <i class="fas fa-copy"></i>
-                            </button>
+                        <div class="input-group">
+                            <input type="text" class="form-control" value="${wallet.address}" readonly>
+                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${wallet.address}')"><i class="fas fa-copy"></i></button>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">${t.public_key}:</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control" value="${wallet.public_key}" readonly>
+                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${wallet.public_key}')"><i class="fas fa-copy"></i></button>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">${t.private_key}:</label>
+                        <div class="input-group">
+                            <input type="password" class="form-control" value="${wallet.private_key}" readonly id="createPrivateKey">
+                            <button class="btn btn-outline-secondary" onclick="togglePrivateKey('createPrivateKey')"><i class="fas fa-eye"></i></button>
+                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${wallet.private_key}')"><i class="fas fa-copy"></i></button>
                         </div>
                     </div>
                     
@@ -1164,6 +1880,7 @@ function getLanguageOptions($currentLang) {
                         <label class="form-label fw-bold">${t.balance}:</label>
                         <div class="balance-display">
                             <span class="h5 text-success">${wallet.balance || 0} ${cryptoSymbol}</span>
+                            ${wallet.staked_balance > 0 ? `<br><small class="text-info">Staked: ${wallet.staked_balance} ${cryptoSymbol}</small>` : ''}
                         </div>
                     </div>
                     
@@ -1253,12 +1970,21 @@ function getLanguageOptions($currentLang) {
         
         // Show restore result
         function showRestoreResult(wallet, verification = {}) {
-            const isActive = verification?.exists_in_blockchain || false;
-            const txCount = verification?.transaction_count || 0;
+            // Кошелек считается активным если:
+            // 1. Он существует в блокчейне (найдены транзакции) - даже с балансом 0
+            // 2. У него есть записи в blockchain verification
+            const existsInBlockchain = verification?.exists_in_blockchain || false;
+            const hasTransactions = (verification?.transaction_count || 0) > 0;
+            
+            // Кошелек активен если он существует в блокчейне ИЛИ есть транзакции
+            // Баланс не важен - если кошелек был когда-то использован, он уже активен
+            const isActive = existsInBlockchain || hasTransactions;
+            
             const statusIcon = isActive ? 'check-circle text-success' : 'info-circle text-warning';
             const statusText = isActive ? 'Active in blockchain' : 'Ready for activation';
             
             let activationButton = '';
+            // Показываем кнопку активации только если кошелек НЕ найден в блокчейне
             if (!isActive) {
                 activationButton = `
                     <button class="btn btn-warning btn-modern me-2" onclick="activateWallet('${wallet.address}', '${wallet.public_key}')">
@@ -1275,17 +2001,32 @@ function getLanguageOptions($currentLang) {
                         <i class="fas fa-${statusIcon} me-2"></i>
                         <span class="fw-bold">${statusText}</span>
                     </div>
-                    ${txCount > 0 ? `<small class="text-muted">Found ${txCount} transaction(s)</small>` : ''}
+                    ${hasTransactions ? `<small class="text-muted">Found ${verification.transaction_count} transaction(s)</small>` : ''}
                 </div>
                 
                 <div class="wallet-info">
                     <div class="mb-3">
                         <label class="form-label fw-bold">${t.address}:</label>
-                        <div class="address-display d-flex justify-content-between align-items-center">
-                            <span class="flex-grow-1">${wallet.address}</span>
-                            <button class="btn btn-sm btn-outline-primary" onclick="copyToClipboard('${wallet.address}')">
-                                <i class="fas fa-copy"></i>
-                            </button>
+                        <div class="input-group">
+                            <input type="text" class="form-control" value="${wallet.address}" readonly>
+                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${wallet.address}')"><i class="fas fa-copy"></i></button>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">${t.public_key}:</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control" value="${wallet.public_key}" readonly>
+                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${wallet.public_key}')"><i class="fas fa-copy"></i></button>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">${t.private_key}:</label>
+                        <div class="input-group">
+                            <input type="password" class="form-control" value="${wallet.private_key}" readonly id="restorePrivateKey">
+                            <button class="btn btn-outline-secondary" onclick="togglePrivateKey('restorePrivateKey')"><i class="fas fa-eye"></i></button>
+                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${wallet.private_key}')"><i class="fas fa-copy"></i></button>
                         </div>
                     </div>
                     
@@ -1322,6 +2063,32 @@ function getLanguageOptions($currentLang) {
             button.disabled = true;
             
             try {
+                // Сначала проверим, есть ли кошелек уже в блокчейне
+                const historyResponse = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'get_wallet_transaction_history',
+                        address: address
+                    })
+                });
+                
+                const historyData = await historyResponse.json();
+                
+                // Если у кошелька уже есть история транзакций, он не нуждается в активации
+                if (historyData.success && historyData.transactions && historyData.transactions.length > 0) {
+                    showNotification('Wallet is already active in blockchain (has transaction history)', 'info');
+                    button.style.display = 'none';
+                    // Update status indicator
+                    const statusElements = document.querySelectorAll('.fa-info-circle.text-warning');
+                    statusElements.forEach(el => {
+                        el.className = 'fas fa-check-circle text-success me-2';
+                        el.nextSibling.textContent = 'Active in blockchain';
+                    });
+                    return;
+                }
+                
+                // Если истории нет, выполняем активацию
                 const response = await fetch('wallet_api.php', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1471,6 +2238,20 @@ function getLanguageOptions($currentLang) {
             resultsDiv.innerHTML = html;
         }
         
+        // Show dashboard
+        function showDashboard() {
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = `
+                <div class="action-card text-center">
+                    <div class="action-icon icon-dashboard mx-auto">
+                        <i class="fas fa-tachometer-alt"></i>
+                    </div>
+                    <h5>${t.dashboard || 'Dashboard'}</h5>
+                    <p class="text-muted">${t.dashboard_description || 'Welcome to your blockchain wallet dashboard'}</p>
+                </div>
+            `;
+        }
+        
         // Show my wallets from localStorage
         function showMyWallets() {
             const wallets = JSON.parse(localStorage.getItem('myWallets') || '[]');
@@ -1501,6 +2282,11 @@ function getLanguageOptions($currentLang) {
             
             localStorage.setItem('myWallets', JSON.stringify(wallets));
             showNotification('Wallet added to your list!', 'success');
+        }
+        
+        // Save wallet to local storage (alias for addToWalletList)
+        function saveWalletToLocal(address, privateKey) {
+            return addToWalletList(address, privateKey);
         }
         
         // Check balance
@@ -1589,8 +2375,13 @@ function getLanguageOptions($currentLang) {
             document.getElementById('stakingResult').innerHTML = '';
             document.getElementById('stakingPreview').style.display = 'none';
             
+            // Update minimum stake display
+            updateMinStakeDisplay();
+            
             // Populate wallet selector
             populateWalletSelector('stakingAddress', address);
+            
+            
             
             // Add event listeners for preview
             document.getElementById('stakingAmount').addEventListener('input', updateStakingPreview);
@@ -1598,12 +2389,37 @@ function getLanguageOptions($currentLang) {
         }
         
         // Populate wallet selector
-        function populateWalletSelector(selectId, selectedAddress = '') {
+        async function populateWalletSelector(selectId, selectedAddress = '') {
             const select = document.getElementById(selectId);
             const myWallets = JSON.parse(localStorage.getItem('myWallets') || '[]');
             
             select.innerHTML = '<option value="">Select wallet...</option>';
             
+            // Load balances for all wallets
+            for (const wallet of myWallets) {
+                try {
+                    const response = await fetch('wallet_api.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            action: 'get_balance',
+                            address: wallet.address
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    if (data.success && data.balance) {
+                        wallet.balance = data.balance.available || 0;
+                    }
+                } catch (error) {
+                    console.error('Failed to load balance for', wallet.address, error);
+                }
+            }
+            
+            // Update localStorage with fresh balances
+            localStorage.setItem('myWallets', JSON.stringify(myWallets));
+            
+            // Populate options with updated balances
             myWallets.forEach(wallet => {
                 const option = document.createElement('option');
                 option.value = wallet.address;
@@ -1690,11 +2506,16 @@ function getLanguageOptions($currentLang) {
             const toAddress = document.getElementById('toAddress').value;
             const amount = parseFloat(document.getElementById('transferAmount').value);
             const memo = document.getElementById('transferMemo').value;
-            const encryptMemo = true; // Always encrypt messages
             const privateKey = document.getElementById('transferPrivateKey').value;
             
             if (!fromAddress || !toAddress || !amount || !privateKey) {
                 showNotification('Please fill all required fields', 'danger');
+                return;
+            }
+            
+            // Check memo length
+            if (memo && memo.length > 1000) {
+                showNotification(t.memo_too_long || 'Message is too long. Maximum 1000 characters allowed.', 'danger');
                 return;
             }
             
@@ -1713,8 +2534,7 @@ function getLanguageOptions($currentLang) {
                         to_address: toAddress,
                         amount: amount,
                         private_key: privateKey,
-                        memo: memo,
-                        encrypt_memo: encryptMemo
+                        memo: memo
                     })
                 });
                 
@@ -1755,6 +2575,12 @@ function getLanguageOptions($currentLang) {
             
             if (!address || !amount || !period || !privateKey) {
                 showNotification('Please fill all required fields', 'danger');
+                return;
+            }
+            
+            // Check minimum stake amount
+            if (amount < minStakeAmount) {
+                showNotification(`Minimum staking amount is ${minStakeAmount} ${cryptoSymbol}`, 'danger');
                 return;
             }
             
@@ -1956,27 +2782,412 @@ function getLanguageOptions($currentLang) {
             }
         }
         
-        // Show transaction history with encrypted message support
-        async function showTransactionHistory(address) {
+        // Confirm staking (placeholder function)
+        function confirmStaking() {
+            return confirm(t.confirm_staking || 'Are you sure you want to proceed with staking?');
+        }
+        
+        // Confirm restore (placeholder function)
+        function confirmRestore() {
+            return confirm(t.confirm_restore || 'Are you sure you want to restore this wallet?');
+        }
+        
+        // Close modal (helper function)
+        function closeModal(modalId) {
+            const modal = bootstrap.Modal.getInstance(document.getElementById(modalId));
+            if (modal) {
+                modal.hide();
+            }
+        }
+        
+        // Close mnemonic modal (helper function)
+        function closeMnemonicModal() {
+            closeModal('createWalletModal');
+        }
+        
+        // Show decrypt modal for encrypted messages
+        // Attempt to decrypt message with current wallet's private key, fallback to modal
+        async function attemptAutoDecrypt(encryptedMessageJson) {
+            try {
+                let privateKey = null;
+                
+                // Only try to get private key from current wallet data (if recently created/restored in this session)
+                if (currentWalletData && currentWalletData.private_key) {
+                    privateKey = currentWalletData.private_key;
+                }
+                
+                // If we have a private key from current session, try to decrypt
+                if (privateKey) {
+                    const success = await tryDecryptWithKey(encryptedMessageJson, privateKey);
+                    if (success) {
+                        return; // Successfully decrypted, no need for modal
+                    }
+                }
+                
+                // If auto-decrypt failed or no private key available, show modal
+                showDecryptModal(encryptedMessageJson);
+            } catch (e) {
+                console.error('Error in auto decrypt:', e);
+                showDecryptModal(encryptedMessageJson);
+            }
+        }
+        
+        // Try to decrypt message with given private key
+        async function tryDecryptWithKey(encryptedMessageJson, privateKey) {
             try {
                 const response = await fetch('wallet_api.php', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        action: 'get_transaction_history',
-                        address: address
+                        action: 'decrypt_message',
+                        encrypted_message: encryptedMessageJson,
+                        private_key: privateKey
                     })
                 });
                 
                 const data = await response.json();
                 
                 if (data.success) {
-                    displayTransactionHistory(data.transactions, address);
+                    // Show decrypted message inline
+                    showInlineDecryptedMessage(data.message);
+                    showNotification(t.message_decrypted || 'Message decrypted successfully', 'success');
+                    return true;
                 } else {
-                    showNotification('Failed to load transaction history: ' + data.error, 'danger');
+                    return false;
                 }
             } catch (error) {
-                showNotification('Error: ' + error.message, 'danger');
+                console.error('Decryption error:', error);
+                return false;
+            }
+        }
+        
+        // Show decrypted message inline (temporary notification or toast)
+        function showInlineDecryptedMessage(message) {
+            // Create a temporary modal or notification with the decrypted message
+            const tempModal = document.createElement('div');
+            tempModal.className = 'modal fade';
+            tempModal.innerHTML = `
+                <div class="modal-dialog modal-dialog-centered">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">
+                                <i class="fas fa-unlock text-success me-2"></i>
+                                ${t.decrypted_message || 'Decrypted Message'}
+                            </h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="alert alert-success">
+                                <div class="d-flex justify-content-between align-items-start">
+                                    <div class="flex-grow-1">
+                                        <p class="mb-0">${message}</p>
+                                    </div>
+                                    <button class="btn btn-sm btn-outline-secondary ms-2 copy-message-btn" data-message='${message}'>
+                                        <i class="fas fa-copy"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${t.close || 'Close'}</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            document.body.appendChild(tempModal);
+            const modal = new bootstrap.Modal(tempModal);
+            modal.show();
+            
+            // Remove modal from DOM when hidden
+            tempModal.addEventListener('hidden.bs.modal', function() {
+                document.body.removeChild(tempModal);
+            });
+        }
+
+        // Decrypt message in current modal (for transaction details modal)
+        async function decryptInModal(encryptedMessageJson, buttonElement) {
+            const privateKeyInput = buttonElement.closest('.card-body').querySelector('#decryptPrivateKey');
+            const decryptedDiv = buttonElement.closest('.card-body').querySelector('#decryptedMessage');
+            const messageContentDiv = buttonElement.closest('.card-body').querySelector('#messageContent');
+            
+            const privateKey = privateKeyInput.value.trim();
+            if (!privateKey) {
+                showNotification(t.enter_private_key || 'Please enter your private key', 'warning');
+                return;
+            }
+            
+            const originalText = buttonElement.innerHTML;
+            buttonElement.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>' + (t.decrypting || 'Decrypting...');
+            buttonElement.disabled = true;
+            
+            try {
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'decrypt_message',
+                        encrypted_message: encryptedMessageJson,
+                        private_key: privateKey
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    messageContentDiv.innerHTML = `
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div class="flex-grow-1">
+                                <p class="mb-0">${data.message}</p>
+                            </div>
+                            <button class="btn btn-sm btn-outline-secondary ms-2 copy-message-btn" data-message='${data.message}'>
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                    `;
+                    
+                    decryptedDiv.style.display = 'block';
+                    privateKeyInput.value = ''; // Clear for security
+                    
+                    showNotification(t.message_decrypted || 'Message decrypted successfully', 'success');
+                } else {
+                    showNotification((t.decryption_failed || 'Decryption failed') + ': ' + (data.error || 'Unknown error'), 'danger');
+                }
+            } catch (error) {
+                showNotification(t.error + ': ' + error.message, 'danger');
+            } finally {
+                buttonElement.innerHTML = originalText;
+                buttonElement.disabled = false;
+            }
+        }
+
+        function showDecryptModal(encryptedMessageJson) {
+            try {
+                // Store the encrypted message globally for later use
+                window.currentEncryptedMessage = JSON.parse(encryptedMessageJson);
+                
+                // Clear previous data
+                document.getElementById('decryptPrivateKey').value = '';
+                document.getElementById('decryptedMessage').style.display = 'none';
+                document.getElementById('messageContent').innerHTML = '';
+                
+                // Show modal
+                const modal = new bootstrap.Modal(document.getElementById('decryptMessageModal'));
+                modal.show();
+            } catch (e) {
+                console.error('Error parsing encrypted message:', e);
+                showNotification(t.invalid_encrypted_message || 'Invalid encrypted message format', 'danger');
+            }
+        }
+        
+        // Decrypt message from modal
+        // Decrypt message from modal
+        async function decryptMessageFromModal() {
+            if (!window.currentEncryptedMessage) {
+                showNotification(t.no_encrypted_message || 'No encrypted message to decrypt', 'danger');
+                return;
+            }
+            
+            const privateKey = document.getElementById('decryptPrivateKey').value.trim();
+            if (!privateKey) {
+                showNotification(t.enter_private_key || 'Please enter your private key', 'warning');
+                return;
+            }
+            
+            const decryptButton = document.getElementById('decryptBtn');
+            const originalText = decryptButton.innerHTML;
+            decryptButton.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>' + (t.decrypting || 'Decrypting...');
+            decryptButton.disabled = true;
+            
+            try {
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'decrypt_message',
+                        encrypted_message: JSON.stringify(window.currentEncryptedMessage),
+                        private_key: privateKey
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    const messageContent = document.getElementById('messageContent');
+                    const decryptedDiv = document.getElementById('decryptedMessage');
+                    
+                    messageContent.innerHTML = `
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div class="flex-grow-1">
+                                <p class="mb-0">${data.message}</p>
+                            </div>
+                            <button class="btn btn-sm btn-outline-secondary ms-2 copy-message-btn" data-message='${data.message}'>
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                    `;
+                    
+                    decryptedDiv.style.display = 'block';
+                    document.getElementById('decryptPrivateKey').value = ''; // Clear for security
+                    
+                    showNotification(t.message_decrypted || 'Message decrypted successfully', 'success');
+                } else {
+                    showNotification((t.decryption_failed || 'Decryption failed') + ': ' + (data.error || 'Unknown error'), 'danger');
+                }
+            } catch (error) {
+                showNotification(t.error + ': ' + error.message, 'danger');
+            } finally {
+                decryptButton.innerHTML = originalText;
+                decryptButton.disabled = false;
+            }
+        }
+        
+        // Alias for generateNewMnemonic to match window export
+        function generateMnemonic() {
+            return generateNewMnemonic();
+        }
+        
+        // Show transaction history with encryption support and pagination
+        async function showTransactionHistory(address = null) {
+            // If specific address is provided, load its history directly
+            if (address) {
+                try {
+                    const response = await fetch('wallet_api.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            action: 'get_transaction_history',
+                            address: address
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        displayTransactionHistory(data.transactions, address);
+                    } else {
+                        showNotification('Failed to load transaction history: ' + data.error, 'danger');
+                    }
+                } catch (error) {
+                    showNotification('Error: ' + error.message, 'danger');
+                }
+                return;
+            }
+            
+            // Show wallet selector interface
+            const resultsDiv = document.getElementById('results');
+            const myWallets = JSON.parse(localStorage.getItem('myWallets') || '[]');
+            
+            if (myWallets.length === 0) {
+                resultsDiv.innerHTML = `
+                    <div class="action-card text-center">
+                        <div class="action-icon icon-warning mx-auto">
+                            <i class="fas fa-exclamation-triangle"></i>
+                        </div>
+                        <h5>${t.no_wallets_found}</h5>
+                        <p class="text-muted">${t.select_wallet_for_history}</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            resultsDiv.innerHTML = `
+                <div class="action-card">
+                    <h5><i class="fas fa-history me-2"></i>${t.transaction_history}</h5>
+                    
+                    <div class="row mb-3">
+                        <div class="col-md-4">
+                            <label for="historyWalletSelect" class="form-label fw-bold">${t.select_wallet || 'Select Wallet'}:</label>
+                            <select class="form-select" id="historyWalletSelect" onchange="loadWalletHistory()">
+                                <option value="">${t.select_wallet_for_history || 'Select wallet to view history'}</option>
+                                ${myWallets.map(wallet => 
+                                    `<option value="${wallet.address}">${wallet.address.substring(0, 20)}... (${wallet.balance || 0} ${cryptoSymbol})</option>`
+                                ).join('')}
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label for="transactionTypeFilter" class="form-label fw-bold">${t.type_filter || 'Type Filter'}:</label>
+                            <select class="form-select" id="transactionTypeFilter" onchange="filterTransactions()">
+                                <option value="">${t.all_types || 'All Types'}</option>
+                                <option value="sent">${t.sent || 'Sent'}</option>
+                                <option value="received">${t.received || 'Received'}</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label for="transactionAmountFilter" class="form-label fw-bold">${t.min_amount || 'Min Amount'}:</label>
+                            <input type="number" class="form-control" id="transactionAmountFilter" 
+                                   placeholder="0" step="0.01" onchange="filterTransactions()">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label fw-bold">&nbsp;</label>
+                            <button class="btn btn-outline-secondary d-block w-100" onclick="clearFilters()">
+                                <i class="fas fa-times"></i> ${t.clear || 'Clear'}
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div id="transactionResults">
+                        <div class="text-center text-muted">
+                            <i class="fas fa-arrow-up me-2"></i>
+                            ${t.select_wallet_for_history || 'Select a wallet to view transaction history'}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        // Load wallet transaction history
+        async function loadWalletHistory() {
+            const select = document.getElementById('historyWalletSelect');
+            const address = select.value;
+            const resultsDiv = document.getElementById('transactionResults');
+            
+            if (!address) {
+                resultsDiv.innerHTML = `
+                    <div class="text-center text-muted">
+                        <i class="fas fa-arrow-up me-2"></i>
+                        ${t.select_wallet_for_history || 'Select a wallet to view transaction history'}
+                    </div>
+                `;
+                return;
+            }
+            
+            resultsDiv.innerHTML = `
+                <div class="text-center">
+                    <div class="spinner-border text-primary" role="status"></div>
+                    <p class="mt-2">${t.loading_transactions || 'Loading transactions...'}</p>
+                </div>
+            `;
+            
+            try {
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'get_wallet_transaction_history',
+                        address: address
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success && data.transactions) {
+                    displayTransactions(data.transactions, address);
+                } else {
+                    resultsDiv.innerHTML = `
+                        <div class="alert alert-info alert-modern">
+                            <i class="fas fa-info-circle me-2"></i>
+                            ${t.no_transactions_found}
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                resultsDiv.innerHTML = `
+                    <div class="alert alert-danger alert-modern">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        ${t.error_loading_transactions || 'Error loading transactions'}: ${error.message}
+                    </div>
+                `;
             }
         }
         
@@ -1984,169 +3195,846 @@ function getLanguageOptions($currentLang) {
         function displayTransactionHistory(transactions, address) {
             const resultsDiv = document.getElementById('results');
             
-            let html = `
-                <div class="action-card">
-                    <h5><i class="fas fa-history me-2"></i>Transaction History - ${address.substring(0, 20)}...</h5>
-                    <div class="table-responsive">
-                        <table class="table table-striped">
-                            <thead>
-                                <tr>
-                                    <th>Date</th>
-                                    <th>Type</th>
-                                    <th>From/To</th>
-                                    <th>Amount</th>
-                                    <th>Message</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-            `;
-            
-            if (transactions.length === 0) {
-                html += '<tr><td colspan="6" class="text-center text-muted">No transactions found</td></tr>';
-            } else {
-                transactions.forEach(tx => {
-                    const isIncoming = tx.to_address === address;
-                    const direction = isIncoming ? 'Received from' : 'Sent to';
-                    const otherAddress = isIncoming ? tx.from_address : tx.to_address;
-                    const amountClass = isIncoming ? 'text-success' : 'text-danger';
-                    const amountSign = isIncoming ? '+' : '-';
-                    
-                    const hasEncryptedMemo = tx.memo && tx.memo.startsWith('ENCRYPTED:');
-                    const memoDisplay = hasEncryptedMemo ? 
-                        '<i class="fas fa-lock text-warning" title="Encrypted message"></i> Encrypted' : 
-                        (tx.memo || 'No message');
-                    
-                    html += `
-                        <tr>
-                            <td>${new Date(tx.timestamp * 1000).toLocaleDateString()}</td>
-                            <td>${direction}</td>
-                            <td>${otherAddress.substring(0, 15)}...</td>
-                            <td class="${amountClass}">${amountSign}${tx.amount} ${cryptoSymbol}</td>
-                            <td>${memoDisplay}</td>
-                            <td>
-                                ${hasEncryptedMemo ? `
-                                    <button class="btn btn-sm btn-warning" onclick="decryptTransactionMessage('${tx.hash}', '${address}')">
-                                        <i class="fas fa-unlock"></i>
-                                    </button>
-                                ` : ''}
-                                <button class="btn btn-sm btn-info" onclick="copyToClipboard('${tx.hash}')">
-                                    <i class="fas fa-copy"></i>
-                                </button>
-                            </td>
-                        </tr>
-                    `;
-                });
+            if (!transactions || transactions.length === 0) {
+                resultsDiv.innerHTML = `
+                    <div class="action-card text-center">
+                        <div class="action-icon icon-info mx-auto">
+                            <i class="fas fa-info-circle"></i>
+                        </div>
+                        <h5>${t.no_transactions_found}</h5>
+                        <p class="text-muted">${t.no_transaction_history}</p>
+                    </div>
+                `;
+                return;
             }
             
-            html += `
-                            </tbody>
-                        </table>
+            let html = `
+                <div class="action-card">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h5><i class="fas fa-history me-2"></i>${t.transaction_history} - ${address.substring(0, 20)}...</h5>
+                        <span class="badge bg-secondary">${transactions.length} ${t.transactions || 'transactions'}</span>
+                    </div>
+                    <div class="list-group">
+            `;
+            
+            transactions.forEach(tx => {
+                const date = tx.timestamp ? new Date(tx.timestamp * 1000) : new Date();
+                const isReceived = tx.to_address === address;
+                const amount = parseFloat(tx.amount || 0);
+                
+                // Debug: Log transaction data to console
+                console.log('Transaction data:', tx);
+                console.log('Transaction.data:', tx.data);
+                console.log('Transaction.memo:', tx.memo);
+                
+                // Check for encrypted messages in new format
+                let hasEncryptedMessage = false;
+                let encryptedMessage = null;
+                
+                // Check if transaction has encrypted memo (new format)
+                let txDataObj = tx.data;
+                
+                // Parse tx.data if it's a JSON string
+                if (typeof tx.data === 'string') {
+                    try {
+                        txDataObj = JSON.parse(tx.data);
+                        console.log('Parsed tx.data from string:', txDataObj);
+                    } catch (e) {
+                        console.log('Failed to parse tx.data as JSON:', e);
+                        txDataObj = tx.data;
+                    }
+                }
+                
+                if (txDataObj && typeof txDataObj === 'object') {
+                    // Case 1: txDataObj.memo contains full encrypted message structure with encrypted_data
+                    if (txDataObj.memo && typeof txDataObj.memo === 'object' && txDataObj.memo.encrypted_data) {
+                        hasEncryptedMessage = true;
+                        encryptedMessage = txDataObj.memo;
+                        console.log('Found encrypted message in tx.data.memo (full structure)');
+                    }
+                    // Case 2: txDataObj.encrypted === true (old format - remove this after migration)
+                    else if (txDataObj.encrypted === true) {
+                        hasEncryptedMessage = true;
+                        // For old format, the memo might be a string, but we still consider it encrypted
+                        encryptedMessage = { legacy: true, memo: txDataObj.memo };
+                        console.log('Found encrypted message in tx.data (legacy format)');
+                    }
+                }
+                
+                // Also check direct memo field (legacy support)
+                if (!hasEncryptedMessage && tx.memo && typeof tx.memo === 'object') {
+                    if (tx.memo.encrypted_data && typeof tx.memo.encrypted_data === 'object') {
+                        hasEncryptedMessage = true;
+                        encryptedMessage = tx.memo;
+                        console.log('Found encrypted message in tx.memo');
+                    }
+                }
+                if (!hasEncryptedMessage && tx.memo && typeof tx.memo === 'object') {
+                    if (tx.memo.encrypted_data && typeof tx.memo.encrypted_data === 'object') {
+                        hasEncryptedMessage = true;
+                        encryptedMessage = tx.memo;
+                        console.log('Found encrypted message in tx.memo');
+                    }
+                }
+                
+                console.log('Has encrypted message:', hasEncryptedMessage);
+                console.log('Encrypted message object:', encryptedMessage);
+                
+                // Convert encrypted message to JSON string for passing to functions
+                const encryptedMessageJson = encryptedMessage ? JSON.stringify(encryptedMessage) : '';
+                
+                // Extract plain text memo if available and not encrypted
+                let displayMemo = '';
+                if (!hasEncryptedMessage && tx.memo && typeof tx.memo === 'string') {
+                    displayMemo = tx.memo;
+                } else if (!hasEncryptedMessage && tx.data && tx.data.memo && typeof tx.data.memo === 'string') {
+                    displayMemo = tx.data.memo;
+                }
+                
+                html += `
+                    <div class="list-group-item">
+                        <div class="d-flex w-100 justify-content-between align-items-center">
+                            <div class="flex-grow-1">
+                                <div class="d-flex align-items-center mb-1">
+                                    <span class="badge ${isReceived ? 'bg-success' : 'bg-danger'} me-2">
+                                        ${isReceived ? '↓ ' + (t.received || 'Received') : '↑ ' + (t.sent || 'Sent')}
+                                    </span>
+                                    <strong class="text-${isReceived ? 'success' : 'danger'}">
+                                        ${isReceived ? '+' : '-'}${amount.toFixed(8)} ${cryptoSymbol}
+                                    </strong>
+                                    ${hasEncryptedMessage ? '<i class="fas fa-envelope text-warning ms-2 encrypted-message-icon" title="' + (t.has_encrypted_message || 'Has encrypted message') + '" data-encrypted-message=\'' + encryptedMessageJson + '\' style="cursor: pointer;"></i>' : ''}
+                                </div>
+                                <p class="mb-1 text-muted small">
+                                    ${isReceived ? (t.from || 'From') : (t.to || 'To')}: 
+                                    <code class="bg-light px-1 rounded">${isReceived ? tx.from_address : tx.to_address}</code>
+                                </p>
+                                <small class="text-muted">
+                                    <i class="far fa-clock me-1"></i>
+                                    ${date.toLocaleString()}
+                                </small>
+                                ${displayMemo ? `<div class="small text-info mt-1"><i class="fas fa-sticky-note me-1"></i>${displayMemo}</div>` : ''}
+                                ${hasEncryptedMessage ? `<div class="small text-warning mt-1"><i class="fas fa-lock me-1"></i>${t.encrypted_message || 'Encrypted message'} - ${t.click_to_decrypt || 'Click envelope to decrypt'}</div>` : ''}
+                            </div>
+                            <div class="text-end">
+                                <small class="text-muted d-block">${t.block || 'Block'}: ${tx.block_height || t.pending || 'Pending'}</small>
+                                ${hasEncryptedMessage ? 
+                                    `<button class="btn btn-sm btn-outline-info mt-1 view-details-btn" 
+                                             data-tx-hash="${tx.hash}" data-encrypted-message='${encryptedMessageJson}'>
+                                        <i class="fas fa-eye"></i> ${t.view_details || 'View Details'}
+                                    </button>` : 
+                                    `<button class="btn btn-sm btn-outline-secondary mt-1 view-details-btn" 
+                                             data-tx-hash="${tx.hash}">
+                                        <i class="fas fa-info"></i> ${t.details || 'Details'}
+                                    </button>`
+                                }
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            html += '</div></div>';
+            resultsDiv.innerHTML = html;
+        }
+        
+        // Display transactions with enhanced features and pagination
+        function displayTransactions(transactions, walletAddress) {
+            const resultsDiv = document.getElementById('transactionResults');
+            
+            // Store current transactions for pagination
+            currentTransactions = transactions;
+            totalTransactions = transactions.length;
+            
+            if (transactions.length === 0) {
+                resultsDiv.innerHTML = `
+                    <div class="alert alert-info alert-modern">
+                        <i class="fas fa-info-circle me-2"></i>
+                        ${t.no_transactions_found}
+                    </div>
+                `;
+                return;
+            }
+            
+            renderTransactionPage();
+        }
+        
+        // Render current page of transactions
+        function renderTransactionPage() {
+            const resultsDiv = document.getElementById('transactionResults');
+            const startIndex = (currentPage - 1) * itemsPerPage;
+            const endIndex = Math.min(startIndex + itemsPerPage, totalTransactions);
+            const pageTransactions = currentTransactions.slice(startIndex, endIndex);
+            const totalPages = Math.ceil(totalTransactions / itemsPerPage);
+            
+            let html = `
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <div>
+                        <span class="transaction-count badge bg-secondary">${totalTransactions} ${t.transactions || 'transactions'}</span>
+                        <span class="text-muted ms-2">
+                            ${t.showing || 'Showing'} ${startIndex + 1} ${t.to || 'to'} ${endIndex} ${t.of || 'of'} ${totalTransactions} ${t.entries || 'entries'}
+                        </span>
+                    </div>
+                    <div class="d-flex align-items-center">
+                        <label class="form-label me-2 mb-0">${t.per_page || 'Per page'}:</label>
+                        <select class="form-select form-select-sm" style="width: auto;" onchange="changeItemsPerPage(this.value)">
+                            <option value="5" ${itemsPerPage === 5 ? 'selected' : ''}>5</option>
+                            <option value="10" ${itemsPerPage === 10 ? 'selected' : ''}>10</option>
+                            <option value="25" ${itemsPerPage === 25 ? 'selected' : ''}>25</option>
+                            <option value="50" ${itemsPerPage === 50 ? 'selected' : ''}>50</option>
+                        </select>
                     </div>
                 </div>
+                <div class="list-group">
             `;
+            
+            pageTransactions.forEach(tx => {
+                const date = tx.timestamp ? new Date(tx.timestamp * 1000) : new Date();
+                const isReceived = tx.to_address === getCurrentWalletAddress();
+                const amount = parseFloat(tx.amount || 0);
+                
+                // Debug: Log transaction data to console
+                console.log('Page Transaction data:', tx);
+                console.log('Page Transaction.data:', tx.data);
+                
+                // Check for encrypted messages in new format
+                let hasEncryptedMessage = false;
+                let encryptedMessage = null;
+                
+                // Check if transaction has encrypted memo (new format)
+                let txDataObj = tx.data;
+                
+                // Parse tx.data if it's a JSON string
+                if (typeof tx.data === 'string') {
+                    try {
+                        txDataObj = JSON.parse(tx.data);
+                        console.log('Page Parsed tx.data from string:', txDataObj);
+                    } catch (e) {
+                        console.log('Page Failed to parse tx.data as JSON:', e);
+                        txDataObj = tx.data;
+                    }
+                }
+                
+                if (txDataObj && typeof txDataObj === 'object') {
+                    // Case 1: txDataObj.memo contains full encrypted message structure with encrypted_data
+                    if (txDataObj.memo && typeof txDataObj.memo === 'object' && txDataObj.memo.encrypted_data) {
+                        hasEncryptedMessage = true;
+                        encryptedMessage = txDataObj.memo;
+                        console.log('Page Found encrypted message in tx.data.memo (full structure)');
+                    }
+                    // Case 2: txDataObj.encrypted === true (old format - remove this after migration)
+                    else if (txDataObj.encrypted === true) {
+                        hasEncryptedMessage = true;
+                        // For old format, the memo might be a string, but we still consider it encrypted
+                        encryptedMessage = { legacy: true, memo: txDataObj.memo };
+                        console.log('Page Found encrypted message in tx.data (legacy format)');
+                    }
+                }
+                
+                // Also check direct memo field (legacy support)
+                if (!hasEncryptedMessage && tx.memo && typeof tx.memo === 'object') {
+                    if (tx.memo.encrypted_data && typeof tx.memo.encrypted_data === 'object') {
+                        hasEncryptedMessage = true;
+                        encryptedMessage = tx.memo;
+                        console.log('Page Found encrypted message in tx.memo');
+                    }
+                }
+                
+                console.log('Page Has encrypted message:', hasEncryptedMessage);
+                console.log('Page Encrypted message object:', encryptedMessage);
+                
+                const type = isReceived ? 'received' : 'sent';
+                
+                // Convert encrypted message to JSON string for passing to functions
+                const encryptedMessageJson = encryptedMessage ? JSON.stringify(encryptedMessage) : '';
+                
+                html += `
+                    <div class="list-group-item transaction-row" 
+                         data-type="${type}" 
+                         data-amount="${amount}">
+                        <div class="d-flex w-100 justify-content-between align-items-center">
+                            <div class="flex-grow-1">
+                                <div class="d-flex align-items-center mb-1">
+                                    <span class="badge ${isReceived ? 'bg-success' : 'bg-danger'} me-2">
+                                        ${isReceived ? '↓ ' + (t.received || 'Received') : '↑ ' + (t.sent || 'Sent')}
+                                    </span>
+                                    <strong class="text-${isReceived ? 'success' : 'danger'}">
+                                        ${isReceived ? '+' : '-'}${amount.toFixed(8)} ${cryptoSymbol}
+                                    </strong>
+                                    ${hasEncryptedMessage ? '<i class="fas fa-envelope text-warning ms-2 encrypted-message-icon" title="' + (t.has_encrypted_message || 'Has encrypted message') + '" data-encrypted-message=\'' + encryptedMessageJson + '\' style="cursor: pointer;"></i>' : ''}
+                                </div>
+                                <p class="mb-1 text-muted small">
+                                    ${isReceived ? (t.from_address || 'From') : (t.to_address || 'To')}: 
+                                    <code class="bg-light px-1 rounded">${(isReceived ? tx.from_address : tx.to_address).substring(0, 20)}...</code>
+                                </p>
+                                <small class="text-muted">
+                                    <i class="far fa-clock me-1"></i>
+                                    ${date.toLocaleString()}
+                                </small>
+                                ${!hasEncryptedMessage && tx.memo && typeof tx.memo === 'string' ? `<div class="small text-info mt-1"><i class="fas fa-sticky-note me-1"></i>${tx.memo}</div>` : ''}
+                                ${hasEncryptedMessage ? `<div class="small text-warning mt-1"><i class="fas fa-lock me-1"></i>${t.encrypted_message || 'Encrypted message'} - ${t.click_to_decrypt || 'Click envelope to decrypt'}</div>` : ''}
+                            </div>
+                            <div class="text-end">
+                                <small class="text-muted d-block">${t.block_height || 'Block'}: ${tx.block_height || t.pending || 'Pending'}</small>
+                                ${hasEncryptedMessage ? 
+                                    `<button class="btn btn-sm btn-outline-info mt-1 view-details-btn" 
+                                             data-tx-hash="${tx.hash}" data-encrypted-message='${encryptedMessageJson}'>
+                                        <i class="fas fa-eye"></i> ${t.view_details || 'View Details'}
+                                    </button>` : 
+                                    `<button class="btn btn-sm btn-outline-secondary mt-1 view-details-btn" 
+                                             data-tx-hash="${tx.hash}">
+                                        <i class="fas fa-info"></i> ${t.details || 'Details'}
+                                    </button>`
+                                }
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            html += '</div>';
+            
+            // Add pagination
+            if (totalPages > 1) {
+                html += `
+                    <nav class="mt-3">
+                        <ul class="pagination justify-content-center">
+                            <li class="page-item ${currentPage === 1 ? 'disabled' : ''}">
+                                <a class="page-link" href="#" onclick="changePage(${currentPage - 1})">
+                                    <i class="fas fa-chevron-left"></i> ${t.previous || 'Previous'}
+                                </a>
+                            </li>
+                `;
+                
+                // Show page numbers
+                const startPage = Math.max(1, currentPage - 2);
+                const endPage = Math.min(totalPages, currentPage + 2);
+                
+                if (startPage > 1) {
+                    html += `<li class="page-item"><a class="page-link" href="#" onclick="changePage(1)">1</a></li>`;
+                    if (startPage > 2) {
+                        html += `<li class="page-item disabled"><span class="page-link">...</span></li>`;
+                    }
+                }
+                
+                for (let i = startPage; i <= endPage; i++) {
+                    html += `
+                        <li class="page-item ${i === currentPage ? 'active' : ''}">
+                            <a class="page-link" href="#" onclick="changePage(${i})">${i}</a>
+                        </li>
+                    `;
+                }
+                
+                if (endPage < totalPages) {
+                    if (endPage < totalPages - 1) {
+                        html += `<li class="page-item disabled"><span class="page-link">...</span></li>`;
+                    }
+                    html += `<li class="page-item"><a class="page-link" href="#" onclick="changePage(${totalPages})">${totalPages}</a></li>`;
+                }
+                
+                html += `
+                            <li class="page-item ${currentPage === totalPages ? 'disabled' : ''}">
+                                <a class="page-link" href="#" onclick="changePage(${currentPage + 1})">
+                                    ${t.next || 'Next'} <i class="fas fa-chevron-right"></i>
+                                </a>
+                            </li>
+                        </ul>
+                        <div class="text-center text-muted small mt-2">
+                            ${t.page || 'Page'} ${currentPage} ${t.of || 'of'} ${totalPages}
+                        </div>
+                    </nav>
+                `;
+            }
             
             resultsDiv.innerHTML = html;
         }
         
-        // Decrypt transaction message
-        async function decryptTransactionMessage(txHash, walletAddress) {
-            const privateKey = prompt('Enter your private key to decrypt the message:');
-            if (!privateKey) return;
-            
-            try {
-                const response = await fetch('wallet_api.php', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        action: 'decrypt_transaction_message',
-                        tx_hash: txHash,
-                        wallet_address: walletAddress,
-                        private_key: privateKey
-                    })
-                });
-                
-                const data = await response.json();
-                
-                if (data.success) {
-                    if (data.decrypted) {
-                        alert(`Decrypted message: ${data.message}`);
-                    } else {
-                        alert(`Message: ${data.message}`);
-                    }
-                } else {
-                    showNotification('Failed to decrypt message: ' + data.error, 'danger');
-                }
-            } catch (error) {
-                showNotification('Error: ' + error.message, 'danger');
+        // Change page
+        function changePage(page) {
+            const totalPages = Math.ceil(totalTransactions / itemsPerPage);
+            if (page >= 1 && page <= totalPages) {
+                currentPage = page;
+                renderTransactionPage();
             }
+            return false; // Prevent default link behavior
         }
         
-        // Delete wallet from local list
-        function deleteWalletFromList(address) {
-            if (!confirm('Are you sure you want to remove this wallet from your saved list?\n\nNote: This only removes it from your browser storage, the wallet will still exist in the blockchain.')) {
+        // Change items per page
+        function changeItemsPerPage(newItemsPerPage) {
+            itemsPerPage = parseInt(newItemsPerPage);
+            currentPage = 1; // Reset to first page
+            renderTransactionPage();
+        }
+        
+        // Get current wallet address (helper function)
+        function getCurrentWalletAddress() {
+            const select = document.getElementById('historyWalletSelect');
+            return select ? select.value : '';
+        }
+        
+        // Filter transactions and update pagination
+        function filterTransactions() {
+            const typeFilter = document.getElementById('transactionTypeFilter').value;
+            const amountFilter = parseFloat(document.getElementById('transactionAmountFilter').value) || 0;
+            
+            // Filter the original transactions array
+            const filteredTransactions = currentTransactions.filter(tx => {
+                const walletAddress = getCurrentWalletAddress();
+                const isReceived = tx.to_address === walletAddress;
+                const type = isReceived ? 'received' : 'sent';
+                const amount = parseFloat(tx.amount || 0);
+                
+                const typeMatch = !typeFilter || type === typeFilter;
+                const amountMatch = amount >= amountFilter;
+                
+                return typeMatch && amountMatch;
+            });
+            
+            // Update current transactions and reset pagination
+            const originalTransactions = currentTransactions;
+            currentTransactions = filteredTransactions;
+            totalTransactions = filteredTransactions.length;
+            currentPage = 1;
+            
+            // Re-render with filtered data
+            renderTransactionPage();
+            
+            // Restore original transactions for future filtering
+            setTimeout(() => {
+                if (currentTransactions === filteredTransactions) {
+                    currentTransactions = originalTransactions;
+                }
+            }, 100);
+        }
+        
+        // Clear filters and reset pagination
+        function clearFilters() {
+            document.getElementById('transactionTypeFilter').value = '';
+            document.getElementById('transactionAmountFilter').value = '';
+            
+            // Reset pagination
+            currentPage = 1;
+            totalTransactions = currentTransactions.length;
+            
+            // Re-render with all data
+            renderTransactionPage();
+        }
+        
+        // View transaction details with comprehensive information and decryption
+        async function viewTransactionDetails(txHash, encryptedMessage = null) {
+            // Find the transaction in current data
+            const transaction = currentTransactions.find(tx => tx.hash === txHash);
+            const walletAddress = getCurrentWalletAddress();
+            
+            if (!transaction) {
+                showNotification(t.transaction_not_found || 'Transaction not found', 'danger');
                 return;
             }
             
-            let wallets = JSON.parse(localStorage.getItem('myWallets') || '[]');
-            wallets = wallets.filter(w => w.address !== address);
-            localStorage.setItem('myWallets', JSON.stringify(wallets));
+            const isReceived = transaction.to_address === walletAddress;
+            const date = transaction.timestamp ? new Date(transaction.timestamp * 1000) : new Date();
+            const amount = parseFloat(transaction.amount || 0);
             
-            showNotification('Wallet removed from your list', 'success');
+            // Use encrypted message directly
+            let decodedEncryptedMessage = encryptedMessage;
             
-            // Refresh the display if currently showing my wallets
+            let detailsHTML = `
+                <div class="modal fade" id="transactionDetailsModal" tabindex="-1">
+                    <div class="modal-dialog modal-xl">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title">
+                                    <i class="fas fa-info-circle me-2"></i>
+                                    ${t.transaction_details || 'Transaction Details'}
+                                </h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body">
+                                <!-- Transaction Overview -->
+                                <div class="row mb-4">
+                                    <div class="col-md-6">
+                                        <div class="card bg-${isReceived ? 'success' : 'danger'} bg-opacity-10 border-${isReceived ? 'success' : 'danger'}">
+                                            <div class="card-body text-center">
+                                                <i class="fas fa-${isReceived ? 'arrow-down' : 'arrow-up'} fa-3x text-${isReceived ? 'success' : 'danger'} mb-2"></i>
+                                                <h4 class="text-${isReceived ? 'success' : 'danger'}">
+                                                    ${isReceived ? '+' : '-'}${amount.toFixed(8)} ${cryptoSymbol}
+                                                </h4>
+                                                <p class="mb-0">
+                                                    <span class="badge bg-${isReceived ? 'success' : 'danger'}">
+                                                        ${isReceived ? (t.received || 'Received') : (t.sent || 'Sent')}
+                                                    </span>
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="card bg-light">
+                                            <div class="card-body">
+                                                <h6 class="card-title">${t.status || 'Status'}</h6>
+                                                <p class="mb-2">
+                                                    <span class="badge ${transaction.confirmations >= 6 ? 'bg-success' : transaction.confirmations > 0 ? 'bg-warning' : 'bg-secondary'}">
+                                                        ${transaction.confirmations >= 6 ? 'Confirmed' : transaction.confirmations > 0 ? 'Pending' : 'Unconfirmed'}
+                                                    </span>
+                                                </p>
+                                                <small class="text-muted">
+                                                    ${transaction.confirmations || 0} ${t.confirmations || 'confirmations'}
+                                                </small>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Transaction Details -->
+                                <div class="row">
+                                    <div class="col-12">
+                                        <h6 class="border-bottom pb-2 mb-3">${t.transaction_details || 'Transaction Details'}</h6>
+                                    </div>
+                                </div>
+                                
+                                <div class="row mb-3">
+                                    <div class="col-md-6">
+                                        <label class="form-label fw-bold">${t.transaction_hash || 'Transaction Hash'}:</label>
+                                        <div class="input-group">
+                                            <input type="text" class="form-control font-monospace" value="${txHash}" readonly>
+                                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${txHash}')">
+                                                <i class="fas fa-copy"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label fw-bold">${t.timestamp || 'Date & Time'}:</label>
+                                        <input type="text" class="form-control" value="${date.toLocaleString()}" readonly>
+                                    </div>
+                                </div>
+                                
+                                <div class="row mb-3">
+                                    <div class="col-md-6">
+                                        <label class="form-label fw-bold">${t.from_address || 'From Address'}:</label>
+                                        <div class="input-group">
+                                            <input type="text" class="form-control font-monospace" value="${transaction.from_address}" readonly>
+                                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${transaction.from_address}')">
+                                                <i class="fas fa-copy"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label fw-bold">${t.to_address || 'To Address'}:</label>
+                                        <div class="input-group">
+                                            <input type="text" class="form-control font-monospace" value="${transaction.to_address}" readonly>
+                                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${transaction.to_address}')">
+                                                <i class="fas fa-copy"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="row mb-3">
+                                    <div class="col-md-4">
+                                        <label class="form-label fw-bold">${t.amount || 'Amount'}:</label>
+                                        <input type="text" class="form-control" value="${amount.toFixed(8)} ${cryptoSymbol}" readonly>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label fw-bold">${t.fee || 'Transaction Fee'}:</label>
+                                        <input type="text" class="form-control" value="${parseFloat(transaction.fee || 0).toFixed(8)} ${cryptoSymbol}" readonly>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label fw-bold">${t.block_height || 'Block Height'}:</label>
+                                        <input type="text" class="form-control" value="${transaction.block_height || t.pending || 'Pending'}" readonly>
+                                    </div>
+                                </div>
+                                
+                                ${transaction.memo ? `
+                                <div class="row mb-3">
+                                    <div class="col-12">
+                                        <label class="form-label fw-bold">${t.memo || 'Memo'}:</label>
+                                        <div class="alert alert-info">
+                                            <i class="fas fa-sticky-note me-2"></i>
+                                            ${transaction.memo}
+                                        </div>
+                                    </div>
+                                </div>
+                                ` : ''}
+            `;
+            
+            if (decodedEncryptedMessage) {
+                detailsHTML += `
+                                <!-- Encrypted Message Section -->
+                                <div class="row">
+                                    <div class="col-12">
+                                        <h6 class="border-bottom pb-2 mb-3">${t.encrypted_message || 'Encrypted Message'}</h6>
+                                    </div>
+                                </div>
+                                
+                                <div class="mb-3">
+                                    <div class="card bg-light border-info">
+                                        <div class="card-body">
+                                            <div class="d-flex align-items-center mb-3">
+                                                <i class="fas fa-lock text-info fa-3x me-3"></i>
+                                                <div>
+                                                    <h6 class="mb-1">${t.encrypted_message || 'Encrypted Message'}</h6>
+                                                    <p class="text-muted mb-0">
+                                                        ${t.enter_private_key_decrypt || 'Enter your private key to decrypt the message'}
+                                                    </p>
+                                                    <small class="text-info">
+                                                        <i class="fas fa-shield-alt me-1"></i>
+                                                        Protected with secp256k1 ECIES encryption
+                                                    </small>
+                                                </div>
+                                            </div>
+                                            
+                                            <div class="row">
+                                                <div class="col-md-8">
+                                                    <input type="password" class="form-control" id="decryptPrivateKey" 
+                                                           placeholder="${t.enter_private_key || 'Enter your private key'}">
+                                                </div>
+                                                <div class="col-md-4">
+                                                    <button class="btn btn-info w-100 decrypt-in-modal-btn" 
+                                                            data-encrypted-message='${decodedEncryptedMessage}' 
+                                                            data-tx-hash="${txHash}">
+                                                        <i class="fas fa-unlock me-2"></i>
+                                                        ${t.decrypt || 'Decrypt'}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            
+                                            <div id="decryptedMessage" class="mt-3" style="display: none;">
+                                                <div class="alert alert-success border-success">
+                                                    <div class="d-flex align-items-center mb-2">
+                                                        <i class="fas fa-unlock text-success me-2"></i>
+                                                        <strong>${t.decrypted_message || 'Decrypted Message'}:</strong>
+                                                    </div>
+                                                    <div id="messageContent" class="bg-white p-3 rounded border"></div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                `;
+            }
+            
+            detailsHTML += `
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                                    <i class="fas fa-times me-2"></i>
+                                    ${t.close || 'Close'}
+                                </button>
+                                <button type="button" class="btn btn-primary" onclick="copyToClipboard('${txHash}')">
+                                    <i class="fas fa-copy me-2"></i>
+                                    ${t.copy || 'Copy'} Hash
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            // Remove existing modal
+            const existingModal = document.getElementById('transactionDetailsModal');
+            if (existingModal) {
+                existingModal.remove();
+            }
+            
+            // Add new modal
+            document.body.insertAdjacentHTML('beforeend', detailsHTML);
+            
+            // Show modal
+            const modal = new bootstrap.Modal(document.getElementById('transactionDetailsModal'));
+            modal.show();
+        }
+        
+        // Show blockchain info (stub)
+        function showBlockchainInfo() {
             const resultsDiv = document.getElementById('results');
-            if (resultsDiv.innerHTML.includes('My Wallets')) {
-                showMyWallets();
-            }
+            resultsDiv.innerHTML = `
+                <div class="action-card text-center">
+                    <div class="action-icon icon-info mx-auto">
+                        <i class="fas fa-info-circle"></i>
+                    </div>
+                    <h5>${t.blockchain_info || 'Blockchain Information'}</h5>
+                    <p class="text-muted">${t.blockchain_info_description || 'View blockchain network status and statistics'}</p>
+                    <div class="alert alert-info alert-modern mt-3">
+                        <i class="fas fa-exclamation-circle me-2"></i>
+                        ${t.feature_coming_soon || 'This feature is coming soon!'}
+                    </div>
+                </div>
+            `;
         }
+
+        // Show smart contracts
+        function showSmartContracts() {
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = `
+                <div class="action-card text-center">
+                    <div class="action-icon icon-contract mx-auto">
+                        <i class="fas fa-file-contract"></i>
+                    </div>
+                    <h5>${t.smart_contracts || 'Smart Contracts'}</h5>
+                    <p class="text-muted">${t.smart_contracts_description || 'Deploy and interact with smart contracts'}</p>
+                    <div class="alert alert-info alert-modern mt-3">
+                        <i class="fas fa-exclamation-circle me-2"></i>
+                        ${t.feature_coming_soon || 'This feature is coming soon!'}
+                    </div>
+                </div>
+            `;
+        }
+
+        // Show settings
+        function showSettings() {
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = `
+                <div class="action-card text-center">
+                    <div class="action-icon icon-settings mx-auto">
+                        <i class="fas fa-cogs"></i>
+                    </div>
+                    <h5>${t.settings || 'Settings'}</h5>
+                    <p class="text-muted">${t.settings_description || 'Configure wallet and network settings'}</p>
+                    <div class="alert alert-info alert-modern mt-3">
+                        <i class="fas fa-exclamation-circle me-2"></i>
+                        ${t.feature_coming_soon || 'This feature is coming soon!'}
+                    </div>
+                </div>
+            `;
+        }
+
+        // Show about
+        function showAbout() {
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = `
+                <div class="action-card text-center">
+                    <div class="action-icon icon-info mx-auto">
+                        <i class="fas fa-info-circle"></i>
+                    </div>
+                    <h5>${t.about || 'About'}</h5>
+                    <p class="text-muted">${t.about_description || 'About this blockchain wallet'}</p>
+                    <div class="alert alert-info alert-modern mt-3">
+                        <i class="fas fa-wallet me-2"></i>
+                        ${t.about_info || 'Secure blockchain wallet for managing your digital assets'}
+                    </div>
+                </div>
+            `;
+        }
+
+        // Make functions globally accessible
+        window.startWalletCreation = startWalletCreation;
+        window.showRestoreModal = showRestoreModal;
+        window.showMyWallets = showMyWallets;
+        window.showTransactionHistory = showTransactionHistory;
+        window.showStakingModal = showStakingModal;
+        window.showDashboard = showDashboard;
+        window.showBlockchainInfo = showBlockchainInfo;
+        window.showSmartContracts = showSmartContracts;
+        window.showSettings = showSettings;
+        window.showAbout = showAbout;
+        window.confirmStaking = confirmStaking;
+        window.confirmRestore = confirmRestore;
+        window.closeModal = closeModal;
+        window.closeMnemonicModal = closeMnemonicModal;
+        window.copyToClipboard = copyToClipboard;
+        window.generateMnemonic = generateMnemonic;
+        window.updateAvailableBalance = updateAvailableBalance;
+        window.loadWalletHistory = loadWalletHistory;
+        window.filterTransactions = filterTransactions;
+        window.clearFilters = clearFilters;
+        window.viewTransactionDetails = viewTransactionDetails;
+        window.attemptAutoDecrypt = attemptAutoDecrypt;
+        window.tryDecryptWithKey = tryDecryptWithKey;
+        window.showInlineDecryptedMessage = showInlineDecryptedMessage;
+        window.decryptInModal = decryptInModal;
+        window.displayTransactions = displayTransactions;
+        window.displayTransactionHistory = displayTransactionHistory;
+        window.renderTransactionPage = renderTransactionPage;
+        window.changePage = changePage;
+        window.changeItemsPerPage = changeItemsPerPage;
+        window.getCurrentWalletAddress = getCurrentWalletAddress;
+        window.showDecryptModal = showDecryptModal;
+        window.decryptMessageFromModal = decryptMessageFromModal;
+        window.utf8ToBase64 = utf8ToBase64;
+        window.base64ToUtf8 = base64ToUtf8;
         
-        // Delete wallet completely (from blockchain) - requires confirmation
-        async function deleteWalletCompletely(address, privateKey) {
-            // First check if wallet has any balance or staked tokens
-            if (!confirm('WARNING: This will permanently delete the wallet from the blockchain!\n\nThis action cannot be undone. Are you absolutely sure?')) {
-                return;
-            }
+        // Setup memo character counter
+        document.addEventListener('DOMContentLoaded', function() {
+            const memoField = document.getElementById('transferMemo');
+            const charCount = document.getElementById('memoCharCount');
             
-            const finalConfirm = prompt('Type "DELETE" to confirm permanent wallet deletion:');
-            if (finalConfirm !== 'DELETE') {
-                showNotification('Wallet deletion cancelled', 'info');
-                return;
-            }
-            
-            try {
-                const response = await fetch('wallet_api.php', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        action: 'delete_wallet',
-                        address: address,
-                        private_key: privateKey
-                    })
+            if (memoField && charCount) {
+                function updateCharCount() {
+                    const count = memoField.value.length;
+                    charCount.textContent = count;
+                    
+                    // Change color based on length
+                    if (count > 900) {
+                        charCount.style.color = '#dc3545'; // danger red
+                    } else if (count > 800) {
+                        charCount.style.color = '#fd7e14'; // warning orange
+                    } else {
+                        charCount.style.color = '#6c757d'; // muted gray
+                    }
+                }
+                
+                memoField.addEventListener('input', updateCharCount);
+                memoField.addEventListener('paste', function() {
+                    setTimeout(updateCharCount, 10);
                 });
                 
-                const data = await response.json();
-                
-                if (data.success) {
-                    showNotification('Wallet permanently deleted from blockchain', 'success');
-                    
-                    // Also remove from local storage
-                    deleteWalletFromList(address);
-                    
-                    // Refresh current view
-                    const resultsDiv = document.getElementById('results');
-                    if (resultsDiv.innerHTML.includes('All Wallets')) {
-                        listWallets();
-                    } else if (resultsDiv.innerHTML.includes('My Wallets')) {
-                        showMyWallets();
-                    }
-                } else {
-                    showNotification('Failed to delete wallet: ' + data.error, 'danger');
-                }
-            } catch (error) {
-                showNotification('Error: ' + error.message, 'danger');
+                // Initial count
+                updateCharCount();
             }
-        }
+            
+            // Setup event listeners for encrypted message icons
+            document.addEventListener('click', function(e) {
+                if (e.target.classList.contains('encrypted-message-icon')) {
+                    const encryptedMessage = e.target.getAttribute('data-encrypted-message');
+                    if (encryptedMessage) {
+                        attemptAutoDecrypt(encryptedMessage);
+                    }
+                }
+                
+                // Setup event listeners for view details buttons
+                if (e.target.closest('.view-details-btn')) {
+                    const button = e.target.closest('.view-details-btn');
+                    const txHash = button.getAttribute('data-tx-hash');
+                    const encryptedMessage = button.getAttribute('data-encrypted-message');
+                    
+                    if (encryptedMessage) {
+                        viewTransactionDetails(txHash, encryptedMessage);
+                    } else {
+                        viewTransactionDetails(txHash);
+                    }
+                }
+                
+                // Setup event listeners for decrypt message buttons
+                if (e.target.closest('.decrypt-message-btn')) {
+                    const button = e.target.closest('.decrypt-message-btn');
+                    const encryptedMessage = button.getAttribute('data-encrypted-message');
+                    const txHash = button.getAttribute('data-tx-hash');
+                    
+                    if (encryptedMessage) {
+                        attemptAutoDecrypt(encryptedMessage);
+                    }
+                }
+                
+                // Setup event listeners for decrypt in modal buttons
+                if (e.target.closest('.decrypt-in-modal-btn')) {
+                    const button = e.target.closest('.decrypt-in-modal-btn');
+                    const encryptedMessage = button.getAttribute('data-encrypted-message');
+                    const txHash = button.getAttribute('data-tx-hash');
+                    
+                    if (encryptedMessage) {
+                        decryptInModal(encryptedMessage, button);
+                    }
+                }
+                
+                // Setup event listeners for copy message buttons
+                if (e.target.closest('.copy-message-btn')) {
+                    const button = e.target.closest('.copy-message-btn');
+                    const message = button.getAttribute('data-message');
+                    
+                    if (message) {
+                        copyToClipboard(message);
+                    }
+                }
+            });
+        });
     </script>
 </body>
 </html>

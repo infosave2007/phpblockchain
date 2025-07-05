@@ -11,6 +11,7 @@ use Psr\Log\LoggerInterface;
 
 /**
  * Proof of Stake algorithm implementation
+ * Now integrated with ValidatorManager for centralized validator management
  */
 class ProofOfStake implements ConsensusInterface
 {
@@ -25,13 +26,15 @@ class ProofOfStake implements ConsensusInterface
     private array $rewards;
     private int $currentEpoch;
     private float $totalStaked;
+    private ?ValidatorManager $validatorManager;
 
     public function __construct(
         LoggerInterface $logger,
         int $minimumStake = 1000,
         int $slashingPenalty = 100,
         int $blockReward = 10,
-        int $epochLength = 100
+        int $epochLength = 100,
+        ?ValidatorManager $validatorManager = null
     ) {
         $this->logger = $logger;
         $this->minimumStake = $minimumStake;
@@ -44,6 +47,15 @@ class ProofOfStake implements ConsensusInterface
         $this->rewards = [];
         $this->currentEpoch = 0;
         $this->totalStaked = 0.0;
+        $this->validatorManager = $validatorManager;
+    }
+
+    /**
+     * Set ValidatorManager for centralized validator operations
+     */
+    public function setValidatorManager(ValidatorManager $validatorManager): void
+    {
+        $this->validatorManager = $validatorManager;
     }
 
     /**
@@ -272,63 +284,130 @@ class ProofOfStake implements ConsensusInterface
     }
 
     /**
-     * Sign block with validator
+     * Sign block with validator using ValidatorManager
      */
-    public function signBlock(BlockInterface $block, string $validatorAddress): bool
+    public function signBlock(BlockInterface $block, string $validatorAddress = null): bool
     {
-        if (!isset($this->validators[$validatorAddress])) {
+        try {
+            // Use ValidatorManager if available (centralized approach)
+            if ($this->validatorManager) {
+                $blockData = [
+                    'hash' => $block->getHash(),
+                    'index' => $block->getIndex(),
+                    'timestamp' => $block->getTimestamp(),
+                    'previous_hash' => $block->getPreviousHash(),
+                    'merkle_root' => method_exists($block, 'getMerkleRoot') ? $block->getMerkleRoot() : '',
+                    'transactions_count' => count($block->getTransactions())
+                ];
+                
+                $signatureData = $this->validatorManager->signBlock($blockData);
+                
+                // Add signature metadata to block
+                $block->addMetadata('validator_signature', [
+                    'validator' => $signatureData['validator_address'],
+                    'signature' => $signatureData['signature'],
+                    'timestamp' => $signatureData['timestamp'],
+                    'signing_data' => $signatureData['signing_data'],
+                    'method' => 'validator_manager'
+                ]);
+                
+                // Update local validator statistics if validator exists
+                if (isset($this->validators[$signatureData['validator_address']])) {
+                    $this->validators[$signatureData['validator_address']]['blocksProduced']++;
+                    $this->validators[$signatureData['validator_address']]['lastActivity'] = time();
+                }
+                
+                return true;
+            }
+            
+            // Fallback to legacy method
+            if (!$validatorAddress || !isset($this->validators[$validatorAddress])) {
+                return false;
+            }
+            
+            $validator = $this->validators[$validatorAddress];
+            $blockHash = $block->getHash();
+            
+            // Create KeyPair for validator
+            $keyPair = \Blockchain\Core\Cryptography\KeyPair::fromPrivateKey($validator['privateKey']);
+            
+            // Sign block hash
+            $signature = $keyPair->sign($blockHash);
+            
+            // Add signature metadata
+            $block->addMetadata('validator_signature', [
+                'validator' => $validatorAddress,
+                'signature' => $signature,
+                'timestamp' => time(),
+                'method' => 'legacy'
+            ]);
+            
+            // Update validator statistics
+            $this->validators[$validatorAddress]['blocksProduced']++;
+            $this->validators[$validatorAddress]['lastActivity'] = time();
+            
+            return true;
+            
+        } catch (\Exception $e) {
+            $this->logger->error("Failed to sign block: " . $e->getMessage());
             return false;
         }
-        
-        $validator = $this->validators[$validatorAddress];
-        $blockHash = $block->getHash();
-        
-        // Create KeyPair for validator
-        $keyPair = \Blockchain\Core\Cryptography\KeyPair::fromPrivateKey($validator['privateKey']);
-        
-        // Sign block hash
-        $signature = $keyPair->sign($blockHash);
-        
-        // Add signature metadata
-        $block->addMetadata('validator_signature', [
-            'validator' => $validatorAddress,
-            'signature' => $signature,
-            'timestamp' => time()
-        ]);
-        
-        // Update validator statistics
-        $this->validators[$validatorAddress]['blocksProduced']++;
-        $this->validators[$validatorAddress]['lastActivity'] = time();
-        
-        return true;
     }
 
     /**
-     * Verify block signature
+     * Verify block signature using ValidatorManager
      */
-    private function verifyBlockSignature(BlockInterface $block, string $validatorAddress): bool
+    public function verifyBlockSignature(BlockInterface $block, string $validatorAddress = null): bool
     {
-        $metadata = $block->getMetadata();
-        
-        if (!isset($metadata['validator_signature'])) {
+        try {
+            $metadata = $block->getMetadata();
+            
+            if (!isset($metadata['validator_signature'])) {
+                return false;
+            }
+            
+            $signatureData = $metadata['validator_signature'];
+            $signatureValidator = $signatureData['validator'];
+            $signature = $signatureData['signature'];
+            $method = $signatureData['method'] ?? 'unknown';
+            
+            // If specific validator provided, check it matches
+            if ($validatorAddress && $signatureValidator !== $validatorAddress) {
+                return false;
+            }
+            
+            // Use ValidatorManager if available and signature was created with it
+            if ($this->validatorManager && $method === 'validator_manager') {
+                $blockData = [
+                    'hash' => $block->getHash(),
+                    'index' => $block->getIndex(),
+                    'timestamp' => $block->getTimestamp(),
+                    'previous_hash' => $block->getPreviousHash(),
+                    'merkle_root' => method_exists($block, 'getMerkleRoot') ? $block->getMerkleRoot() : '',
+                    'transactions_count' => count($block->getTransactions())
+                ];
+                
+                return $this->validatorManager->verifyBlockSignature($blockData, $signature, $signatureValidator);
+            }
+            
+            // Fallback to legacy verification
+            if (!isset($this->validators[$signatureValidator])) {
+                return false;
+            }
+            
+            // Get validator's public key
+            $validator = $this->validators[$signatureValidator];
+            $publicKey = $validator['publicKey'];
+            
+            // Verify signature using real cryptography
+            $blockHash = $block->getHash();
+            
+            return \Blockchain\Core\Cryptography\Signature::verify($blockHash, $signature, $publicKey);
+            
+        } catch (\Exception $e) {
+            $this->logger->error("Failed to verify block signature: " . $e->getMessage());
             return false;
         }
-        
-        $signatureData = $metadata['validator_signature'];
-        
-        if ($signatureData['validator'] !== $validatorAddress) {
-            return false;
-        }
-        
-        // Get validator's public key
-        $validator = $this->validators[$validatorAddress];
-        $publicKey = $validator['publicKey'];
-        
-        // Verify signature using real cryptography
-        $blockHash = $block->getHash();
-        $signature = $signatureData['signature'];
-        
-        return \Blockchain\Core\Cryptography\Signature::verify($blockHash, $signature, $publicKey);
     }
 
     /**

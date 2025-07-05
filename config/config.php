@@ -14,6 +14,7 @@ return array (
     'key' => '96ea04cc4ae951d00de5d656a2a5921e30c7e5ee083d6419974a409bbe4c5681',
     'installation_date' => '2025-06-30 19:03:47',
   ),
+  'debug_mode' => true, // Set to true for development, false for production
   'database' => 
   array (
   ),

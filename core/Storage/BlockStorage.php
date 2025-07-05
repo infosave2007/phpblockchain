@@ -4,21 +4,32 @@ declare(strict_types=1);
 namespace Blockchain\Core\Storage;
 
 use Blockchain\Core\Contracts\BlockInterface;
+use Blockchain\Core\Consensus\ValidatorManager;
 
 /**
- * Professional Block Storage
+ * Professional Block Storage with ValidatorManager integration
  */
 class BlockStorage
 {
     private array $blocks = [];
     private string $storageFile;
     private ?\PDO $database = null;
+    private ?ValidatorManager $validatorManager = null;
     
-    public function __construct(string $storageFile = 'blockchain.json', ?\PDO $database = null)
+    public function __construct(string $storageFile = 'blockchain.json', ?\PDO $database = null, ?ValidatorManager $validatorManager = null)
     {
         $this->storageFile = $storageFile;
         $this->database = $database;
+        $this->validatorManager = $validatorManager;
         $this->loadBlocks();
+    }
+    
+    /**
+     * Set ValidatorManager for centralized validator operations
+     */
+    public function setValidatorManager(ValidatorManager $validatorManager): void
+    {
+        $this->validatorManager = $validatorManager;
     }
     
     public function saveBlock(BlockInterface $block): bool
@@ -34,7 +45,7 @@ class BlockStorage
     }
     
     /**
-     * Save block to database storage
+     * Save block to database storage using ValidatorManager
      */
     public function saveToDatabaseStorage(BlockInterface $block): bool
     {
@@ -45,6 +56,31 @@ class BlockStorage
         try {
             // Start transaction
             $this->database->beginTransaction();
+            
+            // Get validator and signature using ValidatorManager
+            $validatorAddress = '0x0000000000000000000000000000000000000000'; // fallback
+            $blockSignature = 'fallback_signature';
+            
+            if ($this->validatorManager) {
+                try {
+                    $blockData = [
+                        'hash' => $block->getHash(),
+                        'index' => $block->getIndex(),
+                        'timestamp' => $block->getTimestamp(),
+                        'previous_hash' => $block->getPreviousHash(),
+                        'merkle_root' => $block->getMerkleRoot(),
+                        'transactions_count' => count($block->getTransactions())
+                    ];
+                    
+                    $signatureData = $this->validatorManager->signBlock($blockData);
+                    $validatorAddress = $signatureData['validator_address'];
+                    $blockSignature = $signatureData['signature'];
+                    
+                } catch (\Exception $e) {
+                    // Log error but continue with fallback values
+                    error_log("ValidatorManager signing failed in BlockStorage: " . $e->getMessage());
+                }
+            }
             
             // Save block first
             $stmt = $this->database->prepare("
@@ -64,7 +100,8 @@ class BlockStorage
             $metadata = json_encode([
                 'genesis' => $block->getIndex() === 0,
                 'difficulty' => $block->getDifficulty(),
-                'nonce' => $block->getNonce()
+                'nonce' => $block->getNonce(),
+                'validator_manager_used' => $this->validatorManager !== null
             ]);
             
             $blockResult = $stmt->execute([
@@ -72,8 +109,8 @@ class BlockStorage
                 $block->getPreviousHash(),
                 $block->getIndex(),
                 $block->getTimestamp(),
-                '0x0000000000000000000000000000000000000000', // validator placeholder
-                'block_signature',
+                $validatorAddress,
+                $blockSignature,
                 $block->getMerkleRoot(),
                 count($block->getTransactions()),
                 $metadata
@@ -181,16 +218,38 @@ class BlockStorage
     private function processValidatorRegistration(array $transaction, BlockInterface $block): void
     {
         $metadata = $transaction['metadata'] ?? [];
+        $validatorAddress = $metadata['validator_address'] ?? $transaction['from'];
+        
+        // Try to get real public key from wallet or metadata
+        $publicKey = 'placeholder_public_key';
+        
+        if (isset($metadata['public_key'])) {
+            $publicKey = $metadata['public_key'];
+        } else {
+            // Try to get public key from wallets table
+            $stmt = $this->database->prepare("SELECT public_key FROM wallets WHERE address = ?");
+            $stmt->execute([$validatorAddress]);
+            $wallet = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($wallet && $wallet['public_key'] !== 'placeholder_public_key') {
+                $publicKey = $wallet['public_key'];
+            }
+        }
         
         $stmt = $this->database->prepare("
             INSERT INTO validators (address, public_key, status, commission_rate, created_at)
             VALUES (?, ?, 'active', ?, NOW())
-            ON DUPLICATE KEY UPDATE status = 'active', commission_rate = VALUES(commission_rate)
+            ON DUPLICATE KEY UPDATE 
+                status = 'active', 
+                commission_rate = VALUES(commission_rate),
+                public_key = CASE 
+                    WHEN public_key = 'placeholder_public_key' THEN VALUES(public_key)
+                    ELSE public_key 
+                END
         ");
         
         $stmt->execute([
-            $metadata['validator_address'] ?? $transaction['from'],
-            'placeholder_public_key', // Will be updated with real public key
+            $validatorAddress,
+            $publicKey,
             $metadata['commission_rate'] ?? 0.1
         ]);
     }

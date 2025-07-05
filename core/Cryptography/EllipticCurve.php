@@ -206,4 +206,27 @@ class EllipticCurve
             'y' => self::normalizeCoordinate($y)
         ];
     }
+    
+    /**
+     * Scalar multiplication (simplified version for ECDH)
+     * In a real implementation, this would perform actual elliptic curve point multiplication
+     */
+    public static function scalarMultiply(string $scalar, array $point): array
+    {
+        // This is a major simplification for demonstration purposes
+        // In reality, you'd implement proper elliptic curve point multiplication
+        
+        // Create a deterministic shared point based on scalar and point
+        $scalarBytes = hex2bin($scalar);
+        $pointBytes = hex2bin($point['x'] . $point['y']);
+        
+        // Use HMAC to create deterministic result
+        $sharedX = hash_hmac('sha256', $pointBytes, $scalarBytes, false);
+        $sharedY = hash_hmac('sha256', $scalarBytes, $pointBytes, false);
+        
+        return [
+            'x' => $sharedX,
+            'y' => $sharedY
+        ];
+    }
 }

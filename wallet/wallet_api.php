@@ -14,24 +14,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
+// Подключаем логгер
+require_once __DIR__ . '/WalletLogger.php';
+
 /**
- * Функция для записи логов в файл
+ * Функция для записи логов в файл (обертка для обратной совместимости)
  */
 function writeLog($message, $level = 'INFO') {
-    $baseDir = dirname(__DIR__);
-    $logDir = $baseDir . '/logs';
-    
-    // Создаем папку logs если её нет
-    if (!is_dir($logDir)) {
-        mkdir($logDir, 0755, true);
-    }
-    
-    $logFile = $logDir . '/wallet_api.log';
-    $timestamp = date('Y-m-d H:i:s');
-    $logMessage = "[{$timestamp}] [{$level}] {$message}" . PHP_EOL;
-    
-    file_put_contents($logFile, $logMessage, FILE_APPEND | LOCK_EX);
+    WalletLogger::log($message, $level);
 }
+
+// Обработчик фатальных ошибок
+register_shutdown_function(function() {
+    $error = error_get_last();
+    if ($error && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR])) {
+        WalletLogger::error("FATAL ERROR: " . $error['message']);
+        WalletLogger::error("File: " . $error['file']);
+        WalletLogger::error("Line: " . $error['line']);
+        
+        // Try to output JSON error response if possible
+        if (!headers_sent()) {
+            http_response_code(500);
+            header('Content-Type: application/json');
+            echo json_encode([
+                'success' => false,
+                'error' => 'Fatal error occurred: ' . $error['message'],
+                'debug_info' => [
+                    'file' => $error['file'],
+                    'line' => $error['line'],
+                    'type' => 'fatal_error'
+                ]
+            ]);
+        }
+    }
+});
 
 try {
     // Определяем базовую директорию проекта
@@ -54,6 +70,14 @@ try {
     if (file_exists($configFile)) {
         $config = require $configFile;
     }
+    
+    // Добавляем debug_mode если не установлен
+    if (!isset($config['debug_mode'])) {
+        $config['debug_mode'] = true; // По умолчанию включаем отладку
+    }
+    
+    // Инициализируем логгер с конфигурацией
+    WalletLogger::init($config);
     
     // Создаем конфигурацию базы данных с приоритетом: config.php -> .env -> defaults
     $dbConfig = $config['database'] ?? [];
@@ -215,13 +239,12 @@ try {
             $amount = $input['amount'] ?? 0;
             $privateKey = $input['private_key'] ?? '';
             $memo = $input['memo'] ?? '';
-            $encryptMemo = $input['encrypt_memo'] ?? false;
             
             if (!$fromAddress || !$toAddress || !$amount || !$privateKey) {
                 throw new Exception('From address, to address, amount and private key are required');
             }
             
-            $result = transferTokens($walletManager, $blockchainManager, $fromAddress, $toAddress, $amount, $privateKey, $memo, $encryptMemo);
+            $result = transferTokens($walletManager, $blockchainManager, $fromAddress, $toAddress, $amount, $privateKey, $memo);
             break;
             
         case 'decrypt_message':
@@ -342,9 +365,6 @@ try {
     
     // Записываем в файл логов
     writeLog("Wallet API Error: " . json_encode($errorInfo), 'ERROR');
-    
-    // Также выводим в PHP error log
-    error_log("Wallet API Error: " . $e->getMessage() . " in " . $e->getFile() . " on line " . $e->getLine());
     
     http_response_code(500);
     echo json_encode([
@@ -505,17 +525,42 @@ function generateMnemonic($walletManager) {
 function createWalletFromMnemonic($walletManager, $blockchainManager, array $mnemonic) {
     try {
         writeLog("Creating wallet from mnemonic with blockchain integration", 'INFO');
+        writeLog("Mnemonic word count: " . count($mnemonic), 'DEBUG');
+        writeLog("Mnemonic words: " . implode(' ', $mnemonic), 'DEBUG');
         
-        // 1. Create wallet using WalletManager
+        // 1. First, check if wallet already exists by deriving address from mnemonic
+        writeLog("Checking if wallet already exists from this mnemonic", 'DEBUG');
+        try {
+            $tempWalletData = $walletManager->restoreWalletFromMnemonic($mnemonic);
+            $existingAddress = $tempWalletData['address'];
+            writeLog("Address derived from mnemonic: " . $existingAddress, 'DEBUG');
+            
+            // Check if this address already exists in database
+            $existingWallet = $walletManager->getWalletInfo($existingAddress);
+            if ($existingWallet) {
+                writeLog("Wallet already exists, returning existing wallet instead of creating new", 'INFO');
+                throw new Exception("Wallet with this mnemonic already exists. Please use 'Restore Wallet' instead of 'Create Wallet'. Address: " . $existingAddress);
+            }
+            writeLog("Wallet does not exist, proceeding with creation", 'DEBUG');
+        } catch (Exception $e) {
+            if (strpos($e->getMessage(), 'already exists') !== false) {
+                throw $e; // Re-throw our custom message
+            }
+            writeLog("Error checking existing wallet (proceeding with creation): " . $e->getMessage(), 'DEBUG');
+        }
+        
+        // 2. Create wallet using WalletManager
+        writeLog("Calling WalletManager::createWalletFromMnemonic", 'DEBUG');
         $walletData = $walletManager->createWalletFromMnemonic($mnemonic);
         writeLog("Wallet created from mnemonic: " . $walletData['address'], 'INFO');
         
-        // 2. Record wallet creation in blockchain
+        // 3. Record wallet creation in blockchain
+        writeLog("Recording wallet creation in blockchain", 'DEBUG');
         $blockchainResult = $blockchainManager->createWalletWithBlockchain($walletData);
         writeLog("Blockchain recording result: " . json_encode($blockchainResult['blockchain_recorded']), 'INFO');
         
-        // 3. Return combined result
-        return [
+        // 4. Return combined result
+        $result = [
             'wallet' => $walletData,
             'blockchain' => [
                 'recorded' => $blockchainResult['blockchain_recorded'],
@@ -524,8 +569,13 @@ function createWalletFromMnemonic($walletManager, $blockchainManager, array $mne
                 'block_height' => $blockchainResult['block']['height'] ?? null
             ]
         ];
+        
+        writeLog("Wallet creation from mnemonic completed successfully", 'INFO');
+        return $result;
+        
     } catch (Exception $e) {
         writeLog("Error creating wallet from mnemonic: " . $e->getMessage(), 'ERROR');
+        writeLog("Exception trace: " . $e->getTraceAsString(), 'DEBUG');
         throw new Exception('Failed to create wallet from mnemonic: ' . $e->getMessage());
     }
 }
@@ -550,21 +600,28 @@ function validateMnemonic(array $mnemonic) {
 function restoreWalletFromMnemonic($walletManager, $blockchainManager, array $mnemonic) {
     try {
         writeLog("Starting wallet restoration from mnemonic", 'INFO');
+        writeLog("Mnemonic word count: " . count($mnemonic), 'DEBUG');
+        writeLog("Mnemonic words: " . implode(' ', $mnemonic), 'DEBUG');
         
         // 1. Restore wallet using WalletManager (НЕ записываем в блокчейн!)
+        writeLog("Calling WalletManager::restoreWalletFromMnemonic", 'DEBUG');
         $walletData = $walletManager->restoreWalletFromMnemonic($mnemonic);
         writeLog("Wallet restored: " . $walletData['address'] . " from: " . ($walletData['restored_from'] ?? 'unknown'), 'INFO');
         
         // 2. Проверяем историю транзакций для дополнительной информации
+        writeLog("Getting wallet transaction history", 'DEBUG');
         $transactionHistory = $blockchainManager->getWalletTransactionHistory($walletData['address']);
+        writeLog("Verifying wallet in blockchain", 'DEBUG');
         $isVerified = $blockchainManager->verifyWalletInBlockchain($walletData['address']);
         
         writeLog("Wallet verification in blockchain: " . ($isVerified ? 'FOUND' : 'NOT_FOUND'), 'INFO');
         writeLog("Transaction history count: " . count($transactionHistory), 'INFO');
         
         // 3. Return result WITHOUT blockchain recording
-        return [
+        $result = [
             'wallet' => $walletData,
+            'public_key' => $walletData['public_key'] ?? null,
+            'private_key' => $walletData['private_key'] ?? null,
             'restored' => true,
             'verification' => [
                 'exists_in_blockchain' => $isVerified,
@@ -575,8 +632,13 @@ function restoreWalletFromMnemonic($walletManager, $blockchainManager, array $mn
                      'Wallet restored from seed phrase. No previous activity found.' : 
                      'Wallet restored successfully with transaction history.'
         ];
+        
+        writeLog("Wallet restoration completed successfully", 'INFO');
+        return $result;
+        
     } catch (Exception $e) {
         writeLog("Exception in restoreWalletFromMnemonic: " . $e->getMessage(), 'ERROR');
+        writeLog("Exception trace: " . $e->getTraceAsString(), 'DEBUG');
         throw new Exception('Failed to restore wallet: ' . $e->getMessage());
     }
 }
@@ -852,7 +914,44 @@ function activateRestoredWallet($walletManager, $blockchainManager, string $addr
         writeLog("Activating restored wallet in blockchain: $address", 'INFO');
         
         // Проверяем, что кошелек действительно был восстановлен
+        writeLog("Checking if wallet exists in database", 'DEBUG');
         $walletInfo = $walletManager->getWalletInfo($address);
+        writeLog("Wallet info check result: " . ($walletInfo ? 'FOUND' : 'NOT_FOUND'), 'DEBUG');
+        
+        if (!$walletInfo) {
+            // Попытаемся восстановить кошелек автоматически, если он есть в блокчейне
+            writeLog("Wallet not found in database, checking blockchain", 'INFO');
+            $blockchainBalance = $walletManager->calculateBalanceFromBlockchain($address);
+            $stakedBalance = $walletManager->calculateStakedBalanceFromBlockchain($address);
+            
+            writeLog("Blockchain balances - Available: $blockchainBalance, Staked: $stakedBalance", 'INFO');
+            
+            if ($blockchainBalance > 0 || $stakedBalance > 0) {
+                // Кошелек есть в блокчейне, но нет в БД - восстанавливаем запись
+                writeLog("Wallet found in blockchain but not in database, creating record", 'INFO');
+                
+                $stmt = $walletManager->getDatabase()->prepare("
+                    INSERT INTO wallets (address, public_key, balance, staked_balance, created_at, updated_at) 
+                    VALUES (?, ?, ?, ?, NOW(), NOW())
+                    ON DUPLICATE KEY UPDATE 
+                    public_key = VALUES(public_key),
+                    balance = VALUES(balance),
+                    staked_balance = VALUES(staked_balance),
+                    updated_at = NOW()
+                ");
+                
+                $stmt->execute([$address, $publicKey, $blockchainBalance, $stakedBalance]);
+                writeLog("Wallet record created/updated in database", 'INFO');
+                
+                // Повторно получаем информацию о кошельке
+                $walletInfo = $walletManager->getWalletInfo($address);
+                writeLog("Wallet info after creation: " . ($walletInfo ? 'FOUND' : 'STILL_NOT_FOUND'), 'DEBUG');
+            } else {
+                writeLog("Wallet not found in blockchain either", 'ERROR');
+                throw new Exception('Wallet not found in database or blockchain. Please restore it first.');
+            }
+        }
+        
         if (!$walletInfo) {
             throw new Exception('Wallet not found. Please restore it first.');
         }
@@ -867,22 +966,52 @@ function activateRestoredWallet($walletManager, $blockchainManager, string $addr
             ];
         }
         
-        // Создаем транзакцию активации
+        // ВАЖНО: Пересчитываем баланс из блокчейна перед активацией
+        $blockchainBalance = $walletManager->calculateBalanceFromBlockchain($address);
+        $stakedBalance = $walletManager->calculateStakedBalanceFromBlockchain($address);
+        
+        writeLog("Calculated balances - Available: $blockchainBalance, Staked: $stakedBalance", 'INFO');
+        
+        // Обновляем баланс в кошельке
+        writeLog("Updating wallet balances in database", 'INFO');
+        if ($blockchainBalance > 0) {
+            $walletManager->updateBalance($address, $blockchainBalance);
+            writeLog("Updated available balance to: $blockchainBalance", 'INFO');
+        }
+        if ($stakedBalance > 0) {
+            $walletManager->updateStakedBalance($address, $stakedBalance);
+            writeLog("Updated staked balance to: $stakedBalance", 'INFO');
+        }
+        
+        // Создаем транзакцию активации с правильным балансом
         $walletData = [
             'address' => $address,
             'public_key' => $publicKey,
-            'balance' => $walletInfo['balance'] ?? 0,
+            'balance' => $blockchainBalance,
+            'staked_balance' => $stakedBalance,
             'restored' => true
         ];
         
-        // Записываем активацию в блокчейн
-        $blockchainResult = $blockchainManager->createWalletWithBlockchain($walletData);
+        writeLog("Created wallet data for blockchain activation: " . json_encode($walletData), 'INFO');
         
-        writeLog("Wallet activated in blockchain: " . json_encode($blockchainResult['blockchain_recorded']), 'INFO');
+        // Записываем активацию в блокчейн (без изменения баланса)
+        writeLog("Starting blockchain activation process", 'INFO');
+        try {
+            $blockchainResult = $blockchainManager->createWalletWithBlockchain($walletData);
+            writeLog("Blockchain activation completed successfully", 'INFO');
+        } catch (Exception $blockchainError) {
+            writeLog("Blockchain activation failed: " . $blockchainError->getMessage(), 'ERROR');
+            writeLog("Blockchain error trace: " . $blockchainError->getTraceAsString(), 'ERROR');
+            throw $blockchainError;
+        }
+        
+        writeLog("Wallet activated in blockchain with balance: $blockchainBalance", 'INFO');
         
         return [
             'activated' => true,
             'address' => $address,
+            'balance' => $blockchainBalance,
+            'staked_balance' => $stakedBalance,
             'blockchain' => [
                 'recorded' => $blockchainResult['blockchain_recorded'],
                 'transaction_hash' => $blockchainResult['transaction']['hash'] ?? null,
@@ -901,7 +1030,7 @@ function activateRestoredWallet($walletManager, $blockchainManager, string $addr
 /**
  * Transfer tokens between wallets with blockchain recording
  */
-function transferTokens($walletManager, $blockchainManager, string $fromAddress, string $toAddress, float $amount, string $privateKey, string $memo = '', bool $encryptMemo = false) {
+function transferTokens($walletManager, $blockchainManager, string $fromAddress, string $toAddress, float $amount, string $privateKey, string $memo = '') {
     try {
         writeLog("Starting token transfer: $fromAddress -> $toAddress, amount: $amount", 'INFO');
         
@@ -921,32 +1050,41 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
             throw new Exception('Invalid private key format');
         }
         
-        // 4. Encrypt memo if requested and message exists
-        $finalMemo = $memo;
-        if ($encryptMemo && !empty($memo)) {
+        // 4. Always encrypt memo if message exists
+        $finalMemo = '';
+        $encryptedData = null;
+        if (!empty($memo)) {
             try {
+                // Check memo length
+                if (strlen($memo) > 1000) {
+                    throw new Exception('Message is too long. Maximum 1000 characters allowed.');
+                }
+                
                 // Get recipient public key for encryption
                 $recipientWallet = $walletManager->getWalletByAddress($toAddress);
+                writeLog("Looking for recipient wallet: $toAddress", 'INFO');
+                writeLog("Recipient wallet found: " . ($recipientWallet ? 'YES' : 'NO'), 'INFO');
+                
                 if ($recipientWallet && !empty($recipientWallet['public_key'])) {
-                    // Get sender private key for signing
-                    $senderWallet = $walletManager->getWalletByAddress($fromAddress);
-                    if ($senderWallet && !empty($senderWallet['private_key'])) {
-                        $encryptedData = \Blockchain\Core\Cryptography\MessageEncryption::createSecureMessage(
-                            $memo, 
-                            $recipientWallet['public_key'], 
-                            $senderWallet['private_key']
-                        );
-                        $finalMemo = 'ENCRYPTED:' . base64_encode(json_encode($encryptedData));
-                        writeLog("Message encrypted and signed for recipient", 'INFO');
-                    } else {
-                        writeLog("Sender private key not accessible for signing, sending unencrypted", 'WARNING');
-                    }
+                    writeLog("Recipient has public key, proceeding with encryption", 'INFO');
+                    writeLog("Recipient public key: " . $recipientWallet['public_key'], 'DEBUG');
+                    writeLog("Recipient public key length: " . strlen($recipientWallet['public_key']), 'DEBUG');
+                    
+                    // Always encrypt messages using MessageEncryption with secp256k1 keys
+                    $encryptedData = \Blockchain\Core\Cryptography\MessageEncryption::createSecureMessage(
+                        $memo, 
+                        $recipientWallet['public_key'], 
+                        $privateKey
+                    );
+                    writeLog("Message encrypted and signed for recipient using ECIES", 'INFO');
                 } else {
-                    writeLog("Recipient public key not found, sending unencrypted", 'WARNING');
+                    writeLog("Recipient wallet data: " . json_encode($recipientWallet), 'DEBUG');
+                    throw new Exception("Recipient public key not found. Cannot encrypt message for address: $toAddress. All messages must be encrypted.");
                 }
             } catch (Exception $e) {
-                writeLog("Encryption failed: " . $e->getMessage(), 'WARNING');
-                // Continue with unencrypted message
+                writeLog("Encryption failed: " . $e->getMessage(), 'ERROR');
+                // Re-throw all encryption errors - we don't want unencrypted messages
+                throw $e;
             }
         }
         
@@ -967,14 +1105,19 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
             'timestamp' => time(),
             'data' => [
                 'action' => 'transfer_tokens',
-                'memo' => $finalMemo,
+                'memo' => $finalMemo, // This will be empty if message was encrypted
+                'encrypted' => ($encryptedData !== null), // True if message was encrypted
                 'transfer_type' => 'wallet_to_wallet',
-                'original_memo_length' => strlen($memo),
-                'encrypted' => $encryptMemo && !empty($memo)
+                'original_memo_length' => strlen($memo)
             ],
             'signature' => hash_hmac('sha256', $fromAddress . $toAddress . $amount, $privateKey),
             'status' => 'pending'
         ];
+        
+        // Add encrypted data to the transaction data if available
+        if ($encryptedData !== null) {
+            $transferTx['data']['memo'] = $encryptedData; // Store the full encrypted message structure
+        }
         
         // 6. Update balances in database
         $pdo = $walletManager->getDatabase();
@@ -1326,35 +1469,41 @@ function getStakingInfo($walletManager, string $address) {
  */
 function decryptMessage(string $encryptedMessage, string $privateKey, string $senderPublicKey = '') {
     try {
-        // Check if message is encrypted
-        if (!str_starts_with($encryptedMessage, 'ENCRYPTED:')) {
+        // For new format, expect the encrypted message to be a JSON object
+        $secureMessage = json_decode($encryptedMessage, true);
+        
+        if (!$secureMessage || !isset($secureMessage['encrypted_data'])) {
             return [
                 'success' => true,
                 'decrypted' => false,
-                'message' => $encryptedMessage
+                'message' => $encryptedMessage,
+                'error' => 'Message is not encrypted or in old format'
             ];
         }
         
-        // Extract encrypted data
-        $encryptedData = base64_decode(substr($encryptedMessage, 10)); // Remove 'ENCRYPTED:' prefix
-        $secureMessage = json_decode($encryptedData, true);
-        
-        if (!$secureMessage) {
-            throw new Exception('Invalid encrypted message format');
+        // Decrypt message using new format
+        if (!empty($senderPublicKey)) {
+            // Use full verification if sender public key is provided
+            $decryptedMessage = \Blockchain\Core\Cryptography\MessageEncryption::decryptSecureMessage(
+                $secureMessage, 
+                $privateKey, 
+                $senderPublicKey
+            );
+            $verified = true;
+        } else {
+            // Use ECIES-only decryption without signature verification
+            $decryptedMessage = \Blockchain\Core\Cryptography\MessageEncryption::decryptSecureMessageNoVerify(
+                $secureMessage, 
+                $privateKey
+            );
+            $verified = false;
         }
-        
-        // Decrypt message
-        $decryptedMessage = \Blockchain\Core\Cryptography\MessageEncryption::decryptSecureMessage(
-            $secureMessage, 
-            $privateKey, 
-            $senderPublicKey
-        );
         
         return [
             'success' => true,
             'decrypted' => true,
             'message' => $decryptedMessage,
-            'verified' => !empty($senderPublicKey)
+            'verified' => $verified
         ];
         
     } catch (Exception $e) {

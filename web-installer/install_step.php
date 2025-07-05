@@ -1424,6 +1424,64 @@ function createWallet(array $passedConfig = []): array
         // Skip node_id update - field doesn't exist in current schema
         $logMessage = "Skipping node_id update (field not in schema)\n";
         file_put_contents($logFile, $logMessage, FILE_APPEND);
+
+        // Create validator record in database for primary node
+        if ($isPrimaryNode) {
+            try {
+                // Check if validators table exists
+                $stmt = $pdo->query("SHOW TABLES LIKE 'validators'");
+                $validatorsTableExists = $stmt->rowCount() > 0;
+                
+                if ($validatorsTableExists) {
+                    // Check if validator already exists
+                    $stmt = $pdo->prepare("SELECT id FROM validators WHERE address = ?");
+                    $stmt->execute([$walletData['address']]);
+                    $existingValidator = $stmt->fetch();
+                    
+                    if (!$existingValidator) {
+                        // Create genesis validator record using current database schema
+                        $stmt = $pdo->prepare("
+                            INSERT INTO validators (
+                                address, public_key, stake, status, 
+                                commission_rate, blocks_produced, 
+                                blocks_missed, last_active_block, 
+                                created_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+                        ");
+                        
+                        $result = $stmt->execute([
+                            $walletData['address'],
+                            $walletData['public_key'],
+                            $stakingAmount,
+                            'active', // status = active
+                            0.1000, // commission_rate = 10%
+                            1, // blocks_produced = 1 (genesis)
+                            0, // blocks_missed = 0
+                            0 // last_active_block = genesis
+                        ]);
+                        
+                        if ($result) {
+                            $validatorId = $pdo->lastInsertId();
+                            $logMessage = "Created genesis validator record with ID: $validatorId\n";
+                            file_put_contents($logFile, $logMessage, FILE_APPEND);
+                        } else {
+                            $logMessage = "Warning: Failed to create validator record\n";
+                            file_put_contents($logFile, $logMessage, FILE_APPEND);
+                        }
+                    } else {
+                        $logMessage = "Validator record already exists for address: " . $walletData['address'] . "\n";
+                        file_put_contents($logFile, $logMessage, FILE_APPEND);
+                    }
+                } else {
+                    $logMessage = "Validators table not found, skipping validator record creation\n";
+                    file_put_contents($logFile, $logMessage, FILE_APPEND);
+                }
+            } catch (Exception $e) {
+                $logMessage = "Warning: Could not create validator record: " . $e->getMessage() . "\n";
+                file_put_contents($logFile, $logMessage, FILE_APPEND);
+                // Don't throw exception, just log warning
+            }
+        }
         
         // Add staking record if amount > 0
         if ($stakingAmount > 0 && $stakingAmount <= $walletAmount) {
@@ -1433,23 +1491,39 @@ function createWallet(array $passedConfig = []): array
                 $stakingTableExists = $stmt->rowCount() > 0;
                 
                 if ($stakingTableExists) {
-                    // NOTE: Staking records should be created via blockchain transactions in genesis block
-                    // not as direct database inserts. This maintains blockchain integrity.
-                    $logMessage = "Staking will be handled via genesis block transactions\n";
-                    file_put_contents($logFile, $logMessage, FILE_APPEND);
+                    // Check if staking record already exists
+                    $stmt = $pdo->prepare("SELECT id FROM staking WHERE validator = ? AND staker = ?");
+                    $stmt->execute([$walletData['address'], $walletData['address']]);
+                    $existingStaking = $stmt->fetch();
                     
-                    /*
-                    $stmt = $pdo->prepare("
-                        INSERT INTO staking (validator, staker, amount, status, start_block, created_at) 
-                        VALUES (?, ?, ?, 'active', 0, NOW())
-                    ");
-                    $result = $stmt->execute([$walletData['address'], $walletData['address'], $stakingAmount]);
-                    
-                    if ($result) {
-                        $logMessage = "Added staking record: $stakingAmount tokens\n";
+                    if (!$existingStaking) {
+                        // Create staking record for the genesis validator
+                        $stmt = $pdo->prepare("
+                            INSERT INTO staking (validator, staker, amount, status, start_block, created_at) 
+                            VALUES (?, ?, ?, 'active', 0, NOW())
+                        ");
+                        $result = $stmt->execute([$walletData['address'], $walletData['address'], $stakingAmount]);
+                        
+                        if ($result) {
+                            $stakingId = $pdo->lastInsertId();
+                            $logMessage = "Created staking record with ID: $stakingId, amount: $stakingAmount tokens\n";
+                            file_put_contents($logFile, $logMessage, FILE_APPEND);
+                            
+                            // Update validator stake amount
+                            $stmt = $pdo->prepare("UPDATE validators SET stake = ? WHERE address = ?");
+                            $updateResult = $stmt->execute([$stakingAmount, $walletData['address']]);
+                            if ($updateResult) {
+                                $logMessage = "Updated validator stake to: $stakingAmount tokens\n";
+                                file_put_contents($logFile, $logMessage, FILE_APPEND);
+                            }
+                        } else {
+                            $logMessage = "Warning: Failed to create staking record\n";
+                            file_put_contents($logFile, $logMessage, FILE_APPEND);
+                        }
+                    } else {
+                        $logMessage = "Staking record already exists for validator: " . $walletData['address'] . "\n";
                         file_put_contents($logFile, $logMessage, FILE_APPEND);
                     }
-                    */
                 } else {
                     $logMessage = "Staking table not found, skipping staking record creation\n";
                     file_put_contents($logFile, $logMessage, FILE_APPEND);

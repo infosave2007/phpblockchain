@@ -9,13 +9,14 @@ use Blockchain\Core\Contracts\TransactionInterface;
 use Blockchain\Core\Transaction\Transaction;
 use Blockchain\Core\Storage\BlockStorage;
 use Blockchain\Core\Consensus\ProofOfStake;
+use Blockchain\Core\Consensus\ValidatorManager;
 use Blockchain\Core\Network\NodeManager;
 use Blockchain\Core\Crypto\Hash;
 use Blockchain\Core\Events\BlockAddedEvent;
 use Blockchain\Core\Events\EventDispatcher;
 
 /**
- * Main blockchain class with PoS support and smart contracts
+ * Main blockchain class with PoS support, smart contracts, and centralized ValidatorManager
  */
 class Blockchain implements BlockchainInterface
 {
@@ -23,6 +24,7 @@ class Blockchain implements BlockchainInterface
     private ProofOfStake $consensus;
     private NodeManager $nodeManager;
     private EventDispatcher $eventDispatcher;
+    private ?ValidatorManager $validatorManager;
     private array $pendingTransactions;
     private array $stakeholders;
     private int $blockTime;
@@ -34,18 +36,26 @@ class Blockchain implements BlockchainInterface
         BlockStorage $storage,
         ProofOfStake $consensus,
         NodeManager $nodeManager,
-        EventDispatcher $eventDispatcher
+        EventDispatcher $eventDispatcher,
+        ?ValidatorManager $validatorManager = null
     ) {
         $this->storage = $storage;
         $this->consensus = $consensus;
         $this->nodeManager = $nodeManager;
         $this->eventDispatcher = $eventDispatcher;
+        $this->validatorManager = $validatorManager;
         $this->pendingTransactions = [];
         $this->stakeholders = [];
         $this->contractStorage = [];
         $this->blockTime = 10; // 10 seconds between blocks
         $this->maxTransactionsPerBlock = 1000;
         $this->contractStorage = [];
+        
+        // Integrate ValidatorManager with consensus and storage
+        if ($this->validatorManager) {
+            $this->consensus->setValidatorManager($this->validatorManager);
+            $this->storage->setValidatorManager($this->validatorManager);
+        }
         
         $this->initializeGenesis();
     }
@@ -80,7 +90,20 @@ class Blockchain implements BlockchainInterface
             ]
         ];
 
-        return new Block(0, $genesisTransactions, '0');
+        // Get genesis validator if ValidatorManager is available
+        $validators = [];
+        $stakes = [];
+        
+        if ($this->validatorManager) {
+            $genesisValidator = $this->validatorManager->getGenesisValidator();
+            if ($genesisValidator) {
+                $validators = [$genesisValidator];
+                // Set initial stake for genesis validator
+                $stakes = [$genesisValidator => '1000.00000000'];
+            }
+        }
+
+        return new Block(0, $genesisTransactions, '0', $validators, $stakes);
     }
 
     /**
@@ -609,6 +632,21 @@ class Blockchain implements BlockchainInterface
                 }
                 
                 // Add validator registration transaction
+                $validatorMetadata = [
+                    'action' => 'register_validator',
+                    'validator_address' => $config['wallet_address'],
+                    'commission_rate' => 0.1,
+                    'min_delegation' => $config['min_stake_amount'] ?? 1000
+                ];
+                
+                // Try to get public key from wallets table
+                $stmt = $database->prepare("SELECT public_key FROM wallets WHERE address = ?");
+                $stmt->execute([$config['wallet_address']]);
+                $wallet = $stmt->fetch(\PDO::FETCH_ASSOC);
+                if ($wallet && $wallet['public_key'] && $wallet['public_key'] !== 'placeholder_public_key') {
+                    $validatorMetadata['public_key'] = $wallet['public_key'];
+                }
+                
                 $genesisTransactions[] = [
                     'hash' => hash('sha256', 'genesis_validator_' . $config['wallet_address'] . '_' . time()),
                     'type' => 'register_validator',
@@ -616,12 +654,7 @@ class Blockchain implements BlockchainInterface
                     'to' => 'validator_registry',
                     'amount' => 0.0,
                     'timestamp' => time() + 3,
-                    'metadata' => [
-                        'action' => 'register_validator',
-                        'validator_address' => $config['wallet_address'],
-                        'commission_rate' => 0.1,
-                        'min_delegation' => $config['min_stake_amount'] ?? 1000
-                    ]
+                    'metadata' => $validatorMetadata
                 ];
                 
                 $logMessage = "Added validator registration transaction\n";
@@ -657,13 +690,19 @@ class Blockchain implements BlockchainInterface
             $logMessage = "Block instance created successfully\n";
             file_put_contents($logFile, $logMessage, FILE_APPEND);
             
-            // Save to database using BlockStorage
-            $logMessage = "Creating BlockStorage instance...\n";
+            // Save to database using BlockStorage with ValidatorManager
+            $logMessage = "Creating ValidatorManager instance for genesis block...\n";
             file_put_contents($logFile, $logMessage, FILE_APPEND);
             
-            $blockStorage = new \Blockchain\Core\Storage\BlockStorage('blockchain.json', $database);
+            // Initialize ValidatorManager for proper genesis block signing
+            $validatorManager = new \Blockchain\Core\Consensus\ValidatorManager($database, $config);
             
-            $logMessage = "BlockStorage created, calling saveToDatabaseStorage...\n";
+            $logMessage = "Creating BlockStorage instance with ValidatorManager...\n";
+            file_put_contents($logFile, $logMessage, FILE_APPEND);
+            
+            $blockStorage = new \Blockchain\Core\Storage\BlockStorage('blockchain.json', $database, $validatorManager);
+            
+            $logMessage = "BlockStorage created with ValidatorManager, calling saveToDatabaseStorage...\n";
             file_put_contents($logFile, $logMessage, FILE_APPEND);
             
             $result = $blockStorage->saveToDatabaseStorage($genesisBlock);

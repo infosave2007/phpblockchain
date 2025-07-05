@@ -117,3 +117,7 @@ storage/blockchain/genesis.json
 .gitignore
 storage/blockchain/chain.json
 storage/state/blockchain_state.json
+storage/blockchain/blockchain.bin
+storage/blockchain/blockchain.bin
+.gitignore
+storage/blockchain/blockchain.bin
