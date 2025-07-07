@@ -620,7 +620,7 @@ function getLanguageOptions($currentLang) {
             text-align: center;
             font-family: 'Courier New', monospace;
             font-weight: bold;
-            font-size: 0.9em;
+            font-size: 1.15em;
             line-height: 1.2;
             min-height: 60px;
             display: flex;
@@ -648,7 +648,7 @@ function getLanguageOptions($currentLang) {
 
         .word-number {
             display: block;
-            font-size: 0.75em;
+            font-size: 1em;
             color: #6c757d;
             margin-bottom: 4px;
             font-weight: normal;
@@ -656,7 +656,7 @@ function getLanguageOptions($currentLang) {
         }
 
         .word-text {
-            font-size: 0.85em;
+            font-size: 1.05em;
             color: #495057;
             font-weight: bold;
             word-break: break-word;
@@ -695,16 +695,16 @@ function getLanguageOptions($currentLang) {
             .mnemonic-word {
                 padding: 8px 4px;
                 min-height: 50px;
-                font-size: 0.8em;
+                font-size: 1em;
             }
             
             .word-number {
-                font-size: 0.65em;
+                font-size: 0.8em;
                 margin-bottom: 2px;
             }
             
             .word-text {
-                font-size: 0.75em;
+                font-size: 0.95em;
             }
         }
 
