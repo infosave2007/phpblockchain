@@ -119,13 +119,9 @@ RATE_LIMIT_ENABLED=true
 ```
 
 #### Web-based Installation
-For easier setup, use the web installer:
-```bash
-# Start development server
-php server.php
 
 # Open browser and navigate to:
-http://localhost:8080/web-installer/
+http://localhost:xxxx/web-installer/
 
 # Follow the installation wizard
 ```
