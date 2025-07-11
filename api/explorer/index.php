@@ -89,6 +89,9 @@ try {
 
 function getNetworkStats(PDO $pdo, string $network): array
 {
+    $debug = $_GET['debug'] ?? false;
+    $debugInfo = [];
+    
     // Get blockchain state
     $stateFile = '../../storage/state/blockchain_state.json';
     $genesisFile = '../../storage/blockchain/genesis.json';
@@ -117,14 +120,21 @@ function getNetworkStats(PDO $pdo, string $network): array
             $stats['total_transactions'] = $state['total_transactions'] ?? 0;
             $stats['total_supply'] = $state['total_supply'] ?? 1000000;
             $stats['consensus'] = $state['consensus_type'] ?? 'pos';
+            if ($debug) {
+                $debugInfo['state_file'] = 'loaded';
+                $debugInfo['state_data'] = $state;
+            }
         }
+    } else if ($debug) {
+        $debugInfo['state_file'] = 'not_found';
     }
     
     // Load chain data if available
     if (file_exists($chainFile)) {
         $chain = json_decode(file_get_contents($chainFile), true);
         if ($chain && is_array($chain)) {
-            $stats['current_height'] = count($chain) - 1;
+            $fileHeight = count($chain) - 1;
+            $stats['current_height'] = $fileHeight;
             
             // Get last block time
             $lastBlock = end($chain);
@@ -140,7 +150,16 @@ function getNetworkStats(PDO $pdo, string $network): array
                 }
             }
             $stats['total_transactions'] = $totalTx;
+            
+            if ($debug) {
+                $debugInfo['chain_file'] = 'loaded';
+                $debugInfo['chain_blocks_count'] = count($chain);
+                $debugInfo['chain_total_tx'] = $totalTx;
+                $debugInfo['chain_height'] = $fileHeight;
+            }
         }
+    } else if ($debug) {
+        $debugInfo['chain_file'] = 'not_found';
     }
     
     // Try to get data from database
@@ -151,7 +170,9 @@ function getNetworkStats(PDO $pdo, string $network): array
             // Get block count
             $stmt = $pdo->query("SELECT COUNT(*) as count FROM blocks");
             $result = $stmt->fetch(PDO::FETCH_ASSOC);
-            $stats['current_height'] = max($stats['current_height'], ($result['count'] ?? 1) - 1);
+            $dbBlockCount = $result['count'] ?? 0;
+            $dbHeight = max(0, $dbBlockCount - 1);
+            $stats['current_height'] = max($stats['current_height'], $dbHeight);
             
             // Get latest block
             $stmt = $pdo->query("SELECT * FROM blocks ORDER BY height DESC LIMIT 1");
@@ -159,6 +180,15 @@ function getNetworkStats(PDO $pdo, string $network): array
             if ($latestBlock) {
                 $stats['last_block_time'] = (int)$latestBlock['timestamp'];
             }
+            
+            if ($debug) {
+                $debugInfo['db_blocks_table'] = 'exists';
+                $debugInfo['db_blocks_count'] = $dbBlockCount;
+                $debugInfo['db_height'] = $dbHeight;
+                $debugInfo['db_latest_block'] = $latestBlock;
+            }
+        } else if ($debug) {
+            $debugInfo['db_blocks_table'] = 'not_exists';
         }
         
         // Check if transactions table exists
@@ -166,10 +196,29 @@ function getNetworkStats(PDO $pdo, string $network): array
         if ($stmt->rowCount() > 0) {
             $stmt = $pdo->query("SELECT COUNT(*) as count FROM transactions");
             $result = $stmt->fetch(PDO::FETCH_ASSOC);
-            $stats['total_transactions'] = max($stats['total_transactions'], $result['count'] ?? 0);
+            $dbTxCount = $result['count'] ?? 0;
+            $stats['total_transactions'] = max($stats['total_transactions'], $dbTxCount);
+            
+            if ($debug) {
+                $debugInfo['db_transactions_table'] = 'exists';
+                $debugInfo['db_transactions_count'] = $dbTxCount;
+                
+                // Get sample transactions for debug
+                $stmt = $pdo->query("SELECT id, hash, status, block_height FROM transactions ORDER BY id DESC LIMIT 3");
+                $debugInfo['db_sample_transactions'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            }
+        } else if ($debug) {
+            $debugInfo['db_transactions_table'] = 'not_exists';
         }
     } catch (Exception $e) {
         // Database tables might not exist yet, use file-based data
+        if ($debug) {
+            $debugInfo['db_error'] = $e->getMessage();
+        }
+    }
+    
+    if ($debug) {
+        $stats['_debug'] = $debugInfo;
     }
     
     return $stats;
@@ -188,11 +237,15 @@ function getBlocks(PDO $pdo, string $network, int $page, int $limit): array
             $stmt = $pdo->prepare(
                 "SELECT * FROM blocks ORDER BY height DESC LIMIT ? OFFSET ?"
             );
-            $stmt->execute([$limit, $offset]);
+            $stmt->bindParam(1, $limit, PDO::PARAM_INT);
+            $stmt->bindParam(2, $offset, PDO::PARAM_INT);
+            $stmt->execute();
             $dbBlocks = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
             if ($debug) {
                 error_log("DEBUG: Found " . count($dbBlocks) . " blocks in database");
+                error_log("DEBUG: SQL query: SELECT * FROM blocks ORDER BY height DESC LIMIT $limit OFFSET $offset");
+                error_log("DEBUG: Raw database result: " . json_encode($dbBlocks));
             }
             
             if (!empty($dbBlocks)) {
@@ -222,7 +275,12 @@ function getBlocks(PDO $pdo, string $network, int $page, int $limit): array
                     'blocks' => $blocks,
                     'page' => $page,
                     'limit' => $limit,
-                    'total' => $total
+                    'total' => $total,
+                    '_debug' => $debug ? [
+                        'source' => 'database',
+                        'db_blocks_found' => count($dbBlocks),
+                        'db_total_count' => $total
+                    ] : null
                 ];
             }
         }
@@ -270,7 +328,12 @@ function getBlocks(PDO $pdo, string $network, int $page, int $limit): array
         'blocks' => $blocks,
         'page' => $page,
         'limit' => $limit,
-        'total' => count($blocks)
+        'total' => count($blocks),
+        '_debug' => $debug ? [
+            'source' => 'file',
+            'file_blocks_found' => count($blocks),
+            'chain_file_exists' => file_exists($chainFile)
+        ] : null
     ];
 }
 
@@ -294,11 +357,15 @@ function getTransactions(PDO $pdo, string $network, int $page, int $limit): arra
                  ORDER BY t.timestamp DESC, t.id DESC 
                  LIMIT ? OFFSET ?"
             );
-            $stmt->execute([$limit, $offset]);
+            $stmt->bindParam(1, $limit, PDO::PARAM_INT);
+            $stmt->bindParam(2, $offset, PDO::PARAM_INT);
+            $stmt->execute();
             $dbTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
             if ($debug) {
                 error_log("DEBUG: Found " . count($dbTransactions) . " transactions in database");
+                error_log("DEBUG: SQL query: transactions with limit $limit offset $offset");
+                error_log("DEBUG: Raw database result: " . json_encode($dbTransactions));
             }
             
             if (!empty($dbTransactions)) {
@@ -350,7 +417,13 @@ function getTransactions(PDO $pdo, string $network, int $page, int $limit): arra
                     'transactions' => $transactions,
                     'page' => $page,
                     'limit' => $limit,
-                    'total' => $total
+                    'total' => $total,
+                    '_debug' => $debug ? [
+                        'source' => 'database',
+                        'db_transactions_found' => count($dbTransactions),
+                        'db_total_count' => $total,
+                        'db_sample_data' => array_slice($dbTransactions, 0, 2)
+                    ] : null
                 ];
             }
         }
@@ -412,13 +485,108 @@ function getTransactions(PDO $pdo, string $network, int $page, int $limit): arra
         'transactions' => $transactions,
         'page' => $page,
         'limit' => $limit,
-        'total' => count($transactions)
+        'total' => count($transactions),
+        '_debug' => $debug ? [
+            'source' => 'file',
+            'file_transactions_found' => count($transactions),
+            'chain_file_exists' => file_exists($chainFile)
+        ] : null
     ];
 }
 
 function getBlock(PDO $pdo, string $network, string $blockId): array
 {
-    // Try to get block by index or hash
+    $debug = $_GET['debug'] ?? false;
+    
+    // First try to get block from database
+    try {
+        $stmt = $pdo->query("SHOW TABLES LIKE 'blocks'");
+        if ($stmt->rowCount() > 0) {
+            // Search by hash or height
+            if (is_numeric($blockId)) {
+                // Search by height (index)
+                $stmt = $pdo->prepare("SELECT * FROM blocks WHERE height = ? LIMIT 1");
+                $stmt->execute([(int)$blockId]);
+            } else {
+                // Search by hash
+                $stmt = $pdo->prepare("SELECT * FROM blocks WHERE hash = ? LIMIT 1");
+                $stmt->execute([$blockId]);
+            }
+            $dbBlock = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($debug) {
+                error_log("DEBUG: Block search - blockId: $blockId, is_numeric: " . (is_numeric($blockId) ? 'true' : 'false'));
+                error_log("DEBUG: Block SQL result: " . json_encode($dbBlock));
+            }
+            
+            if ($dbBlock) {
+                // Get transactions for this block
+                $stmt = $pdo->prepare(
+                    "SELECT * FROM transactions WHERE block_hash = ? ORDER BY timestamp ASC"
+                );
+                $stmt->execute([$dbBlock['hash']]);
+                $transactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                
+                // Format transactions
+                $formattedTransactions = array_map(function($tx) {
+                    // Parse transaction type from data field
+                    $txType = 'transfer';
+                    if (!empty($tx['data'])) {
+                        $data = json_decode($tx['data'], true);
+                        if (isset($data['action'])) {
+                            $txType = $data['action'];
+                        }
+                    }
+                    
+                    // Handle special addresses
+                    if ($tx['from_address'] === 'genesis') {
+                        $txType = 'genesis';
+                    } elseif ($tx['to_address'] === 'genesis_address') {
+                        $txType = 'genesis';
+                    } elseif ($tx['to_address'] === 'staking_contract') {
+                        $txType = 'stake';
+                    } elseif ($tx['to_address'] === 'validator_registry') {
+                        $txType = 'register_validator';
+                    } elseif ($tx['to_address'] === 'node_registry') {
+                        $txType = 'register_node';
+                    }
+                    
+                    return [
+                        'hash' => $tx['hash'],
+                        'type' => $txType,
+                        'from' => $tx['from_address'],
+                        'to' => $tx['to_address'],
+                        'amount' => (float)$tx['amount'],
+                        'timestamp' => (int)$tx['timestamp'],
+                        'status' => $tx['status'] === 'confirmed' ? 'confirmed' : 'pending'
+                    ];
+                }, $transactions);
+                
+                return [
+                    'block' => [
+                        'index' => (int)$dbBlock['height'],
+                        'hash' => $dbBlock['hash'],
+                        'previous_hash' => $dbBlock['parent_hash'],
+                        'timestamp' => (int)$dbBlock['timestamp'],
+                        'validator' => $dbBlock['validator'],
+                        'signature' => $dbBlock['signature'],
+                        'merkle_root' => $dbBlock['merkle_root'],
+                        'transactions' => $formattedTransactions,
+                        'metadata' => json_decode($dbBlock['metadata'] ?? '{}', true)
+                    ],
+                    'transaction_count' => count($formattedTransactions),
+                    'size' => strlen(json_encode($dbBlock)),
+                    '_debug' => $debug ? ['source' => 'database'] : null
+                ];
+            }
+        }
+    } catch (Exception $e) {
+        if ($debug) {
+            error_log("DEBUG: Database block query failed: " . $e->getMessage());
+        }
+    }
+    
+    // Fallback to chain file if not found in database
     $chainFile = '../../storage/blockchain/chain.json';
     
     if (file_exists($chainFile)) {
@@ -430,7 +598,8 @@ function getBlock(PDO $pdo, string $network, string $blockId): array
                     return [
                         'block' => $block,
                         'transaction_count' => count($block['transactions'] ?? []),
-                        'size' => strlen(json_encode($block))
+                        'size' => strlen(json_encode($block)),
+                        '_debug' => $debug ? ['source' => 'file'] : null
                     ];
                 }
             }
@@ -442,7 +611,76 @@ function getBlock(PDO $pdo, string $network, string $blockId): array
 
 function getTransaction(PDO $pdo, string $network, string $txId): array
 {
-    // Search for transaction in all blocks
+    $debug = $_GET['debug'] ?? false;
+    
+    // First try to get transaction from database
+    try {
+        $stmt = $pdo->query("SHOW TABLES LIKE 'transactions'");
+        if ($stmt->rowCount() > 0) {
+            // Search for transaction by hash
+            $stmt = $pdo->prepare(
+                "SELECT t.*, b.height as block_height_num FROM transactions t 
+                 LEFT JOIN blocks b ON t.block_hash = b.hash 
+                 WHERE t.hash = ? LIMIT 1"
+            );
+            $stmt->execute([$txId]);
+            $dbTx = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($dbTx) {
+                // Parse transaction type from data field
+                $txType = 'transfer';
+                if (!empty($dbTx['data'])) {
+                    $data = json_decode($dbTx['data'], true);
+                    if (isset($data['action'])) {
+                        $txType = $data['action'];
+                    }
+                }
+                
+                // Handle special addresses
+                if ($dbTx['from_address'] === 'genesis') {
+                    $txType = 'genesis';
+                } elseif ($dbTx['to_address'] === 'genesis_address') {
+                    $txType = 'genesis';
+                } elseif ($dbTx['to_address'] === 'staking_contract') {
+                    $txType = 'stake';
+                } elseif ($dbTx['to_address'] === 'validator_registry') {
+                    $txType = 'register_validator';
+                } elseif ($dbTx['to_address'] === 'node_registry') {
+                    $txType = 'register_node';
+                }
+                
+                // Get total blocks count for confirmations
+                $stmt = $pdo->query("SELECT COUNT(*) FROM blocks");
+                $totalBlocks = (int)$stmt->fetchColumn();
+                $confirmations = max(0, $totalBlocks - (int)$dbTx['block_height']);
+                
+                return [
+                    'transaction' => [
+                        'hash' => $dbTx['hash'],
+                        'type' => $txType,
+                        'from' => $dbTx['from_address'],
+                        'to' => $dbTx['to_address'],
+                        'amount' => (float)$dbTx['amount'],
+                        'fee' => (float)$dbTx['fee'],
+                        'timestamp' => (int)$dbTx['timestamp'],
+                        'status' => $dbTx['status'] === 'confirmed' ? 'confirmed' : 'pending',
+                        'data' => $dbTx['data'] ? json_decode($dbTx['data'], true) : null,
+                        'signature' => $dbTx['signature']
+                    ],
+                    'block_index' => (int)$dbTx['block_height'],
+                    'block_hash' => $dbTx['block_hash'],
+                    'confirmations' => $confirmations,
+                    '_debug' => $debug ? ['source' => 'database'] : null
+                ];
+            }
+        }
+    } catch (Exception $e) {
+        if ($debug) {
+            error_log("DEBUG: Database transaction query failed: " . $e->getMessage());
+        }
+    }
+    
+    // Fallback to chain file if not found in database
     $chainFile = '../../storage/blockchain/chain.json';
     
     if (file_exists($chainFile)) {
@@ -457,7 +695,8 @@ function getTransaction(PDO $pdo, string $network, string $txId): array
                                 'transaction' => $tx,
                                 'block_index' => $block['index'] ?? 0,
                                 'block_hash' => $block['hash'] ?? '',
-                                'confirmations' => count($chain) - ($block['index'] ?? 0)
+                                'confirmations' => count($chain) - ($block['index'] ?? 0),
+                                '_debug' => $debug ? ['source' => 'file'] : null
                             ];
                         }
                     }

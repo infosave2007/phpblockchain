@@ -527,8 +527,8 @@ class BlockchainExplorer {
     }
 
     showTransactionDetails(tx) {
-        // Create modal or detailed view for transaction
-        alert(`Transaction: ${tx.hash}\nFrom: ${tx.from}\nTo: ${tx.to}\nAmount: ${tx.amount}`);
+        // Use the modal view for transaction details
+        this.viewTransaction(tx.hash);
     }
 
     loadMoreBlocks() {
@@ -550,6 +550,25 @@ class BlockchainExplorer {
             this.loadLatestBlocks(),
             this.loadLatestTransactions()
         ]);
+    }
+
+    getCurrentSymbol() {
+        // Get token symbol based on current network
+        const symbols = {
+            'mainnet': 'MBC',
+            'testnet': 'tMBC',
+            'devnet': 'dMBC'
+        };
+        return symbols[this.currentNetwork] || 'MBC';
+    }
+
+    showLoading(show) {
+        const spinner = document.getElementById('loadingSpinner');
+        if (show) {
+            spinner.style.display = 'block';
+        } else {
+            spinner.style.display = 'none';
+        }
     }
 
     // Utility functions
@@ -585,43 +604,6 @@ class BlockchainExplorer {
         if (hashRate >= 1e6) return `${(hashRate / 1e6).toFixed(2)} MH/s`;
         if (hashRate >= 1e3) return `${(hashRate / 1e3).toFixed(2)} KH/s`;
         return `${hashRate} H/s`;
-    }
-
-    getStatusClass(status) {
-        switch (status) {
-            case 'confirmed': return 'status-confirmed';
-            case 'pending': return 'status-pending';
-            case 'failed': return 'status-failed';
-            default: return 'status-pending';
-        }
-    }
-
-    getStatusText(status) {
-        const statusMap = {
-            'confirmed': this.getTranslation('confirmed', 'Confirmed'),
-            'pending': this.getTranslation('pending', 'Pending'),
-            'failed': this.getTranslation('failed', 'Failed')
-        };
-        return statusMap[status] || this.getTranslation('unknown', 'Unknown');
-    }
-
-    getCurrentSymbol() {
-        // Get token symbol based on current network
-        const symbols = {
-            'mainnet': 'MBC',
-            'testnet': 'tMBC',
-            'devnet': 'dMBC'
-        };
-        return symbols[this.currentNetwork] || 'MBC';
-    }
-
-    showLoading(show) {
-        const spinner = document.getElementById('loadingSpinner');
-        if (show) {
-            spinner.style.display = 'block';
-        } else {
-            spinner.style.display = 'none';
-        }
     }
 
     getStatusClass(status) {
@@ -670,9 +652,9 @@ class BlockchainExplorer {
             const fee = parseFloat(tx.fee || 0);
             const date = new Date(tx.timestamp * 1000);
             
-            // Get status based on confirmations
+            // Get status from transaction data, fallback to confirmations
             const confirmations = data.confirmations || 0;
-            const status = confirmations > 0 ? 'confirmed' : 'pending';
+            const status = tx.status || (confirmations > 0 ? 'confirmed' : 'pending');
             const blockIndex = data.block_index !== undefined ? data.block_index : null;
             const blockHash = data.block_hash || null;
 
