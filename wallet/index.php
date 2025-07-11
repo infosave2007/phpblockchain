@@ -186,7 +186,14 @@ function loadLanguage($lang) {
             'about_info' => 'Secure blockchain wallet for managing your digital assets',
             'settings' => 'Settings',
             'settings_description' => 'Configure wallet and network settings',
-            'feature_coming_soon' => 'This feature is coming soon!'
+            'feature_coming_soon' => 'This feature is coming soon!',
+            'confirm_delete_wallet' => 'Are you sure you want to delete this wallet from your saved list?',
+            'wallet_deleted' => 'Wallet deleted from saved list',
+            'wallet_saved' => 'Wallet saved successfully',
+            'wallet_loaded' => 'Wallet loaded successfully',
+            'wallet_not_found' => 'Wallet not found',
+            'delete_wallet' => 'Delete Wallet',
+            'load_wallet' => 'Load Wallet'
         ],
         'ru' => [
             'title' => 'Blockchain Кошелёк',
@@ -351,7 +358,14 @@ function loadLanguage($lang) {
             'about_info' => 'Безопасный блокчейн кошелёк для управления цифровыми активами',
             'settings' => 'Настройки',
             'settings_description' => 'Настройка кошелька и сети',
-            'feature_coming_soon' => 'Эта функция скоро будет доступна!'
+            'feature_coming_soon' => 'Эта функция скоро будет доступна!',
+            'confirm_delete_wallet' => 'Вы уверены, что хотите удалить этот кошелёк из сохранённого списка?',
+            'wallet_deleted' => 'Кошелёк удалён из сохранённого списка',
+            'wallet_saved' => 'Кошелёк успешно сохранён',
+            'wallet_loaded' => 'Кошелёк успешно загружен',
+            'wallet_not_found' => 'Кошелёк не найден',
+            'delete_wallet' => 'Удалить кошелёк',
+            'load_wallet' => 'Загрузить кошелёк'
         ]
     ];
     
@@ -2199,16 +2213,11 @@ function getLanguageOptions($currentLang) {
                                 </div>
                                 <div class="address-display small mb-2">${wallet.address}</div>
                                 <div class="d-flex justify-content-between align-items-center mb-2">
-                                    <span class="fw-bold text-success">${wallet.balance || 0} ${cryptoSymbol}</span>
+                                    <span class="fw-bold text-success">${wallet.available_balance || wallet.balance || 0} ${cryptoSymbol}</span>
                                     <button class="btn btn-sm btn-primary" onclick="checkBalance('${wallet.address}')">
                                         <i class="fas fa-refresh me-1"></i>${t.check_balance}
                                     </button>
                                 </div>
-                                ${wallet.staked_balance > 0 ? `
-                                    <div class="d-flex justify-content-between align-items-center mb-2">
-                                        <small class="text-info">Staked: ${wallet.staked_balance} ${cryptoSymbol}</small>
-                                    </div>
-                                ` : ''}
                                 <div class="btn-group w-100 mt-2" role="group">
                                     <button class="btn btn-sm btn-success" onclick="showTransferModal('${wallet.address}')" title="${t.transfer_tokens}">
                                         <i class="fas fa-paper-plane"></i>
@@ -2223,7 +2232,7 @@ function getLanguageOptions($currentLang) {
                                         <i class="fas fa-history"></i>
                                     </button>
                                     ${wallet.type === 'saved' ? `
-                                        <button class="btn btn-sm btn-danger" onclick="deleteWalletFromList('${wallet.address}')" title="Delete Wallet">
+                                        <button class="btn btn-sm btn-danger" onclick="deleteWalletFromList('${wallet.address}')" title="${t.delete_wallet}">
                                             <i class="fas fa-trash"></i>
                                         </button>
                                     ` : ''}
@@ -2253,14 +2262,81 @@ function getLanguageOptions($currentLang) {
         }
         
         // Show my wallets from localStorage
-        function showMyWallets() {
+        // Show my wallets from localStorage with updated balances
+        async function showMyWallets() {
             const wallets = JSON.parse(localStorage.getItem('myWallets') || '[]');
-            // Mark all wallets as 'saved' type for display
-            const walletsWithType = wallets.map(wallet => ({
-                ...wallet,
-                type: 'saved'
+            
+            if (wallets.length === 0) {
+                const resultsDiv = document.getElementById('results');
+                resultsDiv.innerHTML = `
+                    <div class="action-card text-center">
+                        <div class="action-icon icon-wallet mx-auto">
+                            <i class="fas fa-wallet"></i>
+                        </div>
+                        <h5>${t.my_wallets}</h5>
+                        <p class="text-muted">No saved wallets found</p>
+                        <button class="btn btn-primary" onclick="startWalletCreation()">
+                            <i class="fas fa-plus me-2"></i>Create Wallet
+                        </button>
+                    </div>
+                `;
+                return;
+            }
+            
+            // Update balances for all wallets
+            const walletsWithBalances = [];
+            
+            for (const wallet of wallets) {
+                try {
+                    const response = await fetch('wallet_api.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            action: 'get_balance',
+                            address: wallet.address
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        const balanceData = data.balance;
+                        walletsWithBalances.push({
+                            ...wallet,
+                            balance: balanceData.total || 0,
+                            available_balance: balanceData.available || 0,
+                            staked_balance: balanceData.staked || 0,
+                            type: 'saved'
+                        });
+                    } else {
+                        // If balance fetch fails, use stored values
+                        walletsWithBalances.push({
+                            ...wallet,
+                            type: 'saved'
+                        });
+                    }
+                } catch (error) {
+                    // If request fails, use stored values
+                    console.error('Failed to update balance for', wallet.address, error);
+                    walletsWithBalances.push({
+                        ...wallet,
+                        type: 'saved'
+                    });
+                }
+            }
+            
+            // Update localStorage with fresh balances
+            const updatedWallets = walletsWithBalances.map(w => ({
+                address: w.address,
+                private_key: w.private_key,
+                public_key: w.public_key,
+                balance: w.balance,
+                available_balance: w.available_balance,
+                staked_balance: w.staked_balance
             }));
-            displayWalletList(walletsWithType, t.my_wallets);
+            localStorage.setItem('myWallets', JSON.stringify(updatedWallets));
+            
+            displayWalletList(walletsWithBalances, t.my_wallets);
         }
         
         // Add wallet to localStorage
@@ -2322,7 +2398,7 @@ function getLanguageOptions($currentLang) {
                     if (walletCard) {
                         const balanceSpan = walletCard.querySelector('.text-success');
                         if (balanceSpan) {
-                            balanceSpan.textContent = `${totalBalance} ${cryptoSymbol}`;
+                            balanceSpan.textContent = `${availableBalance} ${cryptoSymbol}`;
                         }
                         
                         // Update or add staked balance display
@@ -3621,13 +3697,28 @@ function getLanguageOptions($currentLang) {
         
         // View transaction details with comprehensive information and decryption
         async function viewTransactionDetails(txHash, encryptedMessage = null) {
-            // Find the transaction in current data
-            const transaction = currentTransactions.find(tx => tx.hash === txHash);
             const walletAddress = getCurrentWalletAddress();
             
+            // Try to find transaction in current data first, then fetch from API
+            let transaction = currentTransactions.find(tx => tx.hash === txHash);
+            
             if (!transaction) {
-                showNotification(t.transaction_not_found || 'Transaction not found', 'danger');
-                return;
+                // Fetch transaction from API
+                try {
+                    const response = await fetch(`wallet_api.php?action=get_transaction&hash=${txHash}`);
+                    const result = await response.json();
+                    
+                    if (result.success && result.transaction) {
+                        transaction = result.transaction;
+                    } else {
+                        showNotification(t.transaction_not_found || 'Transaction not found', 'danger');
+                        return;
+                    }
+                } catch (error) {
+                    console.error('Error fetching transaction:', error);
+                    showNotification(t.transaction_not_found || 'Transaction not found', 'danger');
+                    return;
+                }
             }
             
             const isReceived = transaction.to_address === walletAddress;
@@ -4035,6 +4126,63 @@ function getLanguageOptions($currentLang) {
                 }
             });
         });
+        
+        // Delete wallet from saved list
+        async function deleteWalletFromList(address) {
+            if (!confirm(t.confirm_delete_wallet || 'Are you sure you want to delete this wallet from your saved list?')) {
+                return;
+            }
+            
+            try {
+                // Get current saved wallets (используем myWallets как основное хранилище)
+                const myWallets = JSON.parse(localStorage.getItem('myWallets') || '[]');
+                
+                // Filter out the wallet to delete
+                const updatedWallets = myWallets.filter(wallet => wallet.address !== address);
+                
+                // Save updated list
+                localStorage.setItem('myWallets', JSON.stringify(updatedWallets));
+                
+                // Refresh the display
+                showMyWallets();
+                
+                showNotification(t.wallet_deleted || 'Wallet deleted from saved list', 'success');
+            } catch (error) {
+                console.error('Error deleting wallet:', error);
+                showNotification(t.error + ' ' + error.message, 'danger');
+            }
+        }
+        
+        // Function to save wallet to localStorage
+        function saveWalletToList(walletData) {
+            try {
+                const savedWallets = JSON.parse(localStorage.getItem('savedWallets') || '[]');
+                
+                // Check if wallet already exists
+                const existingIndex = savedWallets.findIndex(w => w.address === walletData.address);
+                
+                if (existingIndex >= 0) {
+                    // Update existing wallet
+                    savedWallets[existingIndex] = {
+                        ...savedWallets[existingIndex],
+                        ...walletData,
+                        savedAt: new Date().toISOString()
+                    };
+                } else {
+                    // Add new wallet
+                    savedWallets.push({
+                        ...walletData,
+                        savedAt: new Date().toISOString()
+                    });
+                }
+                
+                localStorage.setItem('savedWallets', JSON.stringify(savedWallets));
+                showNotification(t.wallet_saved || 'Wallet saved successfully', 'success');
+            } catch (error) {
+                console.error('Error saving wallet:', error);
+                showNotification(t.error + ' ' + error.message, 'danger');
+            }
+        }
     </script>
 </body>
 </html>

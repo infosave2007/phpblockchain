@@ -224,8 +224,34 @@ class WalletManager
             }
             
             // Кошелек не найден ни в БД, ни в блокчейне
-            writeWalletLog("WalletManager::restoreWalletFromMnemonic - Wallet not found in blockchain or database, returning mnemonic-only restore", 'INFO');
-            // Возвращаем только параметры кошелька без создания записи
+            writeWalletLog("WalletManager::restoreWalletFromMnemonic - Wallet not found in blockchain or database, creating database record", 'INFO');
+            writeWalletLog("WalletManager::restoreWalletFromMnemonic - About to insert wallet: " . $address, 'DEBUG');
+            
+            // Сохраняем кошелек в базу данных даже если он не найден в блокчейне
+            // Это позволит использовать его для получения средств
+            $stmt = $this->database->prepare("
+                INSERT INTO wallets (address, public_key, balance, staked_balance, created_at, updated_at) 
+                VALUES (?, ?, ?, ?, NOW(), NOW())
+                ON DUPLICATE KEY UPDATE 
+                    public_key = VALUES(public_key),
+                    updated_at = NOW()
+            ");
+            
+            writeWalletLog("WalletManager::restoreWalletFromMnemonic - SQL prepared, executing insert", 'DEBUG');
+            
+            $executeResult = $stmt->execute([
+                $address,
+                $keyPair->getPublicKey(),
+                0,
+                0
+            ]);
+            
+            writeWalletLog("WalletManager::restoreWalletFromMnemonic - Execute result: " . json_encode($executeResult), 'DEBUG');
+            writeWalletLog("WalletManager::restoreWalletFromMnemonic - Affected rows: " . $stmt->rowCount(), 'DEBUG');
+            writeWalletLog("WalletManager::restoreWalletFromMnemonic - Wallet record created in database", 'INFO');
+            
+            // Возвращаем параметры кошелька с записью в базе
+            // ВАЖНО: указываем что нужна регистрация в блокчейне
             return [
                 'address' => $address,
                 'public_key' => $keyPair->getPublicKey(),
@@ -233,8 +259,9 @@ class WalletManager
                 'balance' => 0,
                 'staked_balance' => 0,
                 'restored' => true,
-                'restored_from' => 'mnemonic_only',
-                'note' => 'Wallet restored from mnemonic but no transactions found. Use this wallet to receive funds.'
+                'restored_from' => 'mnemonic_needs_blockchain_registration',
+                'note' => 'Wallet restored from mnemonic and saved to database. Will be registered in blockchain.',
+                'needs_blockchain_registration' => true
             ];
             
         } catch (Exception $e) {
@@ -249,20 +276,10 @@ class WalletManager
      */
     public function getBalance(string $address): float
     {
-        $stmt = $this->database->prepare("
-            SELECT balance, staked_balance 
-            FROM wallets 
-            WHERE address = ?
-        ");
+        $availableBalance = $this->getAvailableBalance($address);
+        $stakedBalance = $this->getStakedBalance($address);
         
-        $stmt->execute([$address]);
-        $result = $stmt->fetch();
-        
-        if (!$result) {
-            return 0.0;
-        }
-        
-        return (float)$result['balance'] + (float)$result['staked_balance'];
+        return $availableBalance + $stakedBalance;
     }
     
     /**
@@ -281,18 +298,41 @@ class WalletManager
     }
     
     /**
-     * Get staked balance
+     * Get staked balance - calculated based on blockchain transactions
      */
     public function getStakedBalance(string $address): float
     {
-        $stmt = $this->database->prepare("
-            SELECT staked_balance FROM wallets WHERE address = ?
-        ");
+        // Calculate staked balance from blockchain transactions (most reliable)
+        $blockchainStaked = $this->calculateStakedBalanceFromBlockchain($address);
         
+        // Get staking records from staking table
+        $stmt = $this->database->prepare("
+            SELECT COALESCE(SUM(amount), 0) as total_staked 
+            FROM staking 
+            WHERE staker = ? AND status = 'active'
+        ");
         $stmt->execute([$address]);
         $result = $stmt->fetch();
+        $tableStaked = (float)$result['total_staked'];
         
-        return $result ? (float)$result['staked_balance'] : 0.0;
+        // Get legacy staked balance from wallets table
+        $stmt = $this->database->prepare("
+            SELECT COALESCE(staked_balance, 0) as legacy_staked
+            FROM wallets 
+            WHERE address = ?
+        ");
+        $stmt->execute([$address]);
+        $result = $stmt->fetch();
+        $legacyStaked = $result ? (float)$result['legacy_staked'] : 0.0;
+        
+        // Priority: blockchain transactions > staking table > legacy field
+        if ($blockchainStaked > 0) {
+            return $blockchainStaked;
+        } elseif ($tableStaked > 0) {
+            return $tableStaked;
+        } else {
+            return $legacyStaked;
+        }
     }
     
     /**
@@ -311,6 +351,11 @@ class WalletManager
     
     /**
      * Update staked balance
+     */
+    /**
+     * Update staked balance directly in wallets table
+     * @deprecated This method is for legacy sync purposes only. 
+     * New staking should use the staking table.
      */
     public function updateStakedBalance(string $address, float $stakedBalance): bool
     {
@@ -622,27 +667,33 @@ class WalletManager
                 throw new Exception("Insufficient balance for staking");
             }
 
-            // Update balances
-            $newBalance = $availableBalance - $amount;
-            $currentStaked = $this->getStakedBalance($address);
-            $newStaked = $currentStaked + $amount;
+            // Start transaction
+            $this->database->beginTransaction();
 
+            // Update wallet balance (subtract staked amount)
+            $newBalance = $availableBalance - $amount;
             $stmt = $this->database->prepare("
                 UPDATE wallets 
-                SET balance = ?, staked_balance = ?, updated_at = NOW() 
+                SET balance = ?, updated_at = NOW() 
                 WHERE address = ?
             ");
+            $stmt->execute([$newBalance, $address]);
 
-            $success = $stmt->execute([$newBalance, $newStaked, $address]);
+            // Add staking record
+            $stmt = $this->database->prepare("
+                INSERT INTO staking (staker, amount, status, start_date, period_days)
+                VALUES (?, ?, 'active', NOW(), 30)
+            ");
+            $stmt->execute([$address, $amount]);
 
-            if ($success) {
-                // Record staking transaction
-                $this->recordStakingTransaction($address, $amount, 'stake');
-            }
+            // Record staking transaction
+            $this->recordStakingTransaction($address, $amount, 'stake');
 
-            return $success;
+            $this->database->commit();
+            return true;
 
         } catch (Exception $e) {
+            $this->database->rollBack();
             throw new Exception("Staking failed: " . $e->getMessage());
         }
     }
@@ -659,27 +710,60 @@ class WalletManager
                 throw new Exception("Insufficient staked balance");
             }
 
-            // Update balances
+            // Start transaction
+            $this->database->beginTransaction();
+
+            // Update wallet balance (add unstaked amount)
             $currentBalance = $this->getAvailableBalance($address);
             $newBalance = $currentBalance + $amount;
-            $newStaked = $stakedBalance - $amount;
-
             $stmt = $this->database->prepare("
                 UPDATE wallets 
-                SET balance = ?, staked_balance = ?, updated_at = NOW() 
+                SET balance = ?, updated_at = NOW() 
                 WHERE address = ?
             ");
+            $stmt->execute([$newBalance, $address]);
 
-            $success = $stmt->execute([$newBalance, $newStaked, $address]);
+            // Update staking records - mark oldest active stakes as completed
+            $stmt = $this->database->prepare("
+                UPDATE staking 
+                SET status = 'completed', end_date = NOW()
+                WHERE staker = ? AND status = 'active' AND amount <= ?
+                ORDER BY start_date ASC
+                LIMIT 1
+            ");
+            $stmt->execute([$address, $amount]);
 
-            if ($success) {
-                // Record unstaking transaction
-                $this->recordStakingTransaction($address, $amount, 'unstake');
+            // If exact amount match not found, need to split staking record
+            if ($stmt->rowCount() == 0) {
+                // Find first staking record larger than amount
+                $stmt = $this->database->prepare("
+                    SELECT id, amount FROM staking 
+                    WHERE staker = ? AND status = 'active' AND amount > ?
+                    ORDER BY start_date ASC
+                    LIMIT 1
+                ");
+                $stmt->execute([$address, $amount]);
+                $stakeRecord = $stmt->fetch();
+                
+                if ($stakeRecord) {
+                    $remainingAmount = $stakeRecord['amount'] - $amount;
+                    
+                    // Update original record to remaining amount
+                    $stmt = $this->database->prepare("
+                        UPDATE staking SET amount = ? WHERE id = ?
+                    ");
+                    $stmt->execute([$remainingAmount, $stakeRecord['id']]);
+                }
             }
 
-            return $success;
+            // Record unstaking transaction
+            $this->recordStakingTransaction($address, $amount, 'unstake');
+
+            $this->database->commit();
+            return true;
 
         } catch (Exception $e) {
+            $this->database->rollBack();
             throw new Exception("Unstaking failed: " . $e->getMessage());
         }
     }
@@ -994,16 +1078,23 @@ class WalletManager
         try {
             writeWalletLog("WalletManager::calculateStakedBalanceFromBlockchain - Calculating for address: $address", 'DEBUG');
             
-            // Get all active staking records
+            // Calculate staked balance from actual blockchain transactions
             $stmt = $this->database->prepare("
-                SELECT COALESCE(SUM(amount), 0) as total_staked 
-                FROM staking 
-                WHERE staker = ? AND status = 'active'
+                SELECT 
+                    SUM(CASE 
+                        WHEN to_address = 'staking_contract' THEN amount
+                        WHEN from_address = 'staking_contract' AND to_address = ? THEN -amount  
+                        ELSE 0 
+                    END) as staked_balance
+                FROM transactions 
+                WHERE ((from_address = ? AND to_address = 'staking_contract') 
+                       OR (from_address = 'staking_contract' AND to_address = ?))
+                AND status = 'confirmed'
             ");
             
-            $stmt->execute([$address]);
+            $stmt->execute([$address, $address, $address]);
             $result = $stmt->fetch();
-            $stakedBalance = (float)($result['total_staked'] ?? 0);
+            $stakedBalance = max(0.0, (float)($result['staked_balance'] ?? 0));
             
             writeWalletLog("WalletManager::calculateStakedBalanceFromBlockchain - Staked balance: $stakedBalance", 'DEBUG');
             return $stakedBalance;

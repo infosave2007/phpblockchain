@@ -1,16 +1,23 @@
 class BlockchainExplorer {
     constructor() {
         this.currentNetwork = 'mainnet';
-        this.apiEndpoint = '/api/explorer';
-        this.currentBlockPage = 0;
-        this.currentTxPage = 0;
-        this.pageSize = 10;
+        this.apiEndpoint = '../api/explorer';
+        this.currentBlockPage = 1;
+        this.currentTxPage = 1;
+        this.pageSize = 5; // Reduced for better UX
+        this.totalBlocks = 0;
+        this.totalTransactions = 0;
         
         this.initializeExplorer();
     }
 
     async initializeExplorer() {
         this.bindEvents();
+        
+        // Load configuration first
+        await this.loadConfig();
+        
+        // Load initial data
         await this.loadNetworkStats();
         await this.loadLatestBlocks();
         await this.loadLatestTransactions();
@@ -21,10 +28,44 @@ class BlockchainExplorer {
         }, 30000);
     }
 
+    async loadConfig() {
+        try {
+            const response = await fetch('../wallet/wallet_api.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'get_config' })
+            });
+            
+            const data = await response.json();
+            if (data.success && data.config) {
+                // Update global symbols
+                if (typeof CRYPTO_SYMBOL !== 'undefined') {
+                    window.CRYPTO_SYMBOL = data.config.crypto_symbol || CRYPTO_SYMBOL;
+                }
+                if (typeof CRYPTO_NAME !== 'undefined') {
+                    window.CRYPTO_NAME = data.config.crypto_name || CRYPTO_NAME;
+                }
+                console.log('Explorer config loaded:', data.config);
+            } else {
+                console.log('Config load failed, using defaults');
+            }
+        } catch (error) {
+            console.log('Config load failed, using defaults:', error);
+        }
+    }
+
+    refreshData() {
+        this.loadNetworkStats();
+        this.loadLatestBlocks();
+        this.loadLatestTransactions();
+    }
+
     bindEvents() {
         // Network selection
         document.getElementById('networkSelect').addEventListener('change', (e) => {
             this.currentNetwork = e.target.value;
+            this.currentBlockPage = 1;
+            this.currentTxPage = 1;
             this.refreshData();
         });
 
@@ -34,6 +75,75 @@ class BlockchainExplorer {
                 this.performSearch();
             }
         });
+    }
+
+    // New methods for pagination
+    async loadBlocks(direction = 'current') {
+        if (direction === 'prev' && this.currentBlockPage > 1) {
+            this.currentBlockPage--;
+        } else if (direction === 'next') {
+            this.currentBlockPage++;
+        }
+        
+        await this.loadLatestBlocks();
+        this.updateBlocksPagination();
+    }
+
+    async loadTransactions(direction = 'current') {
+        if (direction === 'prev' && this.currentTxPage > 1) {
+            this.currentTxPage--;
+        } else if (direction === 'next') {
+            this.currentTxPage++;
+        }
+        
+        await this.loadLatestTransactions();
+        this.updateTransactionsPagination();
+    }
+
+    updateBlocksPagination() {
+        const prevBtn = document.getElementById('prevBlocksBtn');
+        const nextBtn = document.getElementById('nextBlocksBtn');
+        const pageInfo = document.getElementById('blocksPageInfo');
+        
+        prevBtn.disabled = this.currentBlockPage <= 1;
+        
+        // Get page text from translations or fallback
+        const pageText = (typeof t !== 'undefined' && t.page) ? t.page : 'Page';
+        pageInfo.textContent = `${pageText} ${this.currentBlockPage}`;
+        
+        // Show "Next" button only if there's data on current page
+        const blocksContainer = document.getElementById('latestBlocks');
+        const hasBlocks = blocksContainer.children.length > 0;
+        nextBtn.disabled = !hasBlocks;
+    }
+
+    updateTransactionsPagination() {
+        const prevBtn = document.getElementById('prevTxBtn');
+        const nextBtn = document.getElementById('nextTxBtn');
+        const pageInfo = document.getElementById('transactionsPageInfo');
+        
+        prevBtn.disabled = this.currentTxPage <= 1;
+        
+        // Get page text from translations or fallback
+        const pageText = (typeof t !== 'undefined' && t.page) ? t.page : 'Page';
+        pageInfo.textContent = `${pageText} ${this.currentTxPage}`;
+        
+        // Show "Next" button only if there's data on current page
+        const txContainer = document.getElementById('latestTransactions');
+        const hasTx = txContainer.children.length > 0;
+        nextBtn.disabled = !hasTx;
+    }
+
+    async refreshBlocks() {
+        this.showLoading(true);
+        await this.loadLatestBlocks();
+        this.showLoading(false);
+    }
+
+    async refreshTransactions() {
+        this.showLoading(true);
+        await this.loadLatestTransactions();
+        this.showLoading(false);
     }
 
     async performSearch() {
@@ -80,78 +190,136 @@ class BlockchainExplorer {
 
     async loadLatestBlocks() {
         try {
-            const response = await fetch(`${this.apiEndpoint}/blocks?network=${this.currentNetwork}&page=${this.currentBlockPage}&limit=${this.pageSize}`);
+            const offset = (this.currentBlockPage - 1) * this.pageSize;
+            const response = await fetch(`${this.apiEndpoint}/blocks?network=${this.currentNetwork}&offset=${offset}&limit=${this.pageSize}`);
             const data = await response.json();
             const blocks = data.blocks || [];
             
             const container = document.getElementById('latestBlocks');
-            if (this.currentBlockPage === 0) {
-                container.innerHTML = '';
+            container.innerHTML = '';
+            
+            if (blocks.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">
+                            <i class="fas fa-cube"></i>
+                        </div>
+                        <p>${this.getTranslation('no_blocks_found', 'No blocks found')}</p>
+                    </div>
+                `;
+            } else {
+                blocks.forEach(block => {
+                    container.appendChild(this.createBlockCard(block));
+                });
             }
             
-            blocks.forEach(block => {
-                container.appendChild(this.createBlockCard(block));
-            });
+            this.updateBlocksPagination();
         } catch (error) {
             console.error('Failed to load blocks:', error);
+            this.showErrorInContainer('latestBlocks', this.getTranslation('error_loading_blocks', 'Error loading blocks'));
         }
     }
 
     async loadLatestTransactions() {
         try {
-            const response = await fetch(`${this.apiEndpoint}/transactions?network=${this.currentNetwork}&page=${this.currentTxPage}&limit=${this.pageSize}`);
+            const offset = (this.currentTxPage - 1) * this.pageSize;
+            const response = await fetch(`${this.apiEndpoint}/transactions?network=${this.currentNetwork}&offset=${offset}&limit=${this.pageSize}`);
             const data = await response.json();
             const transactions = data.transactions || [];
             
             const container = document.getElementById('latestTransactions');
-            if (this.currentTxPage === 0) {
-                container.innerHTML = '';
+            container.innerHTML = '';
+            
+            if (transactions.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">
+                            <i class="fas fa-exchange-alt"></i>
+                        </div>
+                        <p>${this.getTranslation('no_transactions_found', 'No transactions found')}</p>
+                    </div>
+                `;
+            } else {
+                transactions.forEach(tx => {
+                    container.appendChild(this.createTransactionCard(tx));
+                });
             }
             
-            transactions.forEach(tx => {
-                container.appendChild(this.createTransactionCard(tx));
-            });
+            this.updateTransactionsPagination();
         } catch (error) {
             console.error('Failed to load transactions:', error);
+            this.showErrorInContainer('latestTransactions', this.getTranslation('error_loading_transactions', 'Error loading transactions'));
         }
+    }
+
+    getTranslation(key, fallback) {
+        return (typeof t !== 'undefined' && t[key]) ? t[key] : fallback;
+    }
+
+    showErrorInContainer(containerId, message) {
+        const container = document.getElementById(containerId);
+        container.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-icon">
+                    <i class="fas fa-exclamation-triangle"></i>
+                </div>
+                <p>${message}</p>
+            </div>
+        `;
     }
 
     createBlockCard(block) {
         const card = document.createElement('div');
-        card.className = 'block-card';
+        card.className = 'data-card';
         
         const ageText = this.timeAgo(block.timestamp);
         const txCount = block.transactions ? block.transactions.length : 0;
         
+        const blockText = this.getTranslation('block', 'Block');
+        const confirmedText = this.getTranslation('confirmed', 'Confirmed');
+        const hashText = this.getTranslation('hash', 'Hash');
+        const validatorText = this.getTranslation('validator', 'Validator');
+        const sizeText = this.getTranslation('size', 'Size');
+        const detailsText = this.getTranslation('details', 'Details');
+        const transactionsText = this.getTranslation('transactions', 'transactions');
+        
         card.innerHTML = `
-            <div class="d-flex justify-content-between align-items-start">
+            <div class="d-flex justify-content-between align-items-start mb-3">
                 <div>
-                    <h6 class="mb-1">
-                        <i class="fas fa-cube text-primary"></i>
-                        Block #${block.index}
-                    </h6>
-                    <p class="text-muted mb-1">
-                        <small><i class="fas fa-clock"></i> ${ageText}</small>
-                    </p>
-                    <p class="text-muted mb-1">
-                        <small><i class="fas fa-exchange-alt"></i> ${txCount} transactions</small>
-                    </p>
-                </div>
-                <div class="text-end">
-                    <div class="text-muted">
-                        <small>Validator:</small><br>
-                        <code>${this.truncateHash(block.validator)}</code>
+                    <div class="d-flex align-items-center mb-2">
+                        <div class="stat-icon" style="width: 30px; height: 30px; font-size: 0.9rem; margin-right: 0.75rem;">
+                            <i class="fas fa-cube"></i>
+                        </div>
+                        <h6 class="mb-0 fw-bold">${blockText} #${block.index || block.height || '?'}</h6>
+                    </div>
+                    <div class="d-flex gap-3 text-muted small">
+                        <span><i class="fas fa-clock me-1"></i>${ageText}</span>
+                        <span><i class="fas fa-exchange-alt me-1"></i>${txCount} ${transactionsText}</span>
                     </div>
                 </div>
-            </div>
-            <div class="mt-2">
-                <div class="hash-display">
-                    <strong>Hash:</strong> ${block.hash}
+                <div class="text-end">
+                    <span class="status-badge status-confirmed">${confirmedText}</span>
                 </div>
             </div>
-            <div class="mt-2">
-                <button class="btn btn-sm btn-outline-primary" onclick="explorer.viewBlock('${block.hash}')">
-                    View Block
+            
+            <div class="row g-2 mb-3">
+                <div class="col-6">
+                    <small class="text-muted d-block">${hashText}</small>
+                    <div class="hash-display small">${this.truncateHash(block.hash, 16)}</div>
+                </div>
+                <div class="col-6">
+                    <small class="text-muted d-block">${validatorText}</small>
+                    <div class="hash-display small">${this.truncateHash(block.validator || 'N/A', 16)}</div>
+                </div>
+            </div>
+            
+            <div class="d-flex justify-content-between align-items-center">
+                <small class="text-muted">
+                    <i class="fas fa-weight-hanging me-1"></i>
+                    ${sizeText}: ${(JSON.stringify(block).length / 1024).toFixed(2)} KB
+                </small>
+                <button class="btn btn-outline-primary btn-sm" onclick="explorer.viewBlock('${block.hash}')">
+                    <i class="fas fa-eye me-1"></i>${detailsText}
                 </button>
             </div>
         `;
@@ -161,48 +329,66 @@ class BlockchainExplorer {
 
     createTransactionCard(tx) {
         const card = document.createElement('div');
-        card.className = 'tx-card';
+        card.className = 'data-card';
         
         const ageText = this.timeAgo(tx.timestamp);
         const statusClass = this.getStatusClass(tx.status);
+        const amount = parseFloat(tx.amount || 0);
+        
+        const transactionText = this.getTranslation('transaction', 'Transaction');
+        const fromText = this.getTranslation('from', 'From');
+        const toText = this.getTranslation('to', 'To');
+        const feeText = this.getTranslation('fee', 'Fee');
+        const blockText = this.getTranslation('block', 'Block');
+        const pendingText = this.getTranslation('pending', 'Pending');
+        const detailsText = this.getTranslation('details', 'Details');
+        const transactionHashText = this.getTranslation('transaction_hash', 'Transaction Hash');
         
         card.innerHTML = `
-            <div class="d-flex justify-content-between align-items-start">
-                <div class="flex-grow-1">
-                    <h6 class="mb-1">
-                        <i class="fas fa-exchange-alt text-success"></i>
-                        Transaction
+            <div class="d-flex justify-content-between align-items-start mb-3">
+                <div>
+                    <div class="d-flex align-items-center mb-2">
+                        <div class="stat-icon" style="width: 30px; height: 30px; font-size: 0.9rem; margin-right: 0.75rem;">
+                            <i class="fas fa-exchange-alt"></i>
+                        </div>
+                        <h6 class="mb-0 fw-bold">${transactionText}</h6>
+                    </div>
+                    <div class="d-flex gap-3 text-muted small">
+                        <span><i class="fas fa-clock me-1"></i>${ageText}</span>
                         <span class="status-badge ${statusClass}">${this.getStatusText(tx.status)}</span>
-                    </h6>
-                    <p class="text-muted mb-1">
-                        <small><i class="fas fa-clock"></i> ${ageText}</small>
-                    </p>
-                    <div class="row">
-                        <div class="col-6">
-                            <small class="text-muted">From:</small><br>
-                            <code>${this.truncateHash(tx.from)}</code>
-                        </div>
-                        <div class="col-6">
-                            <small class="text-muted">To:</small><br>
-                            <code>${this.truncateHash(tx.to)}</code>
-                        </div>
                     </div>
                 </div>
                 <div class="text-end">
-                    <div class="h6 mb-0 text-primary">
-                        ${this.formatAmount(tx.amount)} 
-                        <small class="text-muted">${this.getCurrentSymbol()}</small>
-                    </div>
+                    <div class="fw-bold text-primary">${this.formatAmount(amount)}</div>
+                    <small class="text-muted">${feeText}: ${this.formatAmount(tx.fee || 0)}</small>
                 </div>
             </div>
-            <div class="mt-2">
-                <div class="hash-display">
-                    <strong>Hash:</strong> ${tx.hash}
+            
+            <div class="row g-2 mb-3">
+                <div class="col-6">
+                    <small class="text-muted d-block">${fromText}</small>
+                    <div class="hash-display small">${this.truncateHash(tx.from, 16)}</div>
+                </div>
+                <div class="col-6">
+                    <small class="text-muted d-block">${toText}</small>
+                    <div class="hash-display small">${this.truncateHash(tx.to, 16)}</div>
                 </div>
             </div>
-            <div class="mt-2">
-                <button class="btn btn-sm btn-outline-primary" onclick="explorer.viewTransaction('${tx.hash}')">
-                    View Transaction
+            
+            <div class="row g-2 mb-3">
+                <div class="col-12">
+                    <small class="text-muted d-block">${transactionHashText}</small>
+                    <div class="hash-display small">${this.truncateHash(tx.hash, 20)}</div>
+                </div>
+            </div>
+            
+            <div class="d-flex justify-content-between align-items-center">
+                <small class="text-muted">
+                    <i class="fas fa-layer-group me-1"></i>
+                    ${blockText}: #${tx.block_height || pendingText}
+                </small>
+                <button class="btn btn-outline-primary btn-sm" onclick="explorer.viewTransaction('${tx.hash}')">
+                    <i class="fas fa-eye me-1"></i>${detailsText}
                 </button>
             </div>
         `;
@@ -353,10 +539,14 @@ class BlockchainExplorer {
     }
 
     formatAmount(amount) {
-        return parseFloat(amount).toLocaleString('ru-RU', {
+        const formattedAmount = parseFloat(amount).toLocaleString('ru-RU', {
             minimumFractionDigits: 2,
             maximumFractionDigits: 8
         });
+        
+        // Используем символ валюты из конфигурации или fallback
+        const symbol = (typeof CRYPTO_SYMBOL !== 'undefined') ? CRYPTO_SYMBOL : 'COIN';
+        return `${formattedAmount} ${symbol}`;
     }
 
     formatHashRate(hashRate) {
@@ -377,12 +567,12 @@ class BlockchainExplorer {
     }
 
     getStatusText(status) {
-        switch (status) {
-            case 'confirmed': return 'Confirmed';
-            case 'pending': return 'Pending';
-            case 'failed': return 'Failed';
-            default: return 'Unknown';
-        }
+        const statusMap = {
+            'confirmed': this.getTranslation('confirmed', 'Confirmed'),
+            'pending': this.getTranslation('pending', 'Pending'),
+            'failed': this.getTranslation('failed', 'Failed')
+        };
+        return statusMap[status] || this.getTranslation('unknown', 'Unknown');
     }
 
     getCurrentSymbol() {
@@ -404,9 +594,33 @@ class BlockchainExplorer {
         }
     }
 
+    getStatusClass(status) {
+        switch (status?.toLowerCase()) {
+            case 'confirmed': return 'status-confirmed';
+            case 'pending': return 'status-pending';
+            case 'failed': return 'status-failed';
+            default: return 'status-pending';
+        }
+    }
+
+    getStatusText(status) {
+        const statusMap = {
+            'confirmed': this.getTranslation('confirmed', 'Confirmed'),
+            'pending': this.getTranslation('pending', 'Pending'),
+            'failed': this.getTranslation('failed', 'Failed')
+        };
+        return statusMap[status?.toLowerCase()] || this.getTranslation('unknown', 'Unknown');
+    }
+
+    truncateHash(hash, length = 12) {
+        if (!hash) return 'N/A';
+        if (hash.length <= length) return hash;
+        return `${hash.substring(0, length/2)}...${hash.substring(hash.length - length/2)}`;
+    }
+
     showError(message) {
         // Simple error display - could be enhanced with a proper modal
-        alert(`Error: ${message}`);
+        alert(`Ошибка: ${message}`);
     }
 }
 
@@ -421,6 +635,22 @@ document.addEventListener('DOMContentLoaded', function() {
 // Global functions for button clicks
 function performSearch() {
     explorer.performSearch();
+}
+
+function loadBlocks(direction) {
+    explorer.loadBlocks(direction);
+}
+
+function loadTransactions(direction) {
+    explorer.loadTransactions(direction);
+}
+
+function refreshBlocks() {
+    explorer.refreshBlocks();
+}
+
+function refreshTransactions() {
+    explorer.refreshTransactions();
 }
 
 function loadMoreBlocks() {

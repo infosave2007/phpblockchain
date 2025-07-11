@@ -48,24 +48,11 @@ try {
     
     writeLog("Wallet sync API called with action: $action");
     
-    // Database configuration
-    $dbConfig = [
-        'host' => \Blockchain\Core\Environment\EnvironmentLoader::get('DB_HOST', 'localhost'),
-        'port' => (int)\Blockchain\Core\Environment\EnvironmentLoader::get('DB_PORT', 3306),
-        'database' => \Blockchain\Core\Environment\EnvironmentLoader::get('DB_DATABASE', 'blockchain'),
-        'username' => \Blockchain\Core\Environment\EnvironmentLoader::get('DB_USERNAME', 'root'),
-        'password' => \Blockchain\Core\Environment\EnvironmentLoader::get('DB_PASSWORD', ''),
-        'charset' => 'utf8mb4',
-        'options' => [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            PDO::ATTR_EMULATE_PREPARES => false
-        ]
-    ];
+    // Load DatabaseManager
+    require_once '../core/Database/DatabaseManager.php';
     
-    // Connect to database
-    $dsn = "mysql:host={$dbConfig['host']};port={$dbConfig['port']};dbname={$dbConfig['database']};charset={$dbConfig['charset']}";
-    $pdo = new PDO($dsn, $dbConfig['username'], $dbConfig['password'], $dbConfig['options']);
+    // Connect to database using DatabaseManager
+    $pdo = \Blockchain\Core\Database\DatabaseManager::getConnection();
     
     // Load blockchain manager
     require_once 'WalletBlockchainManager.php';

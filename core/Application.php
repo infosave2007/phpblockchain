@@ -52,15 +52,8 @@ class Application
     private function initializeDatabase(): void
     {
         try {
-            $dbConfig = $this->config['database'];
-            $dsn = "mysql:host={$dbConfig['host']};port={$dbConfig['port']};dbname={$dbConfig['database']};charset={$dbConfig['charset']}";
-            
-            $this->database = new PDO(
-                $dsn,
-                $dbConfig['username'],
-                $dbConfig['password'],
-                $dbConfig['options']
-            );
+            require_once __DIR__ . '/Database/DatabaseManager.php';
+            $this->database = \Blockchain\Core\Database\DatabaseManager::getConnection();
         } catch (Exception $e) {
             throw new Exception("Database connection failed: " . $e->getMessage());
         }
@@ -336,13 +329,7 @@ class Application
             $dbConfig = $this->config['database'];
             
             // Check if database already exists, if not create it
-            $tempDb = new PDO(
-                "mysql:host={$dbConfig['host']};port={$dbConfig['port']};charset={$dbConfig['charset']}",
-                $dbConfig['username'],
-                $dbConfig['password']
-            );
-            
-            $tempDb->exec("CREATE DATABASE IF NOT EXISTS `{$dbConfig['database']}`");
+            \Blockchain\Core\Database\DatabaseManager::createDatabaseIfNotExists($dbConfig['database']);
             
             // Now create tables in the main database
             $this->database->exec("

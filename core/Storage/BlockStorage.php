@@ -6,6 +6,9 @@ namespace Blockchain\Core\Storage;
 use Blockchain\Core\Contracts\BlockInterface;
 use Blockchain\Core\Consensus\ValidatorManager;
 
+// Подключаем WalletLogger для логирования
+require_once dirname(__DIR__, 2) . '/wallet/WalletLogger.php';
+
 /**
  * Professional Block Storage with ValidatorManager integration
  */
@@ -32,9 +35,20 @@ class BlockStorage
         $this->validatorManager = $validatorManager;
     }
     
+    /**
+     * Write log using WalletLogger
+     */
+    private function writeLog(string $message, string $level = 'INFO'): void
+    {
+        \WalletLogger::log($message, $level);
+    }
+    
     public function saveBlock(BlockInterface $block): bool
     {
-        $this->blocks[$block->getIndex()] = $block;
+        // Cast to concrete Block class to access getIndex method
+        if ($block instanceof \Blockchain\Core\Blockchain\Block) {
+            $this->blocks[$block->getIndex()] = $block;
+        }
         
         // Save to database if available
         if ($this->database) {
@@ -50,10 +64,18 @@ class BlockStorage
     public function saveToDatabaseStorage(BlockInterface $block): bool
     {
         if (!$this->database) {
+            $this->writeLog("BlockStorage::saveToDatabaseStorage - No database connection", 'ERROR');
+            return false;
+        }
+        
+        // Cast to concrete Block class for access to all methods
+        if (!($block instanceof \Blockchain\Core\Blockchain\Block)) {
+            $this->writeLog("BlockStorage::saveToDatabaseStorage - Block is not instance of Block class", 'ERROR');
             return false;
         }
         
         try {
+            $this->writeLog("BlockStorage::saveToDatabaseStorage - Starting to save block " . $block->getHash(), 'DEBUG');
             // Start transaction
             $this->database->beginTransaction();
             
@@ -78,7 +100,7 @@ class BlockStorage
                     
                 } catch (\Exception $e) {
                     // Log error but continue with fallback values
-                    error_log("ValidatorManager signing failed in BlockStorage: " . $e->getMessage());
+                    $this->writeLog("ValidatorManager signing failed in BlockStorage: " . $e->getMessage(), 'WARNING');
                 }
             }
             
@@ -116,24 +138,42 @@ class BlockStorage
                 $metadata
             ]);
             
+            $this->writeLog("BlockStorage::saveToDatabaseStorage - Block execute result: " . json_encode($blockResult), 'DEBUG');
+            $this->writeLog("BlockStorage::saveToDatabaseStorage - Block affected rows: " . $stmt->rowCount(), 'DEBUG');
+            
             if (!$blockResult) {
+                $this->writeLog("BlockStorage::saveToDatabaseStorage - Failed to execute block insert", 'ERROR');
                 throw new \Exception('Failed to save block');
             }
             
             // Process each transaction in the block
-            foreach ($block->getTransactions() as $transaction) {
-                $this->processTransaction($transaction, $block);
+            $this->writeLog("BlockStorage::saveToDatabaseStorage - Processing " . count($block->getTransactions()) . " transactions", 'DEBUG');
+            foreach ($block->getTransactions() as $index => $transaction) {
+                $this->writeLog("BlockStorage::saveToDatabaseStorage - Processing transaction " . ($index + 1) . "/" . count($block->getTransactions()), 'DEBUG');
+                try {
+                    $this->processTransaction($transaction, $block);
+                    $this->writeLog("BlockStorage::saveToDatabaseStorage - Transaction " . ($index + 1) . " processed successfully", 'DEBUG');
+                } catch (\Exception $txError) {
+                    $this->writeLog("BlockStorage::saveToDatabaseStorage - TRANSACTION ERROR in tx " . ($index + 1) . ": " . $txError->getMessage(), 'ERROR');
+                    $this->writeLog("BlockStorage::saveToDatabaseStorage - Transaction data: " . json_encode($transaction), 'DEBUG');
+                    throw $txError; // Re-throw to trigger rollback
+                }
             }
+            
+            $this->writeLog("BlockStorage::saveToDatabaseStorage - All transactions processed, committing...", 'DEBUG');
             
             // Commit transaction
             $this->database->commit();
+            $this->writeLog("BlockStorage::saveToDatabaseStorage - Block saved successfully: " . $block->getHash(), 'INFO');
             return true;
             
         } catch (\PDOException $e) {
             $this->database->rollBack();
+            $this->writeLog("BlockStorage::saveToDatabaseStorage - PDO Exception: " . $e->getMessage(), 'ERROR');
             return false;
         } catch (\Exception $e) {
             $this->database->rollBack();
+            $this->writeLog("BlockStorage::saveToDatabaseStorage - Exception: " . $e->getMessage(), 'ERROR');
             throw $e;
         }
     }
@@ -143,51 +183,92 @@ class BlockStorage
      */
     private function processTransaction(array $transaction, BlockInterface $block): void
     {
-        // Save transaction to transactions table
-        $stmt = $this->database->prepare("
-            INSERT INTO transactions (hash, block_hash, block_height, from_address, to_address, amount, fee, gas_limit, gas_used, gas_price, nonce, data, signature, status, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?)
-            ON DUPLICATE KEY UPDATE status = 'confirmed'
-        ");
+        $this->writeLog("BlockStorage::processTransaction - Starting transaction processing", 'DEBUG');
+        $this->writeLog("BlockStorage::processTransaction - Transaction type: " . ($transaction['type'] ?? 'transfer'), 'DEBUG');
         
-        $stmt->execute([
-            $transaction['hash'] ?? hash('sha256', json_encode($transaction)),
-            $block->getHash(),
-            $block->getIndex(),
-            $transaction['from'] ?? 'unknown',
-            $transaction['to'] ?? 'unknown',
-            $transaction['amount'] ?? 0,
-            $transaction['fee'] ?? 0,
-            21000, // default gas limit
-            0,     // gas used
-            0.00001, // default gas price
-            0,     // nonce
-            json_encode($transaction['metadata'] ?? []),
-            'system_signature',
-            $transaction['timestamp'] ?? $block->getTimestamp()
-        ]);
+        // Cast to concrete Block class for access to getIndex method
+        if (!($block instanceof \Blockchain\Core\Blockchain\Block)) {
+            throw new \Exception('Block must be instance of Block class');
+        }
+        
+        try {
+            // Save transaction to transactions table
+            $this->writeLog("BlockStorage::processTransaction - Saving transaction to transactions table", 'DEBUG');
+            $stmt = $this->database->prepare("
+                INSERT INTO transactions (hash, block_hash, block_height, from_address, to_address, amount, fee, gas_limit, gas_used, gas_price, nonce, data, signature, status, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?)
+                ON DUPLICATE KEY UPDATE status = 'confirmed'
+            ");
+            
+            $txResult = $stmt->execute([
+                $transaction['hash'] ?? hash('sha256', json_encode($transaction)),
+                $block->getHash(),
+                $block->getIndex(),
+                $transaction['from'] ?? 'unknown',
+                $transaction['to'] ?? 'unknown',
+                $transaction['amount'] ?? 0,
+                $transaction['fee'] ?? 0,
+                21000, // default gas limit
+                0,     // gas used
+                0.00001, // default gas price
+                0,     // nonce
+                json_encode($transaction['metadata'] ?? []),
+                'system_signature',
+                $transaction['timestamp'] ?? $block->getTimestamp()
+            ]);
+            
+            $this->writeLog("BlockStorage::processTransaction - Transaction save result: " . json_encode($txResult), 'DEBUG');
+            
+        } catch (\Exception $e) {
+            $this->writeLog("BlockStorage::processTransaction - ERROR saving transaction: " . $e->getMessage(), 'ERROR');
+            throw $e;
+        }
         
         // Process special transaction types
         $txType = $transaction['type'] ?? 'transfer';
+        $this->writeLog("BlockStorage::processTransaction - Processing transaction type: $txType", 'DEBUG');
         
-        switch ($txType) {
-            case 'stake':
-                $this->processStakeTransaction($transaction, $block);
-                break;
-                
-            case 'register_validator':
-                $this->processValidatorRegistration($transaction, $block);
-                break;
-                
-            case 'register_node':
-                $this->processNodeRegistration($transaction, $block);
-                break;
-                
-            case 'transfer':
-            case 'genesis':
-                // Update wallet balances
-                $this->updateWalletBalance($transaction['to'], $transaction['amount']);
-                break;
+        try {
+            switch ($txType) {
+                case 'stake':
+                    $this->writeLog("BlockStorage::processTransaction - Processing stake transaction", 'DEBUG');
+                    // For staking: deduct from sender, process staking record
+                    $this->updateWalletBalance($transaction['from'], -$transaction['amount']);
+                    $this->processStakeTransaction($transaction, $block);
+                    break;
+                    
+                case 'register_validator':
+                    $this->writeLog("BlockStorage::processTransaction - Processing validator registration", 'DEBUG');
+                    $this->processValidatorRegistration($transaction, $block);
+                    break;
+                    
+                case 'register_node':
+                    $this->writeLog("BlockStorage::processTransaction - Processing node registration", 'DEBUG');
+                    $this->processNodeRegistration($transaction, $block);
+                    break;
+                    
+                case 'genesis':
+                    $this->writeLog("BlockStorage::processTransaction - Processing genesis transaction", 'DEBUG');
+                    // For genesis: only add to receiver (no sender deduction)
+                    $this->updateWalletBalance($transaction['to'], $transaction['amount']);
+                    break;
+                    
+                case 'transfer':
+                default:
+                    $this->writeLog("BlockStorage::processTransaction - Processing transfer transaction", 'DEBUG');
+                    // For transfer: deduct from sender, add to receiver
+                    if ($transaction['from'] !== 'genesis' && $transaction['from'] !== 'genesis_address') {
+                        $this->updateWalletBalance($transaction['from'], -($transaction['amount'] + ($transaction['fee'] ?? 0)));
+                    }
+                    $this->updateWalletBalance($transaction['to'], $transaction['amount']);
+                    break;
+            }
+            
+            $this->writeLog("BlockStorage::processTransaction - Transaction type $txType processed successfully", 'DEBUG');
+            
+        } catch (\Exception $e) {
+            $this->writeLog("BlockStorage::processTransaction - ERROR processing transaction type $txType: " . $e->getMessage(), 'ERROR');
+            throw $e;
         }
     }
     
@@ -197,19 +278,34 @@ class BlockStorage
     private function processStakeTransaction(array $transaction, BlockInterface $block): void
     {
         $metadata = $transaction['metadata'] ?? [];
+        $validator = $metadata['validator'] ?? $transaction['from'];
+        $staker = $transaction['from'];
+        $amount = $transaction['amount'];
         
+        // Use block height if available, otherwise use 0
+        $blockHeight = 0;
+        if (method_exists($block, 'getHeight')) {
+            $blockHeight = $block->getHeight();
+        } elseif (method_exists($block, 'getIndex')) {
+            $blockHeight = $block->getIndex();
+        }
+        
+        // Check if staking record already exists for this exact combination
         $stmt = $this->database->prepare("
-            INSERT INTO staking (validator, staker, amount, status, start_block, created_at)
-            VALUES (?, ?, ?, 'active', ?, NOW())
-            ON DUPLICATE KEY UPDATE amount = amount + VALUES(amount)
+            SELECT id FROM staking 
+            WHERE validator = ? AND staker = ? AND amount = ? AND start_block = ?
         ");
+        $stmt->execute([$validator, $staker, $amount, $blockHeight]);
         
-        $stmt->execute([
-            $metadata['validator'] ?? $transaction['from'],
-            $transaction['from'],
-            $transaction['amount'],
-            $block->getIndex()
-        ]);
+        if (!$stmt->fetch()) {
+            // Only insert if exact record doesn't exist
+            $stmt = $this->database->prepare("
+                INSERT INTO staking (validator, staker, amount, status, start_block, created_at)
+                VALUES (?, ?, ?, 'active', ?, NOW())
+            ");
+            
+            $stmt->execute([$validator, $staker, $amount, $blockHeight]);
+        }
     }
     
     /**
@@ -229,7 +325,7 @@ class BlockStorage
             // Try to get public key from wallets table
             $stmt = $this->database->prepare("SELECT public_key FROM wallets WHERE address = ?");
             $stmt->execute([$validatorAddress]);
-            $wallet = $stmt->fetch(PDO::FETCH_ASSOC);
+            $wallet = $stmt->fetch(\PDO::FETCH_ASSOC);
             if ($wallet && $wallet['public_key'] !== 'placeholder_public_key') {
                 $publicKey = $wallet['public_key'];
             }
@@ -302,8 +398,11 @@ class BlockStorage
     private function updateWalletBalance(string $address, float $amount): void
     {
         if ($address === 'unknown' || $address === 'genesis_address' || $address === 'staking_contract') {
+            $this->writeLog("BlockStorage::updateWalletBalance - Skipping system address: $address", 'DEBUG');
             return; // Skip system addresses
         }
+        
+        $this->writeLog("BlockStorage::updateWalletBalance - Updating balance for $address by $amount", 'DEBUG');
         
         $stmt = $this->database->prepare("
             INSERT INTO wallets (address, public_key, balance, created_at)
@@ -311,7 +410,8 @@ class BlockStorage
             ON DUPLICATE KEY UPDATE balance = balance + VALUES(balance), updated_at = NOW()
         ");
         
-        $stmt->execute([$address, $amount]);
+        $result = $stmt->execute([$address, $amount]);
+        $this->writeLog("BlockStorage::updateWalletBalance - Execute result: " . json_encode($result) . ", affected rows: " . $stmt->rowCount(), 'DEBUG');
     }
     
     public function getBlock(int $index): ?BlockInterface
@@ -372,7 +472,7 @@ class BlockStorage
         // For now, save simplified block data
         $blockData = [];
         foreach ($this->blocks as $index => $block) {
-            if ($block instanceof BlockInterface) {
+            if ($block instanceof \Blockchain\Core\Blockchain\Block) {
                 $blockData[$index] = [
                     'index' => $block->getIndex(),
                     'hash' => $block->getHash(),

@@ -121,3 +121,4 @@ storage/blockchain/blockchain.bin
 storage/blockchain/blockchain.bin
 .gitignore
 storage/blockchain/blockchain.bin
+.github/instructions/copilot.instructions.md

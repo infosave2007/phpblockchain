@@ -22,16 +22,14 @@ $params = $_GET;
 $network = $params['network'] ?? 'mainnet';
 
 try {
-    // Load configuration
-    require_once '../../config/config.php';
-    $config = include '../../config/config.php';
+    // Load EnvironmentLoader first
+    require_once '../../core/Environment/EnvironmentLoader.php';
     
-    // Connect to database
-    $dbConfig = $config['database'];
-    $dsn = "mysql:host={$dbConfig['host']};port={$dbConfig['port']};dbname={$dbConfig['database']};charset=utf8mb4";
-    $pdo = new PDO($dsn, $dbConfig['username'], $dbConfig['password'], [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION
-    ]);
+    // Load DatabaseManager
+    require_once '../../core/Database/DatabaseManager.php';
+    
+    // Connect to database using DatabaseManager
+    $pdo = \Blockchain\Core\Database\DatabaseManager::getConnection();
     
     // Route the request
     switch ($path) {

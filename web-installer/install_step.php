@@ -4,6 +4,45 @@ if (ob_get_level()) {
     ob_end_clean();
 }
 
+/**
+ * Helper function to create database connection using installer parameters
+ * Falls back to DatabaseManager when configuration is available
+ */
+function createInstallerDatabaseConnection(array $params): PDO {
+    $dsn = "mysql:host={$params['host']};port={$params['port']};charset=utf8mb4";
+    if (!empty($params['database'])) {
+        $dsn .= ";dbname={$params['database']}";
+    }
+    
+    return new PDO($dsn, $params['username'], $params['password'] ?? '', [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_TIMEOUT => 10,
+        PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4"
+    ]);
+}
+
+/**
+ * Try to use DatabaseManager if config exists, otherwise use installer connection
+ */
+function getOptimalDatabaseConnection(?array $installerParams = null): PDO {
+    // Try DatabaseManager first if config exists
+    if (file_exists('../config/config.php') && !$installerParams) {
+        try {
+            require_once '../core/Database/DatabaseManager.php';
+            return \Blockchain\Core\Database\DatabaseManager::getConnection();
+        } catch (Exception $e) {
+            // Fall back to installer method
+        }
+    }
+    
+    // Use installer parameters
+    if ($installerParams) {
+        return createInstallerDatabaseConnection($installerParams);
+    }
+    
+    throw new Exception('No database connection method available');
+}
+
 // Set headers first
 header('Content-Type: application/json');
 header('Cache-Control: no-cache, no-store, must-revalidate');
@@ -342,10 +381,11 @@ function createDatabase(): array
     try {
         file_put_contents('install_debug.log', "Attempting connection with DSN: $dsn\n", FILE_APPEND);
         
-        $pdo = new PDO($dsn, $username, $password, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_TIMEOUT => 10, // Increase timeout for external hosting
-            PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4"
+        $pdo = createInstallerDatabaseConnection([
+            'host' => $host,
+            'port' => $port,
+            'username' => $username,
+            'password' => $password
         ]);
         
         file_put_contents('install_debug.log', "Connection successful, creating database: $database\n", FILE_APPEND);
@@ -391,9 +431,12 @@ function createTables(): array
     $dsn = "mysql:host={$host};port={$port};dbname={$database};charset=utf8mb4";
     
     try {
-        $pdo = new PDO($dsn, $username, $password, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_TIMEOUT => 10
+        $pdo = createInstallerDatabaseConnection([
+            'host' => $host,
+            'port' => $port,
+            'database' => $database,
+            'username' => $username,
+            'password' => $password
         ]);
         
         // Include the Migration class
@@ -605,7 +648,13 @@ function generateGenesis(): array
     $dsn = "mysql:host={$host};port={$port};dbname={$database};charset=utf8mb4";
     
     try {
-        $pdo = new PDO($dsn, $username, $password, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        $pdo = createInstallerDatabaseConnection([
+            'host' => $host,
+            'port' => $port,
+            'database' => $database,
+            'username' => $username,
+            'password' => $password
+        ]);
         $logMessage = "Database connected successfully\n";
         file_put_contents($logFile, $logMessage, FILE_APPEND);
     } catch (PDOException $e) {
@@ -1035,8 +1084,12 @@ function setupAdmin(): array
     $dsn = "mysql:host={$host};port={$port};dbname={$database};charset=utf8mb4";
     
     try {
-        $pdo = new PDO($dsn, $username, $password, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION
+        $pdo = createInstallerDatabaseConnection([
+            'host' => $host,
+            'port' => $port,
+            'database' => $database,
+            'username' => $username,
+            'password' => $password
         ]);
         
         // Create admin user (table should already exist from Migration)
@@ -1131,8 +1184,12 @@ function startServices(): array
         $database = $config['database']['database'] ?? $config['db_name'] ?? '';
         
         $dsn = "mysql:host={$host};port={$port};dbname={$database};charset=utf8mb4";
-        $pdo = new PDO($dsn, $username, $password, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION
+        $pdo = createInstallerDatabaseConnection([
+            'host' => $host,
+            'port' => $port,
+            'database' => $database,
+            'username' => $username,
+            'password' => $password
         ]);
         
         $services[] = 'Database';
@@ -1372,15 +1429,13 @@ function createWallet(array $passedConfig = []): array
         $logMessage = "DSN: $dsn\n";
         file_put_contents($logFile, $logMessage, FILE_APPEND);
         
-        $pdo = new PDO(
-            $dsn,
-            $username,
-            $password,
-            [
-                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-            ]
-        );
+        $pdo = createInstallerDatabaseConnection([
+            'host' => $host,
+            'port' => $port,
+            'database' => $database,
+            'username' => $username,
+            'password' => $password
+        ]);
         
         $logMessage = "Database connected successfully\n";
         file_put_contents($logFile, $logMessage, FILE_APPEND);
@@ -1408,6 +1463,8 @@ function createWallet(array $passedConfig = []): array
         }
         file_put_contents($logFile, $logMessage, FILE_APPEND);
         
+        // Skip manual balance update - it will be updated automatically when genesis block transactions are processed
+        /*
         // Update wallet balance if needed
         if ($walletAmount > 0) {
             $stmt = $pdo->prepare("UPDATE wallets SET balance = ? WHERE address = ?");
@@ -1420,6 +1477,10 @@ function createWallet(array $passedConfig = []): array
             $logMessage = "Updated wallet balance to: $walletAmount\n";
             file_put_contents($logFile, $logMessage, FILE_APPEND);
         }
+        */
+        
+        $logMessage = "Wallet balance will be updated automatically when genesis block transactions are processed\n";
+        file_put_contents($logFile, $logMessage, FILE_APPEND);
         
         // Skip node_id update - field doesn't exist in current schema
         $logMessage = "Skipping node_id update (field not in schema)\n";
@@ -1484,6 +1545,9 @@ function createWallet(array $passedConfig = []): array
         }
         
         // Add staking record if amount > 0
+        // NOTE: Staking records will be created automatically when genesis block transactions are processed
+        // This manual creation is disabled to prevent duplicates
+        /*
         if ($stakingAmount > 0 && $stakingAmount <= $walletAmount) {
             try {
                 // Check if staking table exists
@@ -1534,6 +1598,10 @@ function createWallet(array $passedConfig = []): array
                 // Don't throw exception, just log warning
             }
         }
+        */
+        
+        $logMessage = "Staking records will be created automatically when genesis block transactions are processed\n";
+        file_put_contents($logFile, $logMessage, FILE_APPEND);
         
         // Create blockchain transaction for initial wallet funding
         $fundingTransaction = null;
@@ -1671,5 +1739,3 @@ function createWallet(array $passedConfig = []): array
         throw new Exception('Failed to create wallet: ' . $e->getMessage());
     }
 }
-
-?>

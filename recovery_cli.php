@@ -36,13 +36,9 @@ function initializeRecoveryManager(): BlockchainRecoveryManager
 {
     global $config;
     
-    // Database connection
-    $database = new PDO(
-        "mysql:host=localhost;dbname=blockchain_modern;charset=utf8mb4",
-        'root',
-        '',
-        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-    );
+    // Database connection using DatabaseManager
+    require_once 'core/Database/DatabaseManager.php';
+    $database = \Blockchain\Core\Database\DatabaseManager::getConnection();
     
     // Initialize components
     $binaryStorage = new BlockchainBinaryStorage($config);

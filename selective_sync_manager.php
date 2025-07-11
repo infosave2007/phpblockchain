@@ -24,8 +24,9 @@ try {
     // Load configuration
     $config = loadConfig();
     
-    // Initialize database
-    $pdo = createDatabaseConnection($config['database']);
+    // Initialize database using DatabaseManager
+    require_once 'core/Database/DatabaseManager.php';
+    $pdo = \Blockchain\Core\Database\DatabaseManager::getConnection();
     
     // Initialize binary storage
     $binaryStorage = new \Blockchain\Core\Storage\BlockchainBinaryStorage(
@@ -152,16 +153,6 @@ function loadConfig(): array
             'data_dir' => 'storage/blockchain'
         ]
     ];
-}
-
-function createDatabaseConnection(array $dbConfig): PDO
-{
-    $dsn = "mysql:host={$dbConfig['host']};port={$dbConfig['port']};dbname={$dbConfig['database']};charset=utf8mb4";
-    
-    return new PDO($dsn, $dbConfig['username'], $dbConfig['password'], [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-    ]);
 }
 
 function displayResult(string $operation, array $result): void

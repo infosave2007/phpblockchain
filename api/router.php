@@ -180,12 +180,8 @@ function getSystemStatus(): array
     
     if ($configExists) {
         try {
-            $config = include '../config/config.php';
-            $dbConfig = $config['database'];
-            $dsn = "mysql:host={$dbConfig['host']};port={$dbConfig['port']};dbname={$dbConfig['database']};charset=utf8mb4";
-            $pdo = new PDO($dsn, $dbConfig['username'], $dbConfig['password'], [
-                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION
-            ]);
+            require_once '../core/Database/DatabaseManager.php';
+            $pdo = \Blockchain\Core\Database\DatabaseManager::getConnection();
             $dbStatus = 'connected';
         } catch (Exception $e) {
             $dbStatus = 'error';

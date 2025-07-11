@@ -81,12 +81,9 @@ if (!file_exists($configFile)) {
 $config = require $configFile;
 
 try {
-    // Initialize database connection
-    $dsn = "mysql:host={$config['database']['host']};port={$config['database']['port']};dbname={$config['database']['database']};charset=utf8mb4";
-    $pdo = new PDO($dsn, $config['database']['username'], $config['database']['password'], [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-    ]);
+    // Initialize database connection using DatabaseManager
+    require_once 'core/Database/DatabaseManager.php';
+    $pdo = \Blockchain\Core\Database\DatabaseManager::getConnection();
     
     // Initialize storage systems
     $dataDir = $config['blockchain']['binary_storage']['data_dir'] ?? 'storage/blockchain';

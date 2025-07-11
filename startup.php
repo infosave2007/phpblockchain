@@ -539,14 +539,16 @@ class BlockchainNodeManager
     
     private function getDatabaseConnection(): PDO
     {
-        $config = $this->config['database'] ?? [];
-        
-        if (($config['type'] ?? 'sqlite') === 'sqlite') {
+        // Use DatabaseManager if available, otherwise fallback to SQLite
+        try {
+            require_once __DIR__ . '/core/Database/DatabaseManager.php';
+            return \Blockchain\Core\Database\DatabaseManager::getConnection();
+        } catch (Exception $e) {
+            // Fallback to SQLite
+            $config = $this->config['database'] ?? [];
             $dbFile = $config['file'] ?? $this->storageDir . '/blockchain.db';
             return new PDO("sqlite:{$dbFile}");
         }
-        
-        throw new Exception("Database type not supported");
     }
     
     private function createTables(PDO $pdo): void

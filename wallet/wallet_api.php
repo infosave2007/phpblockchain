@@ -99,12 +99,12 @@ try {
         ];
     }
     
-    // Логируем попытку подключения (без пароля)
-    writeLog("Attempting DB connection to {$dbConfig['host']}:{$dbConfig['port']}/{$dbConfig['database']} as {$dbConfig['username']}");
+    // Логируем попытку подключения
+    writeLog("Attempting database connection using DatabaseManager");
     
-    // Подключение к базе данных
-    $dsn = "mysql:host={$dbConfig['host']};port={$dbConfig['port']};dbname={$dbConfig['database']};charset={$dbConfig['charset']}";
-    $pdo = new PDO($dsn, $dbConfig['username'], $dbConfig['password'], $dbConfig['options']);
+    // Подключение к базе данных через DatabaseManager
+    require_once $baseDir . '/core/Database/DatabaseManager.php';
+    $pdo = \Blockchain\Core\Database\DatabaseManager::getConnection();
     
     writeLog("Database connection successful");
     
@@ -126,6 +126,12 @@ try {
     
     // Получение данных запроса
     $input = json_decode(file_get_contents('php://input'), true);
+    
+    // Для GET запросов получаем параметры из $_GET
+    if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+        $input = $_GET;
+    }
+    
     $action = $input['action'] ?? '';
     
     switch ($action) {
@@ -279,6 +285,23 @@ try {
             $result = decryptTransactionMessage($walletManager, $txHash, $walletAddress, $privateKey);
             break;
             
+        case 'get_transaction':
+            $hash = $input['hash'] ?? '';
+            if (!$hash) {
+                throw new Exception('Transaction hash is required');
+            }
+            
+            $transaction = $walletManager->getTransactionByHash($hash);
+            if (!$transaction) {
+                throw new Exception('Transaction not found');
+            }
+            
+            $result = [
+                'success' => true,
+                'transaction' => $transaction
+            ];
+            break;
+            
         case 'stake_tokens_new':
             $address = $input['address'] ?? '';
             $amount = $input['amount'] ?? 0;
@@ -310,11 +333,6 @@ try {
                 throw new Exception('Wallet address is required');
             }
             $result = getStakingInfo($walletManager, $address);
-            break;
-            if (!$address) {
-                throw new Exception('Wallet address is required');
-            }
-            $result = verifyWalletInBlockchain($blockchainManager, $address);
             break;
             
         case 'get_blockchain_wallet_info':
@@ -430,18 +448,7 @@ function listWallets($walletManager) {
 function getBalance($walletManager, $address) {
     try {
         $availableBalance = $walletManager->getAvailableBalance($address);
-        
-        // Получаем стейкинг баланс из таблицы staking
-        $pdo = $walletManager->getDatabase();
-        $stmt = $pdo->prepare("
-            SELECT COALESCE(SUM(amount), 0) as total_staked 
-            FROM staking 
-            WHERE staker = ? AND status = 'active'
-        ");
-        $stmt->execute([$address]);
-        $result = $stmt->fetch();
-        $stakedBalance = (float)$result['total_staked'];
-        
+        $stakedBalance = $walletManager->getStakedBalance($address);
         $totalBalance = $availableBalance + $stakedBalance;
         
         return [
@@ -554,19 +561,29 @@ function createWalletFromMnemonic($walletManager, $blockchainManager, array $mne
         $walletData = $walletManager->createWalletFromMnemonic($mnemonic);
         writeLog("Wallet created from mnemonic: " . $walletData['address'], 'INFO');
         
-        // 3. Record wallet creation in blockchain
+        // 3. Record wallet creation in blockchain (non-blocking)
         writeLog("Recording wallet creation in blockchain", 'DEBUG');
-        $blockchainResult = $blockchainManager->createWalletWithBlockchain($walletData);
-        writeLog("Blockchain recording result: " . json_encode($blockchainResult['blockchain_recorded']), 'INFO');
+        $blockchainRecorded = false;
+        $blockchainError = null;
+        try {
+            $blockchainResult = $blockchainManager->createWalletWithBlockchain($walletData);
+            $blockchainRecorded = $blockchainResult['blockchain_recorded'];
+            writeLog("Blockchain recording result: " . json_encode($blockchainRecorded), 'INFO');
+        } catch (Exception $blockchainException) {
+            writeLog("Blockchain recording failed: " . $blockchainException->getMessage(), 'WARNING');
+            $blockchainError = $blockchainException->getMessage();
+            // Don't throw - wallet should still be created even if blockchain fails
+        }
         
         // 4. Return combined result
         $result = [
             'wallet' => $walletData,
             'blockchain' => [
-                'recorded' => $blockchainResult['blockchain_recorded'],
-                'transaction_hash' => $blockchainResult['transaction']['hash'] ?? null,
-                'block_hash' => $blockchainResult['block']['hash'] ?? null,
-                'block_height' => $blockchainResult['block']['height'] ?? null
+                'recorded' => $blockchainRecorded,
+                'error' => $blockchainError,
+                'transaction_hash' => isset($blockchainResult) ? ($blockchainResult['transaction']['hash'] ?? null) : null,
+                'block_hash' => isset($blockchainResult) ? ($blockchainResult['block']['hash'] ?? null) : null,
+                'block_height' => isset($blockchainResult) ? ($blockchainResult['block']['height'] ?? null) : null
             ]
         ];
         
@@ -603,7 +620,7 @@ function restoreWalletFromMnemonic($walletManager, $blockchainManager, array $mn
         writeLog("Mnemonic word count: " . count($mnemonic), 'DEBUG');
         writeLog("Mnemonic words: " . implode(' ', $mnemonic), 'DEBUG');
         
-        // 1. Restore wallet using WalletManager (НЕ записываем в блокчейн!)
+        // 1. Restore wallet using WalletManager
         writeLog("Calling WalletManager::restoreWalletFromMnemonic", 'DEBUG');
         $walletData = $walletManager->restoreWalletFromMnemonic($mnemonic);
         writeLog("Wallet restored: " . $walletData['address'] . " from: " . ($walletData['restored_from'] ?? 'unknown'), 'INFO');
@@ -617,20 +634,44 @@ function restoreWalletFromMnemonic($walletManager, $blockchainManager, array $mn
         writeLog("Wallet verification in blockchain: " . ($isVerified ? 'FOUND' : 'NOT_FOUND'), 'INFO');
         writeLog("Transaction history count: " . count($transactionHistory), 'INFO');
         
-        // 3. Return result WITHOUT blockchain recording
+        // 3. Если кошелек нуждается в регистрации в блокчейне - регистрируем
+        $blockchainRegistered = false;
+        $blockchainError = null;
+        
+        if (isset($walletData['needs_blockchain_registration']) && $walletData['needs_blockchain_registration'] && !$isVerified) {
+            writeLog("Wallet needs blockchain registration, registering now", 'INFO');
+            try {
+                $blockchainResult = $blockchainManager->createWalletWithBlockchain($walletData);
+                $blockchainRegistered = $blockchainResult['blockchain_recorded'];
+                writeLog("Blockchain registration result: " . json_encode($blockchainRegistered), 'INFO');
+            } catch (Exception $blockchainException) {
+                writeLog("Blockchain registration failed: " . $blockchainException->getMessage(), 'WARNING');
+                $blockchainError = $blockchainException->getMessage();
+                // Don't throw - wallet is still restored in database
+            }
+        } else {
+            $blockchainRegistered = $isVerified; // Already verified
+        }
+        
+        // 4. Return result with blockchain registration status
         $result = [
             'wallet' => $walletData,
             'public_key' => $walletData['public_key'] ?? null,
             'private_key' => $walletData['private_key'] ?? null,
             'restored' => true,
+            'blockchain' => [
+                'registered' => $blockchainRegistered,
+                'error' => $blockchainError,
+                'was_already_verified' => $isVerified
+            ],
             'verification' => [
-                'exists_in_blockchain' => $isVerified,
+                'exists_in_blockchain' => $blockchainRegistered,
                 'transaction_count' => count($transactionHistory),
                 'last_activity' => !empty($transactionHistory) ? $transactionHistory[0]['block_timestamp'] ?? null : null
             ],
-            'note' => $walletData['restored_from'] === 'mnemonic_only' ? 
-                     'Wallet restored from seed phrase. No previous activity found.' : 
-                     'Wallet restored successfully with transaction history.'
+            'note' => $blockchainRegistered ? 
+                     'Wallet restored and registered in blockchain successfully.' : 
+                     'Wallet restored in database. Blockchain registration may be needed.'
         ];
         
         writeLog("Wallet restoration completed successfully", 'INFO');
@@ -1050,7 +1091,7 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
             throw new Exception('Invalid private key format');
         }
         
-        // 4. Always encrypt memo if message exists
+        // 4. Handle memo encryption
         $finalMemo = '';
         $encryptedData = null;
         if (!empty($memo)) {
@@ -1064,13 +1105,13 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
                 $recipientWallet = $walletManager->getWalletByAddress($toAddress);
                 writeLog("Looking for recipient wallet: $toAddress", 'INFO');
                 writeLog("Recipient wallet found: " . ($recipientWallet ? 'YES' : 'NO'), 'INFO');
+                writeLog("Recipient wallet data: " . json_encode($recipientWallet), 'DEBUG');
                 
                 if ($recipientWallet && !empty($recipientWallet['public_key'])) {
                     writeLog("Recipient has public key, proceeding with encryption", 'INFO');
                     writeLog("Recipient public key: " . $recipientWallet['public_key'], 'DEBUG');
-                    writeLog("Recipient public key length: " . strlen($recipientWallet['public_key']), 'DEBUG');
                     
-                    // Always encrypt messages using MessageEncryption with secp256k1 keys
+                    // Encrypt messages using MessageEncryption with secp256k1 keys
                     $encryptedData = \Blockchain\Core\Cryptography\MessageEncryption::createSecureMessage(
                         $memo, 
                         $recipientWallet['public_key'], 
@@ -1078,20 +1119,26 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
                     );
                     writeLog("Message encrypted and signed for recipient using ECIES", 'INFO');
                 } else {
-                    writeLog("Recipient wallet data: " . json_encode($recipientWallet), 'DEBUG');
+                    // Recipient wallet not found or no public key - this is a security issue
                     throw new Exception("Recipient public key not found. Cannot encrypt message for address: $toAddress. All messages must be encrypted.");
                 }
             } catch (Exception $e) {
                 writeLog("Encryption failed: " . $e->getMessage(), 'ERROR');
-                // Re-throw all encryption errors - we don't want unencrypted messages
-                throw $e;
+                throw $e; // Re-throw to maintain security
             }
         }
         
-        // 5. Check if recipient wallet exists
+        // 5. Check if recipient wallet exists, create if needed
         $recipientInfo = $walletManager->getWalletInfo($toAddress);
         if (!$recipientInfo) {
-            throw new Exception('Recipient wallet not found');
+            writeLog("Recipient wallet not found in database, checking if we can create it", 'WARNING');
+            
+            // Try to create recipient wallet entry if we have enough information
+            // This can happen when someone restores a wallet but it wasn't properly saved
+            
+            // We can derive the public key from the address if needed, but for now
+            // we'll require the recipient to be properly registered
+            throw new Exception('Recipient wallet not found. Please ensure the recipient has created their wallet first.');
         }
         
         // 5. Create transfer transaction

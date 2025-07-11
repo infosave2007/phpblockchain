@@ -50,13 +50,9 @@ function initializeComponents(): array
     try {
         $config = include __DIR__ . '/config/config.php';
         
-        // Database connection
-        $database = new PDO(
-            "mysql:host={$config['database']['host']};dbname={$config['database']['database']};charset={$config['database']['charset']}",
-            $config['database']['username'],
-            $config['database']['password']
-        );
-        $database->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        // Database connection using DatabaseManager
+        require_once __DIR__ . '/core/Database/DatabaseManager.php';
+        $database = \Blockchain\Core\Database\DatabaseManager::getConnection();
         
         // Initialize components
         $binaryStorage = new BlockchainBinaryStorage();

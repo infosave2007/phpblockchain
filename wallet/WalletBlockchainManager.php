@@ -20,8 +20,19 @@ require_once __DIR__ . '/WalletLogger.php';
  * - Removed legacy validator selection methods (getActiveValidatorAddress)
  * - Removed legacy signature generation methods (generateBlockSignature)
  * - Removed legacy cryptography methods (getValidatorPrivateKey, getValidatorSigningKey)
- * - All blockchain operations now require ValidatorManager
- * - BlockStorage is disabled to prevent hardcoded validator logic
+ * - All blockchain operations now require ValidatorManager                $stmt->execute([
+                    $tx['hash'],
+                    $hash,
+                    $index, // ИСПРАВЛЕНО: используем $index вместо $height
+                    $tx['from'],
+                    $tx['to'],
+                    $tx['amount'],
+                    $tx['fee'],
+                    json_encode($tx['data']),
+                    $tx['signature'],
+                    $tx['timestamp'],
+                    $tx['timestamp']
+                ]);orage is disabled to prevent hardcoded validator logic
  * - Centralized validator/signature management ensures consistency
  * 
  * @since 2025-01-20 Refactored to use centralized ValidatorManager
@@ -226,7 +237,7 @@ class WalletBlockchainManager
                     'version' => '1.0.0'
                 ],
                 'signature' => $signature,
-                'status' => 'confirmed'
+                'status' => 'pending'  // New wallet transactions start as pending
             ];
             \WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Transaction array created");
             
@@ -269,7 +280,7 @@ class WalletBlockchainManager
                 'address' => $walletData['address'],
                 'timestamp' => time()
             ]),
-            'status' => 'confirmed'
+            'status' => 'pending'  // Restore transactions also start as pending
         ];
     }
     
@@ -294,7 +305,10 @@ class WalletBlockchainManager
             // Get latest block for previous hash
             $previousBlock = $this->blockStorage ? $this->blockStorage->getLatestBlock() : null;
             $previousHash = $previousBlock ? $previousBlock->getHash() : '0';
-            $nextIndex = $previousBlock ? $previousBlock->getIndex() + 1 : 1;
+            
+            // Safe way to get index from BlockInterface
+            $concretePreviousBlock = ($previousBlock instanceof \Blockchain\Core\Blockchain\Block) ? $previousBlock : null;
+            $nextIndex = $concretePreviousBlock ? $concretePreviousBlock->getIndex() + 1 : 1;
             
             // If no BlockStorage, get latest block from database
             if (!$previousBlock && $this->database) {
@@ -327,18 +341,20 @@ class WalletBlockchainManager
                     
                     $signatureData = $this->validatorManager->signBlock($blockData);
                     
-                    \WalletLogger::info("Block signed with ValidatorManager", [
-                        'validator_address' => $signatureData['validator_address'],
-                        'block_hash' => $blockData['hash'],
-                        'signature_prefix' => substr($signatureData['signature'], 0, 20) . '...'
-                    ]);
+                    \WalletLogger::info("Block signed with ValidatorManager - validator: " . $signatureData['validator_address'] . 
+                        ", block_hash: " . $blockData['hash'] . 
+                        ", signature_prefix: " . substr($signatureData['signature'], 0, 20) . "...");
                     
                     // Store signature in block metadata if possible
-                    if (method_exists($block, 'setValidator')) {
-                        $block->setValidator($signatureData['validator_address']);
-                    }
-                    if (method_exists($block, 'setSignature')) {
-                        $block->setSignature($signatureData['signature']);
+                    try {
+                        if (method_exists($block, 'setValidator')) {
+                            $block->setValidator($signatureData['validator_address']);
+                        }
+                        if (method_exists($block, 'setSignature')) {
+                            $block->setSignature($signatureData['signature']);
+                        }
+                    } catch (Exception $e) {
+                        \WalletLogger::debug("Could not store signature in block object: " . $e->getMessage());
                     }
                     
                 } catch (Exception $e) {
@@ -361,7 +377,7 @@ class WalletBlockchainManager
      */
     private function createSimpleBlock(array $transactions): object
     {
-        $blockData = new stdClass();
+        $blockData = new \stdClass();
         $blockData->index = 1;
         $blockData->timestamp = time();
         $blockData->transactions = $transactions;
@@ -693,16 +709,30 @@ class WalletBlockchainManager
             return;
         }
         
+        $transactionStarted = false;
         try {
-            // Start transaction
-            $this->database->beginTransaction();
+            // ПРИНУДИТЕЛЬНО включаем autocommit и начинаем новую транзакцию
+            \WalletLogger::debug("Checking database transaction state");
             
-            // Get block data safely
+            if ($this->database->inTransaction()) {
+                \WalletLogger::debug("Database already in transaction - committing existing transaction");
+                $this->database->commit();
+            }
+            
+            // Включаем autocommit и начинаем новую транзакцию
+            $this->database->setAttribute(\PDO::ATTR_AUTOCOMMIT, 1);
+            $this->database->beginTransaction();
+            $transactionStarted = true;
+            \WalletLogger::debug("New transaction started successfully");
+            
+            // Get block data safely - cast to Block class for getIndex/getMerkleRoot methods
+            $concreteBlock = ($block instanceof \Blockchain\Core\Blockchain\Block) ? $block : null;
+            
             $hash = is_callable([$block, 'getHash']) ? $block->getHash() : $block->hash;
-            $index = is_callable([$block, 'getIndex']) ? $block->getIndex() : $block->index;
+            $index = $concreteBlock ? $concreteBlock->getIndex() : ($block->index ?? 1);
             $timestamp = is_callable([$block, 'getTimestamp']) ? $block->getTimestamp() : $block->timestamp;
             $previousHash = is_callable([$block, 'getPreviousHash']) ? $block->getPreviousHash() : $block->previousHash;
-            $merkleRoot = is_callable([$block, 'getMerkleRoot']) ? $block->getMerkleRoot() : $block->merkleRoot;
+            $merkleRoot = $concreteBlock ? $concreteBlock->getMerkleRoot() : ($block->merkleRoot ?? hash('sha256', ''));
             $transactions = is_callable([$block, 'getTransactions']) ? $block->getTransactions() : $block->transactions;
             $nonce = is_callable([$block, 'getNonce']) ? $block->getNonce() : ($block->nonce ?? 0);
             
@@ -725,10 +755,7 @@ class WalletBlockchainManager
                     $validatorAddress = $signatureData['validator_address'];
                     $blockSignature = $signatureData['signature'];
                     
-                    \WalletLogger::info("Block signed with ValidatorManager", [
-                        'validator' => $validatorAddress,
-                        'signature_type' => explode(':', $blockSignature)[0] ?? 'unknown'
-                    ]);
+                    \WalletLogger::info("Block signed with ValidatorManager - validator: $validatorAddress");
                     
                 } catch (Exception $e) {
                     \WalletLogger::error("ValidatorManager signing failed: " . $e->getMessage());
@@ -758,12 +785,7 @@ class WalletBlockchainManager
                 'validator_manager_used' => $this->validatorManager !== null
             ]);
             
-            \WalletLogger::debug("Saving block to database", [
-                'hash' => $hash,
-                'validator' => $validatorAddress,
-                'height' => $index,
-                'signature_prefix' => substr($blockSignature, 0, 20) . '...'
-            ]);
+            \WalletLogger::debug("Saving block to database - hash: $hash, validator: $validatorAddress, height: $index");
             
             $stmt->execute([
                 $hash,
@@ -781,33 +803,113 @@ class WalletBlockchainManager
             
             // Save transactions
             foreach ($transactions as $tx) {
+                // Determine if this is a genesis transaction
+                $isGenesisTransaction = ($index == 0) || (isset($tx['data']['genesis']) && $tx['data']['genesis'] === true) || ($tx['from'] === 'genesis' || $tx['from'] === 'genesis_address');
+                
+                // Genesis transactions are confirmed immediately, others start as pending
+                $transactionStatus = $isGenesisTransaction ? 'confirmed' : 'pending';
+                
+                \WalletLogger::debug("Saving transaction {$tx['hash']} with status: $transactionStatus (genesis: " . ($isGenesisTransaction ? 'yes' : 'no') . ")");
+                
                 $stmt = $this->database->prepare("
-                    INSERT INTO transactions (hash, block_hash, from_address, to_address, amount, fee, data, signature, timestamp, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, FROM_UNIXTIME(?))
+                    INSERT INTO transactions (hash, block_hash, block_height, from_address, to_address, amount, fee, data, signature, status, timestamp, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FROM_UNIXTIME(?))
                     ON DUPLICATE KEY UPDATE 
                     block_hash = VALUES(block_hash),
+                    block_height = VALUES(block_height),
                     data = VALUES(data),
-                    signature = VALUES(signature)
+                    signature = VALUES(signature),
+                    status = ?
                 ");
                 
                 $stmt->execute([
                     $tx['hash'],
                     $hash,
+                    $index,
                     $tx['from'],
                     $tx['to'],
                     $tx['amount'],
                     $tx['fee'],
                     json_encode($tx['data']),
                     $tx['signature'],
+                    $transactionStatus,
                     $tx['timestamp'],
-                    $tx['timestamp']
+                    $tx['timestamp'],
+                    $transactionStatus
                 ]);
             }
             
-            $this->database->commit();
+            \WalletLogger::debug("Processing " . count($transactions) . " transactions for wallet creation");
+            
+            // Process wallet_create transactions to ensure wallets exist in database
+            foreach ($transactions as $tx) {
+                if (($tx['type'] ?? '') === 'wallet_create' && isset($tx['data']['wallet_address'], $tx['data']['public_key'])) {
+                    $walletAddress = $tx['data']['wallet_address'];
+                    $publicKey = $tx['data']['public_key'];
+                    
+                    \WalletLogger::debug("Processing wallet_create transaction for address: $walletAddress");
+                    
+                    // Ensure wallet exists in wallets table
+                    $walletStmt = $this->database->prepare("
+                        INSERT INTO wallets (address, public_key, balance, created_at, updated_at)
+                        VALUES (?, ?, 0, NOW(), NOW())
+                        ON DUPLICATE KEY UPDATE 
+                            public_key = CASE 
+                                WHEN public_key = 'placeholder_public_key' THEN VALUES(public_key)
+                                ELSE public_key 
+                            END,
+                            updated_at = NOW()
+                    ");
+                    
+                    $walletResult = $walletStmt->execute([$walletAddress, $publicKey]);
+                    \WalletLogger::info("Wallet record created/updated in database for address: $walletAddress, result: " . json_encode($walletResult));
+                }
+            }
+            
+            \WalletLogger::debug("All wallet_create transactions processed successfully");
+            
+            // Update mempool status for transactions in this block
+            foreach ($transactions as $tx) {
+                $isGenesisTransaction = ($index == 0) || (isset($tx['data']['genesis']) && $tx['data']['genesis'] === true) || ($tx['from'] === 'genesis' || $tx['from'] === 'genesis_address');
+                
+                if ($isGenesisTransaction) {
+                    // Genesis transactions are marked as processed
+                    $mempoolStmt = $this->database->prepare("
+                        UPDATE mempool 
+                        SET status = 'processed', last_retry_at = NOW() 
+                        WHERE tx_hash = ?
+                    ");
+                    $mempoolStmt->execute([$tx['hash']]);
+                    \WalletLogger::debug("Updated mempool status to 'processed' for genesis transaction: " . $tx['hash']);
+                } else {
+                    // Non-genesis transactions remain pending in mempool until consensus confirms them
+                    \WalletLogger::debug("Keeping transaction in mempool as 'pending' until consensus: " . $tx['hash']);
+                }
+            }
+            
+            \WalletLogger::debug("All mempool transactions updated to processed status");
+            
+            // Commit only if we started the transaction
+            if ($transactionStarted) {
+                \WalletLogger::debug("About to commit transaction...");
+                $this->database->commit();
+                \WalletLogger::debug("Transaction committed successfully");
+            } else {
+                \WalletLogger::debug("No transaction to commit (not started by this method)");
+            }
             
         } catch (Exception $e) {
-            $this->database->rollBack();
+            \WalletLogger::error("WalletBlockchainManager::saveToDatabaseDirectly - EXCEPTION CAUGHT: " . $e->getMessage());
+            \WalletLogger::error("WalletBlockchainManager::saveToDatabaseDirectly - Exception file: " . $e->getFile() . " line: " . $e->getLine());
+            \WalletLogger::error("WalletBlockchainManager::saveToDatabaseDirectly - Stack trace: " . $e->getTraceAsString());
+            \WalletLogger::error("WalletBlockchainManager::saveToDatabaseDirectly - Transaction started: " . ($transactionStarted ? 'YES' : 'NO'));
+            
+            // Rollback only if we started the transaction
+            if ($transactionStarted) {
+                \WalletLogger::error("WalletBlockchainManager::saveToDatabaseDirectly - ROLLING BACK TRANSACTION");
+                $this->database->rollBack();
+            }
+            
             \WalletLogger::error("Failed to save block to database: " . $e->getMessage());
             throw $e;
         }
@@ -856,4 +958,73 @@ class WalletBlockchainManager
         }
     }
     
+    /**
+     * Create wallet transaction and add to mempool (proper blockchain flow)
+     */
+    public function createWalletViaConsensus(array $walletData): array
+    {
+        try {
+            \WalletLogger::info("WalletBlockchainManager::createWalletViaConsensus - Creating wallet via proper consensus flow");
+            
+            // 1. Create transaction
+            $transaction = $this->createWalletTransaction($walletData);
+            \WalletLogger::debug("Created wallet transaction: " . $transaction['hash']);
+            
+            // 2. Add to mempool (pending status)
+            $this->addToPendingTransactions($transaction);
+            \WalletLogger::debug("Added transaction to mempool with pending status");
+            
+            // 3. Return transaction info - consensus will handle block creation
+            return [
+                'success' => true,
+                'transaction' => $transaction,
+                'status' => 'pending_consensus',
+                'message' => 'Transaction added to mempool, waiting for validator to include in block'
+            ];
+            
+        } catch (Exception $e) {
+            \WalletLogger::error("WalletBlockchainManager::createWalletViaConsensus - Error: " . $e->getMessage());
+            return [
+                'success' => false,
+                'error' => $e->getMessage(),
+                'status' => 'failed'
+            ];
+        }
+    }
+    
+    /**
+     * Restore wallet transaction and add to mempool (proper blockchain flow)
+     */
+    public function restoreWalletViaConsensus(array $walletData): array
+    {
+        try {
+            \WalletLogger::info("WalletBlockchainManager::restoreWalletViaConsensus - Restoring wallet via proper consensus flow");
+            
+            // 1. Create restore transaction
+            $transaction = $this->createRestoreTransaction($walletData);
+            \WalletLogger::debug("Created restore transaction: " . $transaction['hash']);
+            
+            // 2. Add to mempool (pending status)
+            $this->addToPendingTransactions($transaction);
+            \WalletLogger::debug("Added restore transaction to mempool with pending status");
+            
+            // 3. Return transaction info - consensus will handle block creation
+            return [
+                'success' => true,
+                'transaction' => $transaction,
+                'status' => 'pending_consensus',
+                'message' => 'Restore transaction added to mempool, waiting for validator to include in block'
+            ];
+            
+        } catch (Exception $e) {
+            \WalletLogger::error("WalletBlockchainManager::restoreWalletViaConsensus - Error: " . $e->getMessage());
+            return [
+                'success' => false,
+                'error' => $e->getMessage(),
+                'status' => 'failed'
+            ];
+        }
+    }
+
+    // ...existing code...
 }
