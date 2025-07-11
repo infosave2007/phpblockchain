@@ -108,8 +108,6 @@ DB_USERNAME=blockchain_user
 DB_PASSWORD=your_secure_password
 
 # Network Configuration
-P2P_PORT=8545
-RPC_PORT=8546
 MAX_PEERS=25
 
 # Security
@@ -119,13 +117,16 @@ RATE_LIMIT_ENABLED=true
 ```
 
 #### Web-based Installation
-For easier setup, use the web installer:
-```bash
-# Start development server
-php server.php
 
 # Open browser and navigate to:
-http://localhost:8080/web-installer/
+http://localhost:xxxx/web-installer/
+![wallet_step1](https://github.com/user-attachments/assets/8875e33f-20e5-431d-92ca-05d485859da3)
+![wallet_step2](https://github.com/user-attachments/assets/ebc53876-c064-4372-a4c2-34694c3c4422)
+![wallet_step3](https://github.com/user-attachments/assets/587c6ee5-1fb5-49f8-8705-26e64987ea44)
+![wallet_step4](https://github.com/user-attachments/assets/73367cf1-6c2e-4c98-9a8b-af39e3faa256)
+![wallet_step5](https://github.com/user-attachments/assets/7715443e-15aa-4b5b-a79b-c41174ea855c)
+![wallet_step6](https://github.com/user-attachments/assets/97e0d06e-5438-4c57-bcf3-bfe25e1bd219)
+![wallet_step7](https://github.com/user-attachments/assets/9fde8a23-81fa-42c5-a07f-73b467d65fc1)
 
 # Follow the installation wizard
 ```
