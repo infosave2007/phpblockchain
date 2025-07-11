@@ -178,9 +178,52 @@ function getNetworkStats(PDO $pdo, string $network): array
 function getBlocks(PDO $pdo, string $network, int $page, int $limit): array
 {
     $blocks = [];
-    $chainFile = '../../storage/blockchain/chain.json';
     
-    // Try to load from chain file first
+    // Try to load from database first (prioritize database over file)
+    try {
+        $stmt = $pdo->query("SHOW TABLES LIKE 'blocks'");
+        if ($stmt->rowCount() > 0) {
+            $offset = $page * $limit;
+            $stmt = $pdo->prepare(
+                "SELECT * FROM blocks ORDER BY height DESC LIMIT ? OFFSET ?"
+            );
+            $stmt->execute([$limit, $offset]);
+            $dbBlocks = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            if (!empty($dbBlocks)) {
+                $blocks = array_map(function($block) {
+                    return [
+                        'index' => (int)$block['height'],
+                        'hash' => $block['hash'],
+                        'previous_hash' => $block['parent_hash'],
+                        'timestamp' => (int)$block['timestamp'],
+                        'transaction_count' => (int)$block['transactions_count'],
+                        'merkle_root' => $block['merkle_root'] ?? '',
+                        'nonce' => 0, // Not stored in DB yet
+                        'difficulty' => 1, // Default difficulty
+                        'size' => strlen(json_encode($block))
+                    ];
+                }, $dbBlocks);
+                
+                // Get total count for pagination
+                $stmt = $pdo->query("SELECT COUNT(*) FROM blocks");
+                $total = (int)$stmt->fetchColumn();
+                
+                return [
+                    'blocks' => $blocks,
+                    'page' => $page,
+                    'limit' => $limit,
+                    'total' => $total
+                ];
+            }
+        }
+    } catch (Exception $e) {
+        // If database fails, try file fallback
+        error_log("Database blocks query failed: " . $e->getMessage());
+    }
+    
+    // Fallback to chain file if database is empty or fails
+    $chainFile = '../../storage/blockchain/chain.json';
     if (file_exists($chainFile)) {
         $chain = json_decode(file_get_contents($chainFile), true);
         if ($chain && is_array($chain)) {
@@ -208,39 +251,6 @@ function getBlocks(PDO $pdo, string $network, int $page, int $limit): array
         }
     }
     
-    // Try to load from database if available
-    try {
-        $stmt = $pdo->query("SHOW TABLES LIKE 'blocks'");
-        if ($stmt->rowCount() > 0) {
-            $offset = $page * $limit;
-            $stmt = $pdo->prepare(
-                "SELECT * FROM blocks ORDER BY height DESC LIMIT ? OFFSET ?"
-            );
-            $stmt->execute([$limit, $offset]);
-            $dbBlocks = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
-            if (!empty($dbBlocks)) {
-                $blocks = array_map(function($block) {
-                    return [
-                        'index' => (int)$block['height'],
-                        'hash' => $block['hash'],
-                        'previous_hash' => $block['parent_hash'],
-                        'timestamp' => (int)$block['timestamp'],
-                        'transaction_count' => (int)$block['transactions_count'],
-                        'merkle_root' => $block['merkle_root'] ?? '',
-                        'nonce' => 0,
-                        'difficulty' => 1,
-                        'size' => strlen($block['metadata'] ?? '{}'),
-                        'validator' => $block['validator'] ?? '',
-                        'signature' => $block['signature'] ?? ''
-                    ];
-                }, $dbBlocks);
-            }
-        }
-    } catch (Exception $e) {
-        // Continue with file-based data
-    }
-    
     return [
         'blocks' => $blocks,
         'page' => $page,
@@ -252,9 +262,81 @@ function getBlocks(PDO $pdo, string $network, int $page, int $limit): array
 function getTransactions(PDO $pdo, string $network, int $page, int $limit): array
 {
     $transactions = [];
-    $chainFile = '../../storage/blockchain/chain.json';
     
-    // Try to load from chain file first
+    // Try to load from database first (prioritize database over file)
+    try {
+        $stmt = $pdo->query("SHOW TABLES LIKE 'transactions'");
+        if ($stmt->rowCount() > 0) {
+            $offset = $page * $limit;
+            $stmt = $pdo->prepare(
+                "SELECT t.*, 
+                        CASE 
+                            WHEN t.data IS NOT NULL AND JSON_VALID(t.data) THEN JSON_EXTRACT(t.data, '$.action')
+                            ELSE 'transfer'
+                        END as tx_type
+                 FROM transactions t 
+                 ORDER BY t.timestamp DESC, t.id DESC 
+                 LIMIT ? OFFSET ?"
+            );
+            $stmt->execute([$limit, $offset]);
+            $dbTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            if (!empty($dbTransactions)) {
+                $transactions = array_map(function($tx) {
+                    // Parse transaction type from data field
+                    $txType = 'transfer';
+                    if (!empty($tx['data'])) {
+                        $data = json_decode($tx['data'], true);
+                        if (isset($data['action'])) {
+                            $txType = $data['action'];
+                        }
+                    }
+                    
+                    // Handle special addresses
+                    if ($tx['from_address'] === 'genesis') {
+                        $txType = 'genesis';
+                    } elseif ($tx['to_address'] === 'genesis_address') {
+                        $txType = 'genesis';
+                    } elseif ($tx['to_address'] === 'staking_contract') {
+                        $txType = 'stake';
+                    } elseif ($tx['to_address'] === 'validator_registry') {
+                        $txType = 'register_validator';
+                    } elseif ($tx['to_address'] === 'node_registry') {
+                        $txType = 'register_node';
+                    }
+                    
+                    return [
+                        'hash' => $tx['hash'],
+                        'type' => $txType,
+                        'from' => $tx['from_address'],
+                        'to' => $tx['to_address'],
+                        'amount' => (float)$tx['amount'],
+                        'timestamp' => (int)$tx['timestamp'],
+                        'block_index' => (int)$tx['block_height'],
+                        'block_hash' => $tx['block_hash'],
+                        'status' => $tx['status'] === 'confirmed' ? 'confirmed' : 'pending'
+                    ];
+                }, $dbTransactions);
+                
+                // Get total count for pagination
+                $stmt = $pdo->query("SELECT COUNT(*) FROM transactions");
+                $total = (int)$stmt->fetchColumn();
+                
+                return [
+                    'transactions' => $transactions,
+                    'page' => $page,
+                    'limit' => $limit,
+                    'total' => $total
+                ];
+            }
+        }
+    } catch (Exception $e) {
+        // If database fails, try file fallback
+        error_log("Database transactions query failed: " . $e->getMessage());
+    }
+    
+    // Fallback to chain file if database is empty or fails
+    $chainFile = '../../storage/blockchain/chain.json';
     if (file_exists($chainFile)) {
         $chain = json_decode(file_get_contents($chainFile), true);
         if ($chain && is_array($chain)) {
@@ -294,38 +376,6 @@ function getTransactions(PDO $pdo, string $network, int $page, int $limit): arra
                 ];
             }, $transactions);
         }
-    }
-    
-    // Try to load from database if available
-    try {
-        $stmt = $pdo->query("SHOW TABLES LIKE 'transactions'");
-        if ($stmt->rowCount() > 0) {
-            $offset = $page * $limit;
-            $stmt = $pdo->prepare(
-                "SELECT * FROM transactions ORDER BY timestamp DESC LIMIT ? OFFSET ?"
-            );
-            $stmt->execute([$limit, $offset]);
-            $dbTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
-            if (!empty($dbTransactions)) {
-                $transactions = array_map(function($tx) {
-                    return [
-                        'hash' => $tx['hash'],
-                        'type' => 'transfer',
-                        'from' => $tx['from_address'],
-                        'to' => $tx['to_address'],
-                        'amount' => (float)$tx['amount'],
-                        'fee' => (float)$tx['fee'],
-                        'timestamp' => (int)$tx['timestamp'],
-                        'block_height' => (int)$tx['block_height'],
-                        'block_hash' => $tx['block_hash'],
-                        'status' => $tx['status']
-                    ];
-                }, $dbTransactions);
-            }
-        }
-    } catch (Exception $e) {
-        // Continue with file-based data
     }
     
     return [
