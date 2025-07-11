@@ -178,6 +178,7 @@ function getNetworkStats(PDO $pdo, string $network): array
 function getBlocks(PDO $pdo, string $network, int $page, int $limit): array
 {
     $blocks = [];
+    $debug = $_GET['debug'] ?? false;
     
     // Try to load from database first (prioritize database over file)
     try {
@@ -190,7 +191,15 @@ function getBlocks(PDO $pdo, string $network, int $page, int $limit): array
             $stmt->execute([$limit, $offset]);
             $dbBlocks = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
+            if ($debug) {
+                error_log("DEBUG: Found " . count($dbBlocks) . " blocks in database");
+            }
+            
             if (!empty($dbBlocks)) {
+                if ($debug) {
+                    error_log("DEBUG: Using database blocks, count: " . count($dbBlocks));
+                }
+                
                 $blocks = array_map(function($block) {
                     return [
                         'index' => (int)$block['height'],
@@ -219,10 +228,16 @@ function getBlocks(PDO $pdo, string $network, int $page, int $limit): array
         }
     } catch (Exception $e) {
         // If database fails, try file fallback
+        if ($debug) {
+            error_log("DEBUG: Database blocks query failed: " . $e->getMessage() . " - falling back to file");
+        }
         error_log("Database blocks query failed: " . $e->getMessage());
     }
     
     // Fallback to chain file if database is empty or fails
+    if ($debug) {
+        error_log("DEBUG: Using file fallback for blocks");
+    }
     $chainFile = '../../storage/blockchain/chain.json';
     if (file_exists($chainFile)) {
         $chain = json_decode(file_get_contents($chainFile), true);
@@ -262,6 +277,7 @@ function getBlocks(PDO $pdo, string $network, int $page, int $limit): array
 function getTransactions(PDO $pdo, string $network, int $page, int $limit): array
 {
     $transactions = [];
+    $debug = $_GET['debug'] ?? false;
     
     // Try to load from database first (prioritize database over file)
     try {
@@ -281,7 +297,15 @@ function getTransactions(PDO $pdo, string $network, int $page, int $limit): arra
             $stmt->execute([$limit, $offset]);
             $dbTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
+            if ($debug) {
+                error_log("DEBUG: Found " . count($dbTransactions) . " transactions in database");
+            }
+            
             if (!empty($dbTransactions)) {
+                if ($debug) {
+                    error_log("DEBUG: Using database transactions, count: " . count($dbTransactions));
+                }
+                
                 $transactions = array_map(function($tx) {
                     // Parse transaction type from data field
                     $txType = 'transfer';
@@ -332,10 +356,16 @@ function getTransactions(PDO $pdo, string $network, int $page, int $limit): arra
         }
     } catch (Exception $e) {
         // If database fails, try file fallback
+        if ($debug) {
+            error_log("DEBUG: Database transactions query failed: " . $e->getMessage() . " - falling back to file");
+        }
         error_log("Database transactions query failed: " . $e->getMessage());
     }
     
     // Fallback to chain file if database is empty or fails
+    if ($debug) {
+        error_log("DEBUG: Using file fallback for transactions");
+    }
     $chainFile = '../../storage/blockchain/chain.json';
     if (file_exists($chainFile)) {
         $chain = json_decode(file_get_contents($chainFile), true);
