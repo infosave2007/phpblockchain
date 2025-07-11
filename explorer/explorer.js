@@ -30,6 +30,7 @@ class BlockchainExplorer {
 
     async loadConfig() {
         try {
+            // First try to load from wallet API
             const response = await fetch('../wallet/wallet_api.php', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -45,13 +46,42 @@ class BlockchainExplorer {
                 if (typeof CRYPTO_NAME !== 'undefined') {
                     window.CRYPTO_NAME = data.config.crypto_name || CRYPTO_NAME;
                 }
-                console.log('Explorer config loaded:', data.config);
-            } else {
-                console.log('Config load failed, using defaults');
+                console.log('Explorer config loaded from wallet API:', data.config);
+                return;
             }
         } catch (error) {
-            console.log('Config load failed, using defaults:', error);
+            console.log('Wallet API config load failed:', error);
         }
+
+        // Fallback: try to get token symbol from blockchain data
+        try {
+            const response = await fetch(`${this.apiEndpoint}/blocks?limit=1&network=${this.currentNetwork}`);
+            const data = await response.json();
+            
+            if (data && data.blocks && data.blocks.length > 0) {
+                // Get the genesis block to extract token info
+                const blockResponse = await fetch(`${this.apiEndpoint}/block?id=${data.blocks[0].hash}&network=${this.currentNetwork}`);
+                const blockData = await blockResponse.json();
+                
+                if (blockData && blockData.block && blockData.block.transactions) {
+                    // Look for genesis transaction with token info
+                    const genesisTx = blockData.block.transactions.find(tx => tx.type === 'genesis');
+                    if (genesisTx && genesisTx.token_symbol) {
+                        window.CRYPTO_SYMBOL = genesisTx.token_symbol;
+                        console.log('Token symbol loaded from genesis:', genesisTx.token_symbol);
+                        
+                        if (genesisTx.network_name) {
+                            window.CRYPTO_NAME = genesisTx.network_name;
+                        }
+                        return;
+                    }
+                }
+            }
+        } catch (error) {
+            console.log('Blockchain config load failed:', error);
+        }
+
+        console.log('Using default token symbols');
     }
 
     refreshData() {
@@ -181,7 +211,7 @@ class BlockchainExplorer {
             
             document.getElementById('blockHeight').textContent = (stats.current_height || 0).toLocaleString();
             document.getElementById('totalTx').textContent = (stats.total_transactions || 0).toLocaleString();
-            document.getElementById('hashRate').textContent = this.formatHashRate(stats.hash_rate || '0 H/s');
+            document.getElementById('hashRate').textContent = stats.hash_rate || '0 H/s';
             document.getElementById('activeNodes').textContent = stats.active_nodes || 0;
         } catch (error) {
             console.error('Failed to load network stats:', error);
@@ -273,7 +303,7 @@ class BlockchainExplorer {
         card.className = 'data-card';
         
         const ageText = this.timeAgo(block.timestamp);
-        const txCount = block.transactions ? block.transactions.length : 0;
+        const txCount = block.transaction_count !== undefined ? block.transaction_count : (block.transactions ? block.transactions.length : 0);
         
         const blockText = this.getTranslation('block', 'Block');
         const confirmedText = this.getTranslation('confirmed', 'Confirmed');
@@ -385,7 +415,7 @@ class BlockchainExplorer {
             <div class="d-flex justify-content-between align-items-center">
                 <small class="text-muted">
                     <i class="fas fa-layer-group me-1"></i>
-                    ${blockText}: #${tx.block_height || pendingText}
+                    ${blockText}: #${tx.block_index !== undefined ? tx.block_index : (tx.block_height || pendingText)}
                 </small>
                 <button class="btn btn-outline-primary btn-sm" onclick="explorer.viewTransaction('${tx.hash}')">
                     <i class="fas fa-eye me-1"></i>${detailsText}
@@ -539,13 +569,13 @@ class BlockchainExplorer {
     }
 
     formatAmount(amount) {
-        const formattedAmount = parseFloat(amount).toLocaleString('ru-RU', {
-            minimumFractionDigits: 2,
+        const formattedAmount = parseFloat(amount).toLocaleString('en-US', {
+            minimumFractionDigits: 0,
             maximumFractionDigits: 8
         });
         
         // Используем символ валюты из конфигурации или fallback
-        const symbol = (typeof CRYPTO_SYMBOL !== 'undefined') ? CRYPTO_SYMBOL : 'COIN';
+        const symbol = window.CRYPTO_SYMBOL || (typeof CRYPTO_SYMBOL !== 'undefined' ? CRYPTO_SYMBOL : 'COIN');
         return `${formattedAmount} ${symbol}`;
     }
 
@@ -622,6 +652,309 @@ class BlockchainExplorer {
         // Simple error display - could be enhanced with a proper modal
         alert(`Ошибка: ${message}`);
     }
+
+    // Show transaction details in modal
+    async viewTransaction(txHash) {
+        try {
+            const response = await fetch(`${this.apiEndpoint}/transaction?id=${txHash}&network=${this.currentNetwork}`);
+            if (!response.ok) throw new Error('Transaction not found');
+            
+            const data = await response.json();
+            if (!data || data.error) {
+                throw new Error(data.error || 'Transaction not found');
+            }
+
+            // Handle both direct transaction data and wrapped data
+            const tx = data.transaction || data;
+            const amount = parseFloat(tx.amount || 0);
+            const fee = parseFloat(tx.fee || 0);
+            const date = new Date(tx.timestamp * 1000);
+            
+            // Get status based on confirmations
+            const confirmations = data.confirmations || 0;
+            const status = confirmations > 0 ? 'confirmed' : 'pending';
+            const blockIndex = data.block_index !== undefined ? data.block_index : null;
+            const blockHash = data.block_hash || null;
+
+            const modalTitle = document.getElementById('modalTitle');
+            const modalBody = document.getElementById('modalBody');
+            
+            modalTitle.textContent = this.getTranslation('transaction_details', 'Transaction Details');
+            
+            modalBody.innerHTML = `
+                <div class="row mb-4">
+                    <div class="col-md-6">
+                        <div class="card bg-primary bg-opacity-10 border-primary">
+                            <div class="card-body text-center">
+                                <i class="fas fa-exchange-alt fa-3x text-primary mb-2"></i>
+                                <h4 class="text-primary">${this.formatAmount(amount)}</h4>
+                                <p class="mb-0">
+                                    <span class="badge bg-primary">${tx.type || 'Transaction'}</span>
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card bg-light">
+                            <div class="card-body">
+                                <h6 class="card-title">${this.getTranslation('status', 'Status')}</h6>
+                                <p class="mb-2">
+                                    <span class="badge ${this.getStatusClass(status)}">${this.getStatusText(status)}</span>
+                                </p>
+                                <small class="text-muted">
+                                    ${this.getTranslation('block', 'Block')}: #${blockIndex !== null ? blockIndex : this.getTranslation('pending', 'Pending')}
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="row">
+                    <div class="col-12">
+                        <h6 class="border-bottom pb-2 mb-3">${this.getTranslation('transaction_details', 'Transaction Details')}</h6>
+                    </div>
+                </div>
+                
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">${this.getTranslation('transaction_hash', 'Transaction Hash')}:</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control font-monospace" value="${tx.hash}" readonly>
+                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${tx.hash}')">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">${this.getTranslation('type', 'Type')}:</label>
+                        <input type="text" class="form-control" value="${tx.type || 'N/A'}" readonly>
+                    </div>
+                </div>
+                
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">${this.getTranslation('timestamp', 'Date & Time')}:</label>
+                        <input type="text" class="form-control" value="${date.toLocaleString()}" readonly>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">${this.getTranslation('block_hash', 'Block Hash')}:</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control font-monospace" value="${blockHash || 'N/A'}" readonly>
+                            ${blockHash ? `<button class="btn btn-outline-secondary" onclick="copyToClipboard('${blockHash}')"><i class="fas fa-copy"></i></button>` : ''}
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">${this.getTranslation('from_address', 'From Address')}:</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control font-monospace" value="${tx.from}" readonly>
+                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${tx.from}')">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">${this.getTranslation('to_address', 'To Address')}:</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control font-monospace" value="${tx.to}" readonly>
+                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${tx.to}')">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">${this.getTranslation('amount', 'Amount')}:</label>
+                        <input type="text" class="form-control" value="${this.formatAmount(amount)}" readonly>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">${this.getTranslation('confirmations', 'Confirmations')}:</label>
+                        <input type="text" class="form-control" value="${confirmations}" readonly>
+                    </div>
+                </div>
+                
+                ${tx.metadata ? `
+                <div class="row mb-3">
+                    <div class="col-12">
+                        <label class="form-label fw-bold">${this.getTranslation('metadata', 'Metadata')}:</label>
+                        <textarea class="form-control font-monospace" rows="3" readonly>${JSON.stringify(tx.metadata, null, 2)}</textarea>
+                    </div>
+                </div>
+                ` : ''}
+            `;
+
+            const modal = new bootstrap.Modal(document.getElementById('transactionDetailsModal'));
+            modal.show();
+
+        } catch (error) {
+            console.error('Error loading transaction details:', error);
+            this.showError('Failed to load transaction details');
+        }
+    }
+
+    // Show block details in modal
+    async viewBlock(blockHash) {
+        try {
+            const response = await fetch(`${this.apiEndpoint}/block?id=${blockHash}&network=${this.currentNetwork}`);
+            if (!response.ok) throw new Error('Block not found');
+            
+            const data = await response.json();
+            if (!data || data.error) {
+                throw new Error(data.error || 'Block not found');
+            }
+
+            // API returns {block: {...}, transaction_count: ..., size: ...}
+            const block = data.block || data;
+            const txCount = data.transaction_count || block.transaction_count || (block.transactions ? block.transactions.length : 0);
+            const blockSize = data.size || block.size || JSON.stringify(block).length;
+            const date = new Date((block.timestamp || 0) * 1000);
+
+            const modalTitle = document.getElementById('blockModalTitle');
+            const modalBody = document.getElementById('blockModalBody');
+            
+            modalTitle.textContent = `${this.getTranslation('block_details', 'Block Details')} #${block.index || block.height || '?'}`;
+            
+            modalBody.innerHTML = `
+                <div class="row mb-4">
+                    <div class="col-md-6">
+                        <div class="card bg-success bg-opacity-10 border-success">
+                            <div class="card-body text-center">
+                                <i class="fas fa-cube fa-3x text-success mb-2"></i>
+                                <h4 class="text-success">#${block.index || block.height || '0'}</h4>
+                                <p class="mb-0">
+                                    <span class="badge bg-success">${this.getTranslation('confirmed', 'Confirmed')}</span>
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card bg-light">
+                            <div class="card-body">
+                                <h6 class="card-title">${this.getTranslation('tx_count', 'Transaction Count')}</h6>
+                                <h4 class="text-primary">${txCount}</h4>
+                                <small class="text-muted">
+                                    ${this.getTranslation('transactions', 'transactions')}
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="row">
+                    <div class="col-12">
+                        <h6 class="border-bottom pb-2 mb-3">${this.getTranslation('block_details', 'Block Details')}</h6>
+                    </div>
+                </div>
+                
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">${this.getTranslation('hash', 'Hash')}:</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control font-monospace" value="${block.hash || 'N/A'}" readonly>
+                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${block.hash || ''}')">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">${this.getTranslation('timestamp', 'Date & Time')}:</label>
+                        <input type="text" class="form-control" value="${date.toLocaleString()}" readonly>
+                    </div>
+                </div>
+                
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">${this.getTranslation('previous_hash', 'Previous Hash')}:</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control font-monospace" value="${block.previous_hash || 'N/A'}" readonly>
+                            ${block.previous_hash && block.previous_hash !== '0' ? `<button class="btn btn-outline-secondary" onclick="copyToClipboard('${block.previous_hash}')">
+                                <i class="fas fa-copy"></i>
+                            </button>` : ''}
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">${this.getTranslation('validator', 'Validator')}:</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control font-monospace" value="${block.validator || 'N/A'}" readonly>
+                            ${block.validator ? `<button class="btn btn-outline-secondary" onclick="copyToClipboard('${block.validator}')">
+                                <i class="fas fa-copy"></i>
+                            </button>` : ''}
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="row mb-3">
+                    <div class="col-md-4">
+                        <label class="form-label fw-bold">${this.getTranslation('difficulty', 'Difficulty')}:</label>
+                        <input type="text" class="form-control" value="${block.difficulty || 'N/A'}" readonly>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-bold">${this.getTranslation('nonce', 'Nonce')}:</label>
+                        <input type="text" class="form-control" value="${block.nonce !== undefined ? block.nonce : 'N/A'}" readonly>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-bold">${this.getTranslation('size', 'Size')}:</label>
+                        <input type="text" class="form-control" value="${(blockSize / 1024).toFixed(2)} KB" readonly>
+                    </div>
+                </div>
+                
+                ${block.merkle_root ? `
+                <div class="row mb-3">
+                    <div class="col-12">
+                        <label class="form-label fw-bold">${this.getTranslation('merkle_root', 'Merkle Root')}:</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control font-monospace" value="${block.merkle_root}" readonly>
+                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${block.merkle_root}')">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                ` : ''}
+                
+                ${txCount > 0 && block.transactions ? `
+                <div class="row">
+                    <div class="col-12">
+                        <h6 class="border-bottom pb-2 mb-3">${this.getTranslation('transactions', 'Transactions')} (${txCount})</h6>
+                        <div class="table-responsive">
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>${this.getTranslation('hash', 'Hash')}</th>
+                                        <th>${this.getTranslation('from', 'From')}</th>
+                                        <th>${this.getTranslation('to', 'To')}</th>
+                                        <th>${this.getTranslation('amount', 'Amount')}</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${block.transactions.map(tx => `
+                                        <tr>
+                                            <td class="font-monospace">${this.truncateHash(tx.hash, 12)}</td>
+                                            <td class="font-monospace">${this.truncateHash(tx.from, 12)}</td>
+                                            <td class="font-monospace">${this.truncateHash(tx.to, 12)}</td>
+                                            <td>${this.formatAmount(parseFloat(tx.amount || 0))}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                ` : ''}
+            `;
+
+            const modal = new bootstrap.Modal(document.getElementById('blockDetailsModal'));
+            modal.show();
+
+        } catch (error) {
+            console.error('Error loading block details:', error);
+            this.showError('Failed to load block details');
+        }
+    }
 }
 
 // Global explorer instance
@@ -659,4 +992,33 @@ function loadMoreBlocks() {
 
 function loadMoreTransactions() {
     explorer.loadMoreTransactions();
+}
+
+// Copy to clipboard function
+function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(function() {
+        // Show success message
+        const toast = document.createElement('div');
+        toast.className = 'toast-notification';
+        toast.textContent = t.copied || 'Copied to clipboard!';
+        toast.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #28a745;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 5px;
+            z-index: 9999;
+            animation: slideIn 0.3s ease;
+        `;
+        document.body.appendChild(toast);
+        
+        setTimeout(() => {
+            toast.remove();
+        }, 2000);
+    }, function(err) {
+        console.error('Could not copy text: ', err);
+        alert('Copy failed');
+    });
 }

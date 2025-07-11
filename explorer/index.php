@@ -7,7 +7,6 @@
 // Language detection and setting
 $supportedLanguages = ['en', 'ru'];
 $defaultLanguage = 'en';
-
 // Get language from URL parameter, session, or browser
 session_start();
 $language = $_GET['lang'] ?? $_SESSION['language'] ?? $defaultLanguage;
@@ -56,7 +55,27 @@ function loadLanguage($lang) {
             'sec_ago' => 'sec ago',
             'min_ago' => 'min ago',
             'hour_ago' => 'h ago',
-            'day_ago' => 'd ago'
+            'day_ago' => 'd ago',
+            'close' => 'Close',
+            'transaction_details' => 'Transaction Details',
+            'block_details' => 'Block Details',
+            'status' => 'Status',
+            'confirmations' => 'Confirmations',
+            'timestamp' => 'Date & Time',
+            'from_address' => 'From Address',
+            'to_address' => 'To Address',
+            'amount' => 'Amount',
+            'copy_to_clipboard' => 'Copy to Clipboard',
+            'previous_hash' => 'Previous Hash',
+            'merkle_root' => 'Merkle Root',
+            'difficulty' => 'Difficulty',
+            'nonce' => 'Nonce',
+            'tx_count' => 'Transaction Count',
+            'copied' => 'Copied to clipboard!',
+            'type' => 'Type',
+            'block_hash' => 'Block Hash',
+            'metadata' => 'Metadata',
+            'height' => 'Height'
         ],
         'ru' => [
             'title' => 'Блокчейн Эксплорер',
@@ -91,7 +110,27 @@ function loadLanguage($lang) {
             'sec_ago' => 'сек назад',
             'min_ago' => 'мин назад',
             'hour_ago' => 'ч назад',
-            'day_ago' => 'д назад'
+            'day_ago' => 'д назад',
+            'close' => 'Закрыть',
+            'transaction_details' => 'Детали транзакции',
+            'block_details' => 'Детали блока',
+            'status' => 'Статус',
+            'confirmations' => 'Подтверждения',
+            'timestamp' => 'Дата и время',
+            'from_address' => 'Адрес отправителя',
+            'to_address' => 'Адрес получателя',
+            'amount' => 'Сумма',
+            'copy_to_clipboard' => 'Копировать в буфер',
+            'previous_hash' => 'Хеш предыдущего блока',
+            'merkle_root' => 'Корень Меркла',
+            'difficulty' => 'Сложность',
+            'nonce' => 'Nonce',
+            'tx_count' => 'Количество транзакций',
+            'copied' => 'Скопировано в буфер!',
+            'type' => 'Тип',
+            'block_hash' => 'Хеш блока',
+            'metadata' => 'Метаданные',
+            'height' => 'Высота'
         ]
     ];
     
@@ -181,7 +220,7 @@ try {
                 <div class="explorer-header text-center">
                     <h1 class="mb-4">
                         <i class="fas fa-search me-3"></i>
-                        <?php echo htmlspecialchars($cryptoName); ?> <?php echo htmlspecialchars($t['title']); ?>
+                        <?php echo htmlspecialchars($t['title']); ?>
                     </h1>
                     <p class="lead mb-4"><?php echo htmlspecialchars($t['subtitle']); ?></p>
                     
@@ -315,6 +354,52 @@ try {
                             </div>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Transaction Details Modal -->
+    <div class="modal fade" id="transactionDetailsModal" tabindex="-1">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="fas fa-info-circle me-2"></i>
+                        <span id="modalTitle"><?php echo htmlspecialchars($t['transaction_details'] ?? 'Transaction Details'); ?></span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="modalBody">
+                    <!-- Content will be loaded here -->
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                        <?php echo htmlspecialchars($t['close'] ?? 'Close'); ?>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Block Details Modal -->
+    <div class="modal fade" id="blockDetailsModal" tabindex="-1">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="fas fa-cube me-2"></i>
+                        <span id="blockModalTitle"><?php echo htmlspecialchars($t['block_details'] ?? 'Block Details'); ?></span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="blockModalBody">
+                    <!-- Content will be loaded here -->
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                        <?php echo htmlspecialchars($t['close'] ?? 'Close'); ?>
+                    </button>
                 </div>
             </div>
         </div>
