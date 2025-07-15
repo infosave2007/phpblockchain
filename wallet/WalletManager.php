@@ -63,7 +63,7 @@ class WalletManager
             $mnemonic = Mnemonic::generate();
             
             // Create key pair from mnemonic  
-            $keyPair = KeyPair::fromMnemonic($mnemonic);
+            $keyPair = KeyPair::fromMnemonic(implode(' ', $mnemonic), '');
             $address = $keyPair->getAddress();
             
             // Store wallet in database
