@@ -4,5 +4,6 @@
 # - state/ - current state data
 # - contracts/ - smart contract storage
 # - backups/ - automatic backups
+# - word_list.txt - This is the word list file that
 
 # This file ensures the directory structure is maintained in git
