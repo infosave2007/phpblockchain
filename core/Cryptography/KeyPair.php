@@ -3,7 +3,9 @@ declare(strict_types=1);
 
 namespace Blockchain\Core\Cryptography;
 
+use Blockchain\Wallet\HDWallet;
 use Exception;
+use kornrunner\Keccak;
 
 /**
  * Cryptographic Key Pair
@@ -12,274 +14,190 @@ use Exception;
  */
 class KeyPair
 {
-    private string $privateKey;
-    private string $publicKey;
-    private string $address;
-    
-    public function __construct(string $privateKey, string $publicKey, string $address)
-    {
-        $this->privateKey = $privateKey;
-        $this->publicKey = $publicKey;
-        $this->address = $address;
-    }
-    
     /**
-     * Generate new key pair
+     * @var string The private key in hexadecimal format
+     */
+    private string $privateKey;
+
+    /**
+     * @var string The compressed public key in hexadecimal format
+     */
+    private string $publicKey;
+
+    /**
+     * @var string The Ethereum-compatible address derived from the public key
+     */
+    private string $address;
+
+    /**
+     * KeyPair constructor.
+     *
+     * @param string $priv Private key in hex
+     * @param string $pub Public key in hex (compressed)
+     * @param string $addr Ethereum-style address (0x-prefixed)
+     */
+    public function __construct(string $priv, string $pub, string $addr)
+    {
+        $this->privateKey = $priv;
+        $this->publicKey = $pub;
+        $this->address = $addr;
+    }
+
+    /**
+     * Generate a new random key pair.
+     *
+     * @return self
+     * @throws Exception If random_bytes fails
      */
     public static function generate(): self
     {
-        // Generate private key (32 bytes)
-        $privateKey = random_bytes(32);
-        $privateKeyHex = bin2hex($privateKey);
-        
-        // Generate public key using secp256k1 curve
-        $publicKeyHex = self::generatePublicKeyHex($privateKeyHex);
-        
-        // Generate address from public key
-        $address = self::generateAddressFromHex($publicKeyHex);
-        
-        return new self($privateKeyHex, $publicKeyHex, $address);
-    }
-    
-    /**
-     * Create key pair from private key
-     */
-    public static function fromPrivateKey(string $privateKeyHex): self
-    {
-        $privateKey = hex2bin($privateKeyHex);
-        
-        if (strlen($privateKey) !== 32) {
-            throw new Exception("Invalid private key length");
-        }
-        
-        $publicKeyHex = self::generatePublicKeyHex($privateKeyHex);
-        $address = self::generateAddressFromHex($publicKeyHex);
-        
-        return new self($privateKeyHex, $publicKeyHex, $address);
-    }
-    
-    /**
-     * Create key pair from mnemonic phrase
-     */
-    public static function fromMnemonic(array $mnemonic, string $passphrase = ''): self
-    {
-        try {
-            error_log("KeyPair::fromMnemonic - Starting with " . count($mnemonic) . " words");
-            error_log("KeyPair::fromMnemonic - Words: " . implode(' ', $mnemonic));
-            
-            $seed = Mnemonic::toSeed($mnemonic, $passphrase);
-            error_log("KeyPair::fromMnemonic - Seed generated, length: " . strlen($seed));
-            
-            $privateKeyHex = substr($seed, 0, 64);
-            error_log("KeyPair::fromMnemonic - Private key hex: " . $privateKeyHex);
-            
-            return self::fromPrivateKey($privateKeyHex);
-        } catch (Exception $e) {
-            error_log("KeyPair::fromMnemonic - Error: " . $e->getMessage());
-            throw $e;
-        }
-    }
-    
-    /**
-     * Generate public key hex from private key hex using secp256k1
-     */
-    private static function generatePublicKeyHex(string $privateKeyHex): string
-    {
-        // Generate public key using elliptic curve cryptography
-        $publicKeyPoint = EllipticCurve::generatePublicKey($privateKeyHex);
-        
-        // Compress the public key and return as hex string
-        return EllipticCurve::compressPublicKey($publicKeyPoint);
-    }
-    
-    /**
-     * Generate public key from private key using secp256k1 (legacy method)
-     */
-    private static function generatePublicKey(string $privateKey): string
-    {
-        $privateKeyHex = bin2hex($privateKey);
-        
-        // Generate public key using elliptic curve cryptography
-        $publicKeyPoint = EllipticCurve::generatePublicKey($privateKeyHex);
-        
-        // Compress the public key
-        $compressedPublicKey = EllipticCurve::compressPublicKey($publicKeyPoint);
-        
-        return hex2bin($compressedPublicKey);    }
-
-    /**
-     * Generate address from public key hex using Keccak-256 (Ethereum-style)
-     */
-    private static function generateAddressFromHex(string $publicKeyHex): string
-    {
-        // For compressed public key, decompress first
-        if (strlen($publicKeyHex) === 66) { // Compressed public key
-            $publicKeyPoint = EllipticCurve::decompressPublicKey($publicKeyHex);
-            $uncompressedKey = '04' . str_pad($publicKeyPoint['x'], 64, '0', STR_PAD_LEFT) . 
-                              str_pad($publicKeyPoint['y'], 64, '0', STR_PAD_LEFT);
-        } else {
-            $uncompressedKey = $publicKeyHex;
-        }
-        
-        // Remove '04' prefix if present
-        if (substr($uncompressedKey, 0, 2) === '04') {
-            $uncompressedKey = substr($uncompressedKey, 2);
-        }
-        
-        // Calculate Keccak-256 hash (fallback using SHA-256)
-        $hash = hash('sha256', hex2bin($uncompressedKey));
-        
-        // Take last 20 bytes (40 hex characters) as address
-        $address = substr($hash, -40);
-        
-        return '0x' . $address;
+        $privHex = bin2hex(random_bytes(32));
+        return self::fromPrivateKey($privHex);
     }
 
     /**
-     * Generate address from public key using Keccak-256 (Ethereum-style)
+     * Derive a key pair from a BIP-39 mnemonic and optional passphrase.
+     *
+     * @param string $mnemonic Space-separated mnemonic phrase
+     * @param string $passphrase Optional passphrase for seed derivation
+     * @return self
+     * @throws Exception If private key derivation fails
      */
-    private static function generateAddress(string $publicKey): string
+    public static function fromMnemonic(string $mnemonic, string $passphrase = ''): self
     {
-        // For compressed public key, decompress first
-        $publicKeyHex = bin2hex($publicKey);
-        
-        if (strlen($publicKeyHex) === 66) { // Compressed public key
-            $publicKeyPoint = EllipticCurve::decompressPublicKey($publicKeyHex);
-            $uncompressedKey = '04' . str_pad($publicKeyPoint['x'], 64, '0', STR_PAD_LEFT) . 
-                              str_pad($publicKeyPoint['y'], 64, '0', STR_PAD_LEFT);
-        } else {
-            $uncompressedKey = $publicKeyHex;
-        }
-        
-        // Remove '04' prefix if present
-        if (substr($uncompressedKey, 0, 2) === '04') {
-            $uncompressedKey = substr($uncompressedKey, 2);
-        }
-        
-        // Calculate Keccak-256 hash
-        $hash = self::keccak256(hex2bin($uncompressedKey));
-        
-        // Take last 20 bytes and add 0x prefix
-        $address = '0x' . substr($hash, -40);
-        
-        return $address;
+        $privHex = HDWallet::derivePrivateKeyFromMnemonic($mnemonic, $passphrase);
+        return self::fromPrivateKey($privHex);
     }
-    
+
     /**
-     * Keccak-256 hash function
+     * Derive the full key pair and address from a private key.
+     *
+     * @param string $privHex Private key in hexadecimal format
+     * @return self
+     * @throws Exception If the private key is invalid or processing fails
      */
-    private static function keccak256(string $data): string
+    public static function fromPrivateKey(string $privHex): self
     {
-        // Simple implementation - in production use a proper Keccak library
-        $hash = hash('sha3-256', $data);
-        return $hash;
+        $privBin = hex2bin($privHex);
+        if ($privBin === false || strlen($privBin) !== 32) {
+            throw new Exception("Invalid private key");
+        }
+
+        $pt = self::generatePublicKey($privHex);
+        $pubHex = self::compressPublicKey($pt);
+        $rawXY = hex2bin($pt['x'] . $pt['y']);
+        $hash = Keccak::hash($rawXY, 256);
+        $addr = '0x' . substr($hash, -40);
+
+        return new self($privHex, $pubHex, $addr);
     }
-    
+
     /**
-     * Get private key
+     * Get the private key.
+     *
+     * @return string Private key in hex
      */
     public function getPrivateKey(): string
     {
         return $this->privateKey;
     }
-    
+
     /**
-     * Get public key
+     * Get the compressed public key.
+     *
+     * @return string Public key in hex
      */
     public function getPublicKey(): string
     {
         return $this->publicKey;
     }
-    
+
     /**
-     * Get address
+     * Get the Ethereum-compatible address.
+     *
+     * @return string Address in 0x-prefixed hex format
      */
     public function getAddress(): string
     {
         return $this->address;
     }
-    
+
     /**
-     * Generate mnemonic phrase
+     * Generate a public key (x and y coordinates) from a private key.
+     *
+     * @param string $privateKeyHex Private key in hexadecimal format
+     * @return array{x: string, y: string} Associative array of x and y coordinates in hex
+     * @throws Exception If OpenSSL fails to parse or extract coordinates
      */
-    public function getMnemonic(): string
+    public static function generatePublicKey(string $privateKeyHex): array
     {
-        // DEPRECATED: This method is deprecated and should not be used for new wallets.
-        // It generates a deterministic mnemonic from private key which may contain duplicates.
-        // Use Mnemonic::generate() for new wallets instead.
-        
-        error_log("WARNING: KeyPair::getMnemonic() is deprecated and may generate invalid mnemonics. Use Mnemonic::generate() instead.");
-        
-        // Generate a proper mnemonic using the correct BIP39 implementation
-        try {
-            $mnemonic = Mnemonic::generate(12);
-            return implode(' ', $mnemonic);
-        } catch (Exception $e) {
-            error_log("Failed to generate mnemonic: " . $e->getMessage());
-            
-            // Fallback to old method (with warnings)
-            return $this->getLegacyMnemonic();
+        $privateKeyBin = hex2bin($privateKeyHex);
+        if ($privateKeyBin === false || strlen($privateKeyBin) !== 32) {
+            throw new Exception("Invalid private key");
         }
+
+        $pem = self::buildECPrivateKeyPEM($privateKeyHex);
+        $key = openssl_pkey_get_private($pem);
+
+        if (!$key) {
+            throw new Exception("Failed to parse EC private key from PEM");
+        }
+
+        $details = openssl_pkey_get_details($key);
+        if (!isset($details['ec']['x'], $details['ec']['y'])) {
+            throw new Exception("Failed to extract public key coordinates");
+        }
+
+        return [
+            'x' => bin2hex($details['ec']['x']),
+            'y' => bin2hex($details['ec']['y']),
+        ];
     }
-    
+
     /**
-     * Legacy mnemonic generation (deprecated)
+     * Compress an uncompressed public key point (x, y) into a 33-byte hex string.
+     *
+     * @param array{x: string, y: string} $point Elliptic curve point
+     * @return string Compressed public key (hex)
      */
-    private function getLegacyMnemonic(): string
+    public static function compressPublicKey(array $point): string
     {
-        error_log("WARNING: Using legacy mnemonic generation - may contain duplicates!");
-        
-        // Use BIP39 wordlist from Mnemonic class
-        $wordList = Mnemonic::getWordList();
-        
-        if (empty($wordList)) {
-            throw new Exception("BIP39 word list not available");
-        }
-        
-        $mnemonic = [];
-        $seed = $this->privateKey;
-        $usedIndices = [];
-        
-        for ($i = 0; $i < 12; $i++) {
-            $attempts = 0;
-            do {
-                $index = hexdec(substr($seed, ($i + $attempts) * 2 % 64, 2)) % count($wordList);
-                $attempts++;
-                
-                // Prevent infinite loop
-                if ($attempts > 100) {
-                    error_log("WARNING: KeyPair::getLegacyMnemonic() - Could not generate unique words, allowing duplicates");
-                    break;
-                }
-            } while (in_array($index, $usedIndices) && $attempts <= 100);
-            
-            $usedIndices[] = $index;
-            $mnemonic[] = $wordList[$index];
-        }
-        
-        $mnemonicString = implode(' ', $mnemonic);
-        
-        // Check for duplicates
-        if (count($mnemonic) !== count(array_unique($mnemonic))) {
-            error_log("WARNING: KeyPair::getLegacyMnemonic() generated mnemonic with duplicates: $mnemonicString");
-        }
-        
-        return $mnemonicString;
+        $yLastByte = hexdec(substr($point['y'], -2));
+        $prefix = ($yLastByte % 2 === 0) ? '02' : '03';
+        return $prefix . $point['x'];
     }
-    
+
     /**
-     * Sign message
+     * Build a PEM-encoded EC private key from hex.
+     *
+     * @param string $privateKeyHex Hex-encoded 32-byte private key
+     * @return string PEM-encoded EC private key
      */
-    public function sign(string $message): string
+    private static function buildECPrivateKeyPEM(string $privateKeyHex): string
     {
-        return Signature::sign($message, $this->privateKey);
+        $der = self::buildECPrivateKeyDER($privateKeyHex);
+        $pem = "-----BEGIN EC PRIVATE KEY-----\n";
+        $pem .= chunk_split(base64_encode($der), 64, "\n");
+        $pem .= "-----END EC PRIVATE KEY-----\n";
+        return $pem;
     }
-    
+
     /**
-     * Verify signature
+     * Construct a raw ASN.1 DER-encoded EC private key using secp256k1 parameters.
+     *
+     * @param string $privateKeyHex 32-byte private key in hex
+     * @return string Binary DER-encoded EC private key
      */
-    public function verify(string $message, string $signature): bool
+    private static function buildECPrivateKeyDER(string $privateKeyHex): string
     {
-        return Signature::verify($message, $signature, $this->publicKey);
+        $privateKeyBin = hex2bin($privateKeyHex);
+        $ecParams = hex2bin('a00706052b8104000a'); // secp256k1 OID
+        $version = hex2bin('020101'); // version = 1
+
+        $keyOctet = hex2bin('04') . chr(strlen($privateKeyBin)) . $privateKeyBin;
+        $keySeq = $version . chr(0x04) . chr(strlen($privateKeyBin)) . $privateKeyBin . $ecParams;
+        $seq = chr(0x30) . chr(strlen($keySeq)) . $keySeq;
+
+        return $seq;
     }
 }
