@@ -18,33 +18,33 @@ class Mnemonic
     /**
      * Generate a 12-word BIP-39 compliant mnemonic phrase.
      *
-     * @return array[] Array of 12 words representing the mnemonic phrase
+     * @return string Array of 12 words representing the mnemonic phrase
      * @throws Exception If the word list file cannot be read
      */
-    public static function generate(): array
-{
-    if (empty(self::$wordList)) {
-        self::$wordList = explode(
-            "\n",
-            trim(file_get_contents(__DIR__ . '/../../storage/word_list.txt'))
-        );
-    }
+	public static function generate(): string
+	{
+		if (empty(self::$wordList)) {
+			self::$wordList = explode(
+				"\n",
+				trim(file_get_contents(__DIR__ . '/../../storage/word_list.txt'))
+			);
+		}
 
-    $entropy = random_bytes(16); // 128 bits
-    $entropyBits = self::bytesToBits($entropy);
-    $checksumBits = substr(self::bytesToBits(hash('sha256', $entropy, true)), 0, 4);
-    $bits = $entropyBits . $checksumBits;
+		$entropy = random_bytes(16); // 128 bits
+		$entropyBits = self::bytesToBits($entropy);
+		$checksumBits = substr(self::bytesToBits(hash('sha256', $entropy, TRUE)), 0, 4);
+		$bits = $entropyBits . $checksumBits;
 
-    $chunks = str_split($bits, 11);
-    $mnemonic = [];
+		$chunks = str_split($bits, 11);
+		$mnemonic = [];
 
-    foreach ($chunks as $chunk) {
-        $idx = bindec($chunk);
-        $mnemonic[] = self::$wordList[$idx];
-    }
+		foreach ($chunks as $chunk) {
+			$idx = bindec($chunk);
+			$mnemonic[] = preg_replace('/\s+/', ' ', trim(self::$wordList[$idx]));
+		}
 
-    return $mnemonic;
-}
+		return implode(' ', $mnemonic);
+	}
 
     /**
      * Converts a mnemonic phrase and optional passphrase into a BIP-39 seed.
