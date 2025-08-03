@@ -113,6 +113,7 @@ try {
     require_once $baseDir . '/wallet/WalletBlockchainManager.php';
     require_once $baseDir . '/core/Config/NetworkConfig.php';
     require_once $baseDir . '/core/Cryptography/MessageEncryption.php';
+    require_once $baseDir . '/core/Cryptography/KeyPair.php';
     
     // Создаём экземпляр WalletManager с полной конфигурацией
     $fullConfig = array_merge($config, ['database' => $dbConfig]);
@@ -535,25 +536,27 @@ function createWalletFromMnemonic($walletManager, $blockchainManager, array $mne
         writeLog("Mnemonic word count: " . count($mnemonic), 'DEBUG');
         writeLog("Mnemonic words: " . implode(' ', $mnemonic), 'DEBUG');
         
-        // 1. First, check if wallet already exists by deriving address from mnemonic
-        writeLog("Checking if wallet already exists from this mnemonic", 'DEBUG');
+        // 1. First, derive address from mnemonic WITHOUT creating wallet record
+        writeLog("Deriving address from mnemonic to check if wallet already exists", 'DEBUG');
         try {
-            $tempWalletData = $walletManager->restoreWalletFromMnemonic($mnemonic);
-            $existingAddress = $tempWalletData['address'];
-            writeLog("Address derived from mnemonic: " . $existingAddress, 'DEBUG');
+            // Use KeyPair to derive address without creating database record
+            $keyPair = \Blockchain\Core\Cryptography\KeyPair::fromMnemonic($mnemonic);
+            $derivedAddress = $keyPair->getAddress();
+            writeLog("Address derived from mnemonic: " . $derivedAddress, 'DEBUG');
             
             // Check if this address already exists in database
-            $existingWallet = $walletManager->getWalletInfo($existingAddress);
+            $existingWallet = $walletManager->getWalletInfo($derivedAddress);
             if ($existingWallet) {
-                writeLog("Wallet already exists, returning existing wallet instead of creating new", 'INFO');
-                throw new Exception("Wallet with this mnemonic already exists. Please use 'Restore Wallet' instead of 'Create Wallet'. Address: " . $existingAddress);
+                writeLog("Wallet already exists in database, rejecting create request", 'INFO');
+                throw new Exception("Wallet with this mnemonic already exists. Please use 'Restore Wallet' instead of 'Create Wallet'. Address: " . $derivedAddress);
             }
-            writeLog("Wallet does not exist, proceeding with creation", 'DEBUG');
+            writeLog("Wallet does not exist in database, proceeding with creation", 'DEBUG');
         } catch (Exception $e) {
             if (strpos($e->getMessage(), 'already exists') !== false) {
                 throw $e; // Re-throw our custom message
             }
-            writeLog("Error checking existing wallet (proceeding with creation): " . $e->getMessage(), 'DEBUG');
+            writeLog("Error deriving address from mnemonic: " . $e->getMessage(), 'ERROR');
+            throw new Exception("Invalid mnemonic phrase: " . $e->getMessage());
         }
         
         // 2. Create wallet using WalletManager
@@ -1075,6 +1078,19 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
     try {
         writeLog("Starting token transfer: $fromAddress -> $toAddress, amount: $amount", 'INFO');
         
+        // 0. Check and cleanup any active transactions
+        $pdo = $walletManager->getDatabase();
+        try {
+            // Try to check if transaction is active
+            if ($pdo->inTransaction()) {
+                writeLog("Found active PDO transaction, rolling back to start fresh", 'WARNING');
+                $pdo->rollBack();
+            }
+        } catch (Exception $e) {
+            writeLog("PDO transaction state check failed: " . $e->getMessage(), 'DEBUG');
+            // Continue anyway, error might be that there's no transaction
+        }
+        
         // 1. Validate addresses
         if ($fromAddress === $toAddress) {
             throw new Exception('Cannot transfer to the same address');
@@ -1168,6 +1184,22 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
         
         // 6. Update balances in database
         $pdo = $walletManager->getDatabase();
+        
+        // Ensure we can start a new transaction
+        if ($pdo->inTransaction()) {
+            writeLog("PDO already in transaction, committing previous transaction", 'WARNING');
+            try {
+                $pdo->commit();
+            } catch (Exception $e) {
+                writeLog("Failed to commit previous transaction: " . $e->getMessage(), 'WARNING');
+                try {
+                    $pdo->rollBack();
+                } catch (Exception $e2) {
+                    writeLog("Failed to rollback previous transaction: " . $e2->getMessage(), 'ERROR');
+                }
+            }
+        }
+        
         $pdo->beginTransaction();
         
         try {
@@ -1183,7 +1215,11 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
             writeLog("Database balances updated successfully", 'INFO');
             
         } catch (Exception $e) {
-            $pdo->rollback();
+            try {
+                $pdo->rollback();
+            } catch (Exception $rollbackError) {
+                writeLog("Failed to rollback transaction: " . $rollbackError->getMessage(), 'ERROR');
+            }
             throw new Exception('Failed to update balances: ' . $e->getMessage());
         }
         
@@ -1205,6 +1241,17 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
         ];
         
     } catch (Exception $e) {
+        // Ensure any pending transaction is rolled back
+        try {
+            $pdo = $walletManager->getDatabase();
+            if ($pdo->inTransaction()) {
+                writeLog("Rolling back transaction due to error", 'INFO');
+                $pdo->rollBack();
+            }
+        } catch (Exception $cleanupError) {
+            writeLog("Error during cleanup: " . $cleanupError->getMessage(), 'ERROR');
+        }
+        
         writeLog("Error in token transfer: " . $e->getMessage(), 'ERROR');
         throw new Exception('Transfer failed: ' . $e->getMessage());
     }
@@ -1216,6 +1263,19 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
 function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $address, float $amount, int $period, string $privateKey) {
     try {
         writeLog("Starting token staking: address=$address, amount=$amount, period=$period", 'INFO');
+        
+        // 0. Check and cleanup any active transactions
+        $pdo = $walletManager->getDatabase();
+        try {
+            // Try to check if transaction is active
+            if ($pdo->inTransaction()) {
+                writeLog("Found active PDO transaction, rolling back to start fresh", 'WARNING');
+                $pdo->rollBack();
+            }
+        } catch (Exception $e) {
+            writeLog("PDO transaction state check failed: " . $e->getMessage(), 'DEBUG');
+            // Continue anyway, error might be that there's no transaction
+        }
         
         // 1. Check available balance
         $availableBalance = $walletManager->getAvailableBalance($address);
@@ -1260,6 +1320,22 @@ function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $a
         
         // 5. Update balances in database
         $pdo = $walletManager->getDatabase();
+        
+        // Ensure we can start a new transaction
+        if ($pdo->inTransaction()) {
+            writeLog("PDO already in transaction, committing previous transaction", 'WARNING');
+            try {
+                $pdo->commit();
+            } catch (Exception $e) {
+                writeLog("Failed to commit previous transaction: " . $e->getMessage(), 'WARNING');
+                try {
+                    $pdo->rollBack();
+                } catch (Exception $e2) {
+                    writeLog("Failed to rollback previous transaction: " . $e2->getMessage(), 'ERROR');
+                }
+            }
+        }
+        
         $pdo->beginTransaction();
         
         try {
@@ -1278,7 +1354,11 @@ function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $a
             writeLog("Staking record created successfully", 'INFO');
             
         } catch (Exception $e) {
-            $pdo->rollback();
+            try {
+                $pdo->rollback();
+            } catch (Exception $rollbackError) {
+                writeLog("Failed to rollback transaction: " . $rollbackError->getMessage(), 'ERROR');
+            }
             throw new Exception('Failed to create staking record: ' . $e->getMessage());
         }
         
@@ -1304,6 +1384,17 @@ function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $a
         ];
         
     } catch (Exception $e) {
+        // Ensure any pending transaction is rolled back
+        try {
+            $pdo = $walletManager->getDatabase();
+            if ($pdo->inTransaction()) {
+                writeLog("Rolling back staking transaction due to error", 'INFO');
+                $pdo->rollBack();
+            }
+        } catch (Exception $cleanupError) {
+            writeLog("Error during staking cleanup: " . $cleanupError->getMessage(), 'ERROR');
+        }
+        
         writeLog("Error in token staking: " . $e->getMessage(), 'ERROR');
         throw new Exception('Staking failed: ' . $e->getMessage());
     }
