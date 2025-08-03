@@ -250,27 +250,61 @@
                                 <div class="alert alert-info mb-4">
                                     <i class="fas fa-info-circle"></i>
                                     <strong>Connecting to existing network</strong><br>
-                                    <small>Specify node addresses to connect to the blockchain network</small>
+                                    <small>Specify node addresses to connect to the blockchain network and wallet configuration</small>
                                 </div>
                                 
                                 <div class="row">
                                     <div class="col-md-6">
                                         <div class="mb-3">
-                                            <label class="form-label text-white">Node Wallet Amount</label>
-                                            <input type="number" class="form-control" name="node_wallet_amount" value="5000">
-                                            <small class="form-text text-white-50">Amount for node wallet (optional)</small>
+                                            <label class="form-label text-white">
+                                                <i class="fas fa-wallet"></i> Wallet Configuration
+                                            </label>
+                                            <div class="alert alert-warning mb-3">
+                                                <i class="fas fa-exclamation-triangle"></i>
+                                                <strong>Regular nodes must use existing wallets</strong><br>
+                                                <small>Import your existing wallet from the network. New wallet creation is only available for primary nodes.</small>
+                                            </div>
                                         </div>
-                                        <div class="mb-3">
-                                            <label class="form-label text-white">Staking Amount</label>
-                                            <input type="number" class="form-control" name="staking_amount" value="1000">
-                                            <small class="form-text text-white-50">Amount for staking (minimum 1000)</small>
+                                        
+                                        <!-- Import wallet fields (always visible for regular nodes) -->
+                                        <div id="import-wallet-fields">
+                                            <div class="mb-3">
+                                                <label class="form-label text-white">Wallet Address <span class="text-danger">*</span></label>
+                                                <input type="text" class="form-control" name="existing_wallet_address" placeholder="0x..." required>
+                                                <small class="form-text text-white-50">Existing wallet address in the network</small>
+                                            </div>
+                                            <div class="mb-3">
+                                                <label class="form-label text-white">Private Key <span class="text-danger">*</span></label>
+                                                <input type="password" class="form-control" name="existing_wallet_private_key" placeholder="Private key or mnemonic phrase" required>
+                                                <small class="form-text text-white-50">Private key or 12-word mnemonic phrase</small>
+                                            </div>
+                                            <div class="alert alert-info mb-3">
+                                                <i class="fas fa-info-circle"></i>
+                                                <strong>Security Notice:</strong> Wallet balance and ownership verification is always performed before installation to ensure proper node setup and prevent unauthorized access.
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Network configuration will be automatically retrieved from existing nodes -->
+                                        <div class="alert alert-info">
+                                            <i class="fas fa-info-circle"></i>
+                                            <strong>Auto-Configuration:</strong> Staking requirements and network parameters will be automatically retrieved from the existing network nodes.
                                         </div>
                                     </div>
                                     <div class="col-md-6">
                                         <div class="mb-3">
-                                            <label class="form-label text-white">Known Nodes List</label>
-                                            <textarea class="form-control" name="known_nodes" rows="4" placeholder="http://node1.example.com&#10;http://node2.example.com&#10;https://node3.example.com"></textarea>
-                                            <small class="form-text text-white-50">List of known nodes (one URL per line)</small>
+                                            <label class="form-label text-white">Network Nodes</label>
+                                            <textarea class="form-control" name="network_nodes" rows="6" placeholder="https://node1.yournetwork.com&#10;https://node2.yournetwork.com&#10;https://node3.yournetwork.com&#10;https://backup.yournetwork.com"></textarea>
+                                            <small class="form-text text-white-50">List of network nodes (one URL per line). System will select the most reliable one automatically. <strong>Only required for regular nodes.</strong></small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label text-white">Node Selection Strategy</label>
+                                            <select class="form-control" name="node_selection_strategy">
+                                                <option value="fastest_response">Fastest Response Time</option>
+                                                <option value="highest_block">Highest Block Height</option>
+                                                <option value="most_peers">Most Connected Peers</option>
+                                                <option value="consensus_majority" selected>Consensus Majority</option>
+                                            </select>
+                                            <small class="form-text text-white-50">How to choose the primary node for synchronization</small>
                                         </div>
                                     </div>
                                 </div>
@@ -454,87 +488,119 @@
                             <i class="fas fa-exclamation-triangle text-warning" style="font-size: 4rem;"></i>
                             <h3 class="text-white mt-3">Installation Error</h3>
                             <p class="text-white-50 mb-4" id="errorMessage">An error occurred during installation</p>
-                            <button type="button" class="btn btn-primary me-2" onclick="retryInstallation()">
-                                <i class="fas fa-redo"></i> Retry Installation
-                            </button>
-                            <button type="button" class="btn btn-outline-light" onclick="backToForm()">
-                                <i class="fas fa-arrow-left"></i> Back to Form
-                            </button>
+                            <div class="d-flex flex-wrap justify-content-center gap-2">
+                                <button type="button" class="btn btn-primary" onclick="retryInstallation()">
+                                    <i class="fas fa-redo"></i> Retry Installation
+                                </button>
+                                <button type="button" class="btn btn-outline-light" onclick="backToForm()">
+                                    <i class="fas fa-arrow-left"></i> Back to Form
+                                </button>
+                                <button type="button" class="btn btn-info" id="checkBalanceBtn" onclick="checkWalletBalance()" style="display: none;">
+                                    <i class="fas fa-wallet"></i> Check Wallet Balance
+                                </button>
+                            </div>
                         </div>
                     </div>
 
-                    <!-- Wallet Creation Result -->
+                    <!-- Wallet Result -->
                     <div class="d-none" id="walletResult">
                         <div class="text-center mb-4">
-                            <i class="fas fa-wallet text-success" style="font-size: 4rem;"></i>
-                            <h3 class="text-white mt-3">Wallet Created!</h3>
-                            <p class="text-white-50 mb-4">Save this data in a secure place - it will not be shown again</p>
+                            <i class="fas fa-wallet text-success" style="font-size: 4rem;" id="walletResultIcon"></i>
+                            <h3 class="text-white mt-3" id="walletResultTitle">Wallet Created!</h3>
+                            <p class="text-white-50 mb-4" id="walletResultMessage">Save this data in a secure place - it will not be shown again</p>
                         </div>
                         
-                        <div class="row">
-                            <div class="col-md-12 mb-3">
-                                <div class="card bg-dark text-white">
-                                    <div class="card-header">
-                                        <i class="fas fa-fingerprint"></i> Wallet Address
+                        <!-- Wallet data cards (only for primary nodes) -->
+                        <div id="walletDataCards">
+                            <div class="row">
+                                <div class="col-md-12 mb-3">
+                                    <div class="card bg-dark text-white">
+                                        <div class="card-header">
+                                            <i class="fas fa-fingerprint"></i> Wallet Address
+                                        </div>
+                                        <div class="card-body">
+                                            <code id="walletAddress" style="word-break: break-all; color: #28a745;"></code>
+                                            <button class="btn btn-sm btn-outline-light mt-2" onclick="copyToClipboard('walletAddress')">
+                                                <i class="fas fa-copy"></i> Copy
+                                            </button>
+                                        </div>
                                     </div>
-                                    <div class="card-body">
-                                        <code id="walletAddress" style="word-break: break-all; color: #28a745;"></code>
-                                        <button class="btn btn-sm btn-outline-light mt-2" onclick="copyToClipboard('walletAddress')">
-                                            <i class="fas fa-copy"></i> Copy
-                                        </button>
+                                </div>
+                                <div class="col-md-12 mb-3">
+                                    <div class="card bg-dark text-white">
+                                        <div class="card-header">
+                                            <i class="fas fa-eye"></i> Public Key
+                                        </div>
+                                        <div class="card-body">
+                                            <code id="walletPublicKey" style="word-break: break-all; color: #17a2b8;"></code>
+                                            <button class="btn btn-sm btn-outline-light mt-2" onclick="copyToClipboard('walletPublicKey')">
+                                                <i class="fas fa-copy"></i> Copy
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-12 mb-3">
+                                    <div class="card bg-dark text-white">
+                                        <div class="card-header">
+                                            <i class="fas fa-key"></i> Private Key
+                                        </div>
+                                        <div class="card-body">
+                                            <code id="walletPrivateKey" style="word-break: break-all; color: #ffc107;"></code>
+                                            <button class="btn btn-sm btn-outline-light mt-2" onclick="copyToClipboard('walletPrivateKey')">
+                                                <i class="fas fa-copy"></i> Copy
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-12 mb-3">
+                                    <div class="card bg-dark text-white">
+                                        <div class="card-header">
+                                            <i class="fas fa-seedling"></i> Mnemonic Phrase (Seed)
+                                        </div>
+                                        <div class="card-body">
+                                            <code id="walletMnemonic" style="word-break: break-all; color: #42c1a2;"></code>
+                                            <button class="btn btn-sm btn-outline-light mt-2" onclick="copyToClipboard('walletMnemonic')">
+                                                <i class="fas fa-copy"></i> Copy
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
-                            <div class="col-md-12 mb-3">
-                                <div class="card bg-dark text-white">
-                                    <div class="card-header">
-                                        <i class="fas fa-eye"></i> Public Key
-                                    </div>
-                                    <div class="card-body">
-                                        <code id="walletPublicKey" style="word-break: break-all; color: #17a2b8;"></code>
-                                        <button class="btn btn-sm btn-outline-light mt-2" onclick="copyToClipboard('walletPublicKey')">
-                                            <i class="fas fa-copy"></i> Copy
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="col-md-12 mb-3">
-                                <div class="card bg-dark text-white">
-                                    <div class="card-header">
-                                        <i class="fas fa-key"></i> Private Key
-                                    </div>
-                                    <div class="card-body">
-                                        <code id="walletPrivateKey" style="word-break: break-all; color: #ffc107;"></code>
-                                        <button class="btn btn-sm btn-outline-light mt-2" onclick="copyToClipboard('walletPrivateKey')">
-                                            <i class="fas fa-copy"></i> Copy
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="col-md-12 mb-3">
-                                <div class="card bg-dark text-white">
-                                    <div class="card-header">
-                                        <i class="fas fa-seedling"></i> Mnemonic Phrase (Seed)
-                                    </div>
-                                    <div class="card-body">
-                                        <code id="walletMnemonic" style="word-break: break-all; color: #42c1a2;"></code>
-                                        <button class="btn btn-sm btn-outline-light mt-2" onclick="copyToClipboard('walletMnemonic')">
-                                            <i class="fas fa-copy"></i> Copy
-                                        </button>
-                                    </div>
-                                </div>
+                            
+                            <div class="alert alert-warning">
+                                <i class="fas fa-exclamation-triangle"></i>
+                                <strong>Important!</strong> Save this data in a secure place. Without it, you will not be able to restore access to your wallet. 
+                                Never share your private key and mnemonic phrase with anyone.
                             </div>
                         </div>
                         
-                        <div class="alert alert-warning">
-                            <i class="fas fa-exclamation-triangle"></i>
-                            <strong>Important!</strong> Save this data in a secure place. Without it, you will not be able to restore access to your wallet. 
-                            Never share your private key and mnemonic phrase with anyone.
+                        <!-- Network connection info (only for regular nodes) -->
+                        <div id="networkConnectionInfo" class="d-none">
+                            <div class="alert alert-success">
+                                <i class="fas fa-check-circle"></i>
+                                <strong>Successfully connected to blockchain network!</strong><br>
+                                <small>Wallet verification completed. Your node is now synchronizing with the network.</small>
+                            </div>
+                            
+                            <div class="card bg-dark text-white">
+                                <div class="card-header">
+                                    <i class="fas fa-network-wired"></i> Connection Details
+                                </div>
+                                <div class="card-body">
+                                    <p><strong>Network:</strong> <span id="connectedNetwork">-</span></p>
+                                    <p><strong>Node:</strong> <span id="connectedNode">-</span></p>
+                                    <p><strong>Wallet:</strong> <span id="connectedWallet">-</span></p>
+                                    <p><strong>Status:</strong> <span class="text-success">✓ Connected & Verified</span></p>
+                                </div>
+                            </div>
                         </div>
                         
                         <div class="text-center">
-                            <button type="button" class="btn btn-success" onclick="continueToResult()">
+                            <button type="button" class="btn btn-success" onclick="continueToResult()" id="primaryContinueBtn">
                                 <i class="fas fa-check"></i> I have saved the wallet data
+                            </button>
+                            <button type="button" class="btn btn-primary d-none" onclick="continueToResult()" id="regularContinueBtn">
+                                <i class="fas fa-arrow-right"></i> Continue Installation
                             </button>
                         </div>
                     </div>
@@ -545,18 +611,35 @@
                             <i class="fas fa-check-circle text-success" style="font-size: 4rem;"></i>
                             <h3 class="text-white mt-3">Installation Complete!</h3>
                             <p class="text-white-50 mb-4">Your blockchain platform is ready to use</p>
+                            
+                            <!-- Sync button for regular nodes -->
+                            <div id="syncSection" class="d-none mb-4">
+                                <div class="alert alert-info">
+                                    <i class="fas fa-sync"></i>
+                                    <strong>Regular Node Setup:</strong> Synchronize with the network to get the latest blockchain data.
+                                </div>
+                                <button class="btn btn-success btn-lg mb-3" onclick="startNetworkSync()">
+                                    <i class="fas fa-download"></i> Start Network Synchronization
+                                </button>
+                            </div>
+                            
                             <div class="row">
-                                <div class="col-md-4">
+                                <div class="col-md-3">
                                     <a href="../wallet/" class="btn btn-primary w-100 mb-2">
                                         <i class="fas fa-wallet"></i> Wallet
                                     </a>
                                 </div>
-                                <div class="col-md-4">
+                                <div class="col-md-3">
                                     <a href="../explorer/" class="btn btn-info w-100 mb-2">
                                         <i class="fas fa-search"></i> Explorer
                                     </a>
                                 </div>
-                                <div class="col-md-4">
+                                <div class="col-md-3">
+                                    <a href="../sync-service/" class="btn btn-secondary w-100 mb-2">
+                                        <i class="fas fa-sync"></i> Sync Service
+                                    </a>
+                                </div>
+                                <div class="col-md-3">
                                     <a href="../admin/" class="btn btn-warning w-100 mb-2">
                                         <i class="fas fa-cog"></i> Admin Panel
                                     </a>

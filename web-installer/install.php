@@ -103,7 +103,11 @@ try {
         'min_stake_amount' => (float)($_POST['min_stake_amount'] ?? 1000),
         'block_time' => (int)($_POST['block_time'] ?? 10),
         'block_reward' => (float)($_POST['block_reward'] ?? 10),
-        'known_nodes' => $_POST['known_nodes'] ?? '',
+        'network_nodes' => $_POST['network_nodes'] ?? '',
+        'node_selection_strategy' => $_POST['node_selection_strategy'] ?? 'consensus_majority',
+        'existing_wallet_address' => $_POST['existing_wallet_address'] ?? '',
+        'existing_wallet_private_key' => $_POST['existing_wallet_private_key'] ?? '',
+        'verify_wallet' => isset($_POST['verify_wallet']) && $_POST['verify_wallet'] === 'on',
         'node_domain' => $_POST['node_domain'] ?? '',
         'protocol' => $_POST['protocol'] ?? 'http',
         'max_peers' => (int)($_POST['max_peers'] ?? 10),
@@ -168,22 +172,43 @@ try {
     validateConfig($config);
     file_put_contents('install_debug.log', "Validation passed\n", FILE_APPEND);
 
-    // Define installation steps
-    $steps = [
-        ['id' => 'create_directories', 'description' => 'Creating directories...'],
-        ['id' => 'install_dependencies', 'description' => 'Installing dependencies...'],
-        ['id' => 'create_database', 'description' => 'Creating database...'],
-        ['id' => 'create_tables', 'description' => 'Creating tables...'],
-        ['id' => 'create_wallet', 'description' => 'Creating node wallet...'],
-        ['id' => 'generate_genesis', 'description' => 'Generating genesis block...'],
-        ['id' => 'initialize_binary_storage', 'description' => 'Initializing binary blockchain storage...'],
-        ['id' => 'create_config', 'description' => 'Creating configuration...'],
-        ['id' => 'setup_admin', 'description' => 'Setting up administrator...'],
-        ['id' => 'initialize_blockchain', 'description' => 'Initializing blockchain...'],
-        ['id' => 'start_services', 'description' => 'Starting services...'],
-        ['id' => 'finalize', 'description' => 'Completing installation...']
-    ];
-
+    // Define installation steps based on node type
+    $nodeType = $config['node_type'] ?? 'primary';
+    
+    if ($nodeType === 'primary') {
+        // Primary node installation steps
+        $steps = [
+            ['id' => 'create_directories', 'description' => 'Creating directories...'],
+            ['id' => 'install_dependencies', 'description' => 'Checking dependencies...'],
+            ['id' => 'create_database', 'description' => 'Creating database...'],
+            ['id' => 'create_tables', 'description' => 'Creating tables...'],
+            ['id' => 'create_wallet', 'description' => 'Creating primary wallet...'],
+            ['id' => 'generate_genesis', 'description' => 'Generating genesis block...'],
+            ['id' => 'initialize_binary_storage', 'description' => 'Initializing binary blockchain storage...'],
+            ['id' => 'create_config', 'description' => 'Creating configuration...'],
+            ['id' => 'setup_admin', 'description' => 'Setting up administrator...'],
+            ['id' => 'initialize_blockchain', 'description' => 'Initializing blockchain...'],
+            ['id' => 'start_services', 'description' => 'Starting services...'],
+            ['id' => 'finalize', 'description' => 'Completing installation...']
+        ];
+    } else {
+        // Regular node installation steps
+        $steps = [
+            ['id' => 'create_directories', 'description' => 'Creating directories...'],
+            ['id' => 'install_dependencies', 'description' => 'Checking dependencies...'],
+            ['id' => 'create_database', 'description' => 'Creating database...'],
+            ['id' => 'create_tables', 'description' => 'Creating tables...'],
+            ['id' => 'create_wallet', 'description' => 'Setting up wallet...'],
+            ['id' => 'sync_blockchain', 'description' => 'Syncing with genesis node...'],
+            ['id' => 'initialize_binary_storage', 'description' => 'Initializing binary blockchain storage...'],
+            ['id' => 'create_config', 'description' => 'Creating configuration...'],
+            ['id' => 'setup_admin', 'description' => 'Setting up administrator...'],
+            ['id' => 'initialize_blockchain', 'description' => 'Initializing blockchain...'],
+            ['id' => 'start_services', 'description' => 'Starting services...'],
+            ['id' => 'finalize', 'description' => 'Completing installation...']
+        ];
+    }
+    
     // Save configuration for subsequent steps
     $configPath = '../config/install_config.json';
     $configDir = dirname($configPath);

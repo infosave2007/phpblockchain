@@ -122,3 +122,10 @@ storage/blockchain/blockchain.bin
 .gitignore
 storage/blockchain/blockchain.bin
 .github/instructions/copilot.instructions.md
+a379149_node1.sql
+a379149_wallet (20).sql
+integration_summary.md
+REGULAR_NODE_SETUP.md
+security_updates_summary.md
+test_full_sync.php
+test_sync.php
