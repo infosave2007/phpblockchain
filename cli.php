@@ -494,8 +494,8 @@ function handleWalletCreateSecure() {
     echo "🔐 Creating secure encrypted wallet...\n\n";
     
     // Secure password reading
-    $password = \Core\Security\SecureInput::readPassword("Enter wallet password: ");
-    $confirmPassword = \Core\Security\SecureInput::readPassword("Confirm password: ");
+            $password = \Blockchain\Core\Security\SecureInput::readPassword("Enter wallet password: ");
+        $confirmPassword = \Blockchain\Core\Security\SecureInput::readPassword("Confirm password: ");
     
     if ($password !== $confirmPassword) {
         error("Passwords do not match!");
@@ -503,7 +503,7 @@ function handleWalletCreateSecure() {
     }
     
     // Password strength check
-    $strength = \Core\Security\SecureInput::checkPasswordStrength($password);
+    $strength = \Blockchain\Core\Security\SecureInput::checkPasswordStrength($password);
     echo "Password strength: " . color($strength['strength'], $strength['score'] >= 4 ? 'green' : 'yellow') . "\n";
     
     if ($strength['score'] < 3) {
@@ -511,7 +511,7 @@ function handleWalletCreateSecure() {
         foreach ($strength['feedback'] as $feedback) {
             echo "  - $feedback\n";
         }
-        $continue = \Core\Security\SecureInput::readPassword("Continue anyway? (y/N): ");
+        $continue = \Blockchain\Core\Security\SecureInput::readPassword("Continue anyway? (y/N): ");
         if (strtolower($continue) !== 'y') {
             echo "Wallet creation cancelled.\n";
             return;
@@ -524,8 +524,8 @@ function handleWalletCreateSecure() {
     $address = generateAddress($publicKey);
     
     // Secure storage in memory
-    \Core\Security\SecureMemory::store('wallet_private_key', $privateKey);
-    \Core\Security\SecureMemory::store('wallet_password', $password);
+    \Blockchain\Core\Security\SecureMemory::store('wallet_private_key', $privateKey);
+    \Blockchain\Core\Security\SecureMemory::store('wallet_password', $password);
     
     // Create encrypted wallet file
     $walletData = [
@@ -554,7 +554,7 @@ function handleWalletCreateSecure() {
     warning("IMPORTANT: Keep your password safe! It cannot be recovered!");
     
     // Clear memory
-    \Core\Security\SecureMemory::clear();
+    \Blockchain\Core\Security\SecureMemory::clear();
 }
 
 /**
@@ -567,7 +567,7 @@ function handleWalletImportSecure(array $args) {
     echo "🔑 Importing wallet from seed phrase...\n\n";
     
     // Secure seed phrase reading
-    $seedWords = \Core\Security\SecureInput::readSeedPhrase();
+    $seedWords = \Blockchain\Core\Security\SecureInput::readSeedPhrase();
     
     if (count($seedWords) < 12) {
         error("Seed phrase must contain at least 12 words!");
@@ -577,15 +577,15 @@ function handleWalletImportSecure(array $args) {
     echo "\nSeed phrase contains " . count($seedWords) . " words\n";
     
     // Read password for encryption
-    $password = \Core\Security\SecureInput::readPassword("Enter password to encrypt wallet: ");
+    $password = \Blockchain\Core\Security\SecureInput::readPassword("Enter password to encrypt wallet: ");
     
     // Derive private key from seed phrase
     $seed = implode(' ', $seedWords);
     $privateKey = hash('sha256', $seed . 'ethereum-derivation');
     
     // Secure storage
-    \Core\Security\SecureMemory::store('imported_seed', $seed);
-    \Core\Security\SecureMemory::store('imported_private_key', $privateKey);
+    \Blockchain\Core\Security\SecureMemory::store('imported_seed', $seed);
+    \Blockchain\Core\Security\SecureMemory::store('imported_private_key', $privateKey);
     
     $publicKey = generatePublicKey($privateKey);
     $address = generateAddress($publicKey);
@@ -615,7 +615,7 @@ function handleWalletImportSecure(array $args) {
     echo "File: " . color($walletFile, 'yellow') . "\n";
     
     // Clear memory
-    \Core\Security\SecureMemory::clear();
+    \Blockchain\Core\Security\SecureMemory::clear();
 }
 
 /**
@@ -626,7 +626,7 @@ function handleWalletConnect(array $args) {
     
     echo "📱 Connecting mobile wallet...\n\n";
     
-    $bridge = new \Core\WalletConnect\WalletConnectBridge();
+    $bridge = new \Blockchain\Core\WalletConnect\WalletConnectBridge();
     $session = $bridge->createSession();
     
     $showQR = in_array('--qr', $args);
@@ -666,7 +666,7 @@ function handleSetupTrustWallet() {
     echo "🔗 Setting up TrustWallet integration...\n\n";
     
     // Create WalletConnect bridge to get configuration
-    $bridge = new \Core\WalletConnect\WalletConnectBridge();
+    $bridge = new \Blockchain\Core\WalletConnect\WalletConnectBridge();
     $tokenInfo = $bridge->getTokenInfo();
     $networkConfig = $bridge->getNetworkConfig();
     
@@ -890,8 +890,8 @@ function handleGeneratePassword(array $args) {
     
     echo "🔐 Generating secure password (length: $length)...\n\n";
     
-    $password = \Core\Security\SecureInput::generateSecurePassword($length);
-    $strength = \Core\Security\SecureInput::checkPasswordStrength($password);
+    $password = \Blockchain\Core\Security\SecureInput::generateSecurePassword($length);
+    $strength = \Blockchain\Core\Security\SecureInput::checkPasswordStrength($password);
     
     echo "Generated password: " . color($password, 'cyan') . "\n";
     echo "Strength: " . color($strength['strength'], 'green') . "\n";
@@ -960,7 +960,7 @@ function handleConfigToken() {
     
     echo "🪙 Token Configuration\n\n";
     
-    $bridge = new \Core\WalletConnect\WalletConnectBridge();
+    $bridge = new \Blockchain\Core\WalletConnect\WalletConnectBridge();
     $tokenInfo = $bridge->getTokenInfo();
     
     echo sprintf("%-20s %s\n", "Name:", color($tokenInfo['name'], 'cyan'));
@@ -994,7 +994,7 @@ function handleConfigNetwork() {
     
     echo "🌐 Network Configuration\n\n";
     
-    $bridge = new \Core\WalletConnect\WalletConnectBridge();
+    $bridge = new \Blockchain\Core\WalletConnect\WalletConnectBridge();
     $networkConfig = $bridge->getNetworkConfig();
     
     echo sprintf("%-20s %s\n", "Network Name:", color($networkConfig['networkName'], 'cyan'));

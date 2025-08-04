@@ -17,7 +17,7 @@ return array (
   'debug_mode' => true, // Set to true for development, false for production
   'database' => 
   array (
-  ),
+      ),
   'blockchain' => 
   array (
     'genesis_created' => true,
@@ -54,6 +54,7 @@ return array (
       'time_window' => 3600,
     ),
   ),
+  'storage_path' => __DIR__ . '/../storage',
   'logging' => 
   array (
     'level' => 'info',

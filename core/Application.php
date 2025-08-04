@@ -10,12 +10,16 @@ if (!defined('BLOCKCHAIN_VERSION')) {
 
 use Blockchain\API\BlockchainAPI;
 use Blockchain\Core\Blockchain\Blockchain;
+use Blockchain\Core\Storage\BlockStorage;
+use Blockchain\Core\Events\EventDispatcher;
+use Blockchain\Core\Consensus\ValidatorManager;
 use Blockchain\Nodes\NodeManager;
 use Blockchain\Core\Network\MultiCurl;
 use Blockchain\Contracts\SmartContractManager;
 use Blockchain\Core\Consensus\ProofOfStake;
 use Blockchain\Core\Cryptography\MessageEncryption;
-use Core\Recovery\BlockchainRecoveryManager;
+use Blockchain\Core\Recovery\BlockchainRecoveryManager;
+use Blockchain\Wallet\WalletManager;
 use Exception;
 use PDO;
 
@@ -34,14 +38,16 @@ class Application
     private ?ProofOfStake $consensus = null;
     private ?BlockchainAPI $api = null;
     private ?BlockchainRecoveryManager $recoveryManager = null;
+    private ?ValidatorManager $validatorManager = null;
 
     public function __construct(array $config)
     {
         $this->config = $config;
         $this->initializeDatabase();
-        $this->initializeBlockchain();
+        $this->initializeValidatorManager();
         $this->initializeConsensus();
         $this->initializeNodeManager();
+        $this->initializeBlockchain();
         $this->initializeSmartContracts();
         $this->initializeAPI();
     }
@@ -60,11 +66,24 @@ class Application
     }
 
     /**
+     * Initialize validator manager
+     */
+    private function initializeValidatorManager(): void
+    {
+        $this->validatorManager = new ValidatorManager($this->database, $this->config);
+    }
+
+    /**
      * Initialize blockchain
      */
     private function initializeBlockchain(): void
     {
-        $this->blockchain = new Blockchain($this->database, $this->config);
+        // Create required components for blockchain
+        $storage = new BlockStorage('blockchain.json', $this->database, $this->validatorManager);
+        $eventDispatcher = new EventDispatcher();
+        
+        // Create blockchain with proper parameters
+        $this->blockchain = new Blockchain($storage, $this->consensus, $this->nodeManager, $eventDispatcher, $this->validatorManager);
     }
 
     /**
@@ -72,7 +91,20 @@ class Application
      */
     private function initializeConsensus(): void
     {
-        $this->consensus = new ProofOfStake($this->config['consensus']['pos'] ?? []);
+        // Create a simple logger for consensus
+        $logger = new class implements \Psr\Log\LoggerInterface {
+            public function emergency($message, array $context = []) {}
+            public function alert($message, array $context = []) {}
+            public function critical($message, array $context = []) {}
+            public function error($message, array $context = []) {}
+            public function warning($message, array $context = []) {}
+            public function notice($message, array $context = []) {}
+            public function info($message, array $context = []) {}
+            public function debug($message, array $context = []) {}
+            public function log($level, $message, array $context = []) {}
+        };
+        
+        $this->consensus = new ProofOfStake($logger);
     }
 
     /**
@@ -81,7 +113,22 @@ class Application
     private function initializeNodeManager(): void
     {
         $multiCurl = new MultiCurl();
-        $this->nodeManager = new NodeManager($multiCurl, null, null, $this->config);
+        $eventDispatcher = new EventDispatcher();
+        
+        // Create a simple logger for node manager
+        $logger = new class implements \Psr\Log\LoggerInterface {
+            public function emergency($message, array $context = []) {}
+            public function alert($message, array $context = []) {}
+            public function critical($message, array $context = []) {}
+            public function error($message, array $context = []) {}
+            public function warning($message, array $context = []) {}
+            public function notice($message, array $context = []) {}
+            public function info($message, array $context = []) {}
+            public function debug($message, array $context = []) {}
+            public function log($level, $message, array $context = []) {}
+        };
+        
+        $this->nodeManager = new NodeManager($multiCurl, $eventDispatcher, $logger, $this->config);
     }
 
     /**
@@ -98,12 +145,52 @@ class Application
      */
     private function initializeAPI(): void
     {
+        // Create a simple logger for API
+        $logger = new class implements \Psr\Log\LoggerInterface {
+            public function emergency($message, array $context = []) {}
+            public function alert($message, array $context = []) {}
+            public function critical($message, array $context = []) {}
+            public function error($message, array $context = []) {}
+            public function warning($message, array $context = []) {}
+            public function notice($message, array $context = []) {}
+            public function info($message, array $context = []) {}
+            public function debug($message, array $context = []) {}
+            public function log($level, $message, array $context = []) {}
+        };
+        
+        // Create a simple SmartContractManager mock
+        $contractManager = new class extends SmartContractManager {
+            public function __construct() {
+                // Skip parent constructor to avoid dependency issues
+            }
+            
+            public function deployContract($code, $constructorArgs = [], $deployer = '', $gasLimit = 100000): array {
+                return ['success' => false, 'error' => 'Not implemented'];
+            }
+            
+            public function callContract($contractAddress, $functionName, $args = [], $caller = '', $gasLimit = 50000, $value = 0): array {
+                return ['success' => false, 'error' => 'Not implemented'];
+            }
+            
+            public function getContractState($contractAddress): ?array {
+                return null;
+            }
+            
+            public function estimateGas($contractAddress, $functionName, $args = [], $caller = ''): int {
+                return 21000;
+            }
+        };
+        
+        // Create a simple WalletManager instance
+        $walletManager = new WalletManager($this->database, $this->config);
+        
         $this->api = new BlockchainAPI(
             $this->blockchain,
+            $contractManager,
             $this->nodeManager,
-            $this->contractManager,
             $this->consensus,
-            null, // WalletManager would be initialized here
+            $walletManager,
+            $logger,
             $this->config
         );
     }

@@ -129,3 +129,4 @@ REGULAR_NODE_SETUP.md
 security_updates_summary.md
 test_full_sync.php
 test_sync.php
+storage/blockchain.bin

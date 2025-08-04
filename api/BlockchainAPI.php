@@ -8,7 +8,7 @@ use Blockchain\Core\Blockchain\Transaction;
 use Blockchain\Contracts\SmartContractManager;
 use Blockchain\Nodes\NodeManager;
 use Blockchain\Core\Consensus\ProofOfStake;
-use Blockchain\Core\Wallet\WalletManager;
+use Blockchain\Wallet\WalletManager;
 use Psr\Log\LoggerInterface;
 
 /**
