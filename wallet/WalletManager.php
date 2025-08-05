@@ -65,7 +65,7 @@ class WalletManager
             $mnemonic = Mnemonic::generate();
             
             // Create key pair from mnemonic  
-            $keyPair = KeyPair::fromMnemonic($mnemonic);
+            $keyPair = KeyPair::fromMnemonic($mnemonic,'');
             $address = $keyPair->getAddress();
             
             // Store wallet in database only if requested
@@ -104,7 +104,7 @@ class WalletManager
     /**
      * Create a new wallet from a mnemonic phrase
      */
-    public function createWalletFromMnemonic(array $mnemonic): array
+    public function createWalletFromMnemonic(string $mnemonic): array
     {
         try {
             $keyPair = KeyPair::fromMnemonic($mnemonic);
@@ -141,7 +141,7 @@ class WalletManager
     /**
      * Restore wallet from mnemonic phrase
      */
-    public function restoreWalletFromMnemonic(array $mnemonic): array
+    public function restoreWalletFromMnemonic(string $mnemonic): array
     {
         try {
             // Debug: проверим что получили
