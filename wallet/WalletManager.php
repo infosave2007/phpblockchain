@@ -55,8 +55,10 @@ class WalletManager
     
     /**
      * Create a new wallet
+     * @param string|null $password Password for wallet encryption (currently unused)
+     * @param bool $saveToDatabase Whether to save wallet to database (default: true)
      */
-    public function createWallet(?string $password = null): array
+    public function createWallet(?string $password = null, bool $saveToDatabase = true): array
     {
         try {
             // Generate proper mnemonic first
@@ -66,16 +68,18 @@ class WalletManager
             $keyPair = KeyPair::fromMnemonic($mnemonic,'');
             $address = $keyPair->getAddress();
             
-            // Store wallet in database
-            $stmt = $this->database->prepare("
-                INSERT INTO wallets (address, public_key, balance) 
-                VALUES (?, ?, 0)
-            ");
-            
-            $stmt->execute([
-                $address,
-                $keyPair->getPublicKey()
-            ]);
+            // Store wallet in database only if requested
+            if ($saveToDatabase) {
+                $stmt = $this->database->prepare("
+                    INSERT INTO wallets (address, public_key, balance) 
+                    VALUES (?, ?, 0)
+                ");
+                
+                $stmt->execute([
+                    $address,
+                    $keyPair->getPublicKey()
+                ]);
+            }
             
             return [
                 'address' => $address,
@@ -527,10 +531,30 @@ class WalletManager
     /**
      * Import wallet from private key
      */
-    public function importWallet(string $privateKey): array
+    public function importWallet(string $privateKeyOrMnemonic): array
     {
         try {
-            $keyPair = KeyPair::fromPrivateKey($privateKey);
+            // Determine if input is mnemonic phrase or private key
+            $words = explode(' ', trim($privateKeyOrMnemonic));
+            
+            if (count($words) >= 12 && count($words) <= 24) {
+                // It's likely a mnemonic phrase - convert to array format
+                $mnemonic = array_map('trim', $words);
+                
+                // Use KeyPair::fromMnemonic directly
+                $keyPair = KeyPair::fromMnemonic($mnemonic);
+            } else {
+                // Treat as private key (hex string)
+                $privateKey = $privateKeyOrMnemonic;
+                
+                // Clean up private key (remove 0x prefix if present)
+                if (strpos($privateKey, '0x') === 0) {
+                    $privateKey = substr($privateKey, 2);
+                }
+                
+                $keyPair = KeyPair::fromPrivateKey($privateKey);
+            }
+            
             $address = $keyPair->getAddress();
             
             // Check if wallet already exists
@@ -552,6 +576,7 @@ class WalletManager
             return [
                 'address' => $address,
                 'public_key' => $keyPair->getPublicKey(),
+                'private_key' => $keyPair->getPrivateKey(),
                 'imported' => true
             ];
             

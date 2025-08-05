@@ -7,10 +7,10 @@
 require_once __DIR__ . '/vendor/autoload.php';
 require_once __DIR__ . '/config/config.php';
 
-use Core\Application;
-use Core\Recovery\BlockchainRecoveryManager;
-use Core\Storage\BlockchainBinaryStorage;
-use Core\Network\NodeHealthMonitor;
+use Blockchain\Core\Application;
+use Blockchain\Core\Recovery\BlockchainRecoveryManager;
+use Blockchain\Core\Storage\BlockchainBinaryStorage;
+use Blockchain\Core\Network\NodeHealthMonitor;
 
 function showHelp(): void
 {

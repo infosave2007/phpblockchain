@@ -4,7 +4,7 @@
  * Integrates into every API call for instant diagnostics
  */
 
-namespace Core\Network;
+namespace Blockchain\Core\Network;
 
 use Exception;
 

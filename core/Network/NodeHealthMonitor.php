@@ -4,10 +4,11 @@
  * Node health monitoring system for budget hosting environments
  */
 
-namespace Core\Network;
+namespace Blockchain\Core\Network;
 
 use Blockchain\Core\Storage\BlockchainBinaryStorage;
-use Core\Recovery\BlockchainRecoveryManager;
+use Blockchain\Core\Storage\SelectiveBlockchainSyncManager;
+use Blockchain\Core\Recovery\BlockchainRecoveryManager;
 use PDO;
 use Exception;
 
@@ -37,14 +38,19 @@ class NodeHealthMonitor
     public function __construct(
         BlockchainBinaryStorage $binaryStorage,
         PDO $database,
-        array $config
+        array $config,
+        ?SelectiveBlockchainSyncManager $syncManager = null
     ) {
         $this->binaryStorage = $binaryStorage;
         $this->database = $database;
         $this->config = $config;
         $this->nodeId = $this->generateNodeId();
         $this->knownNodes = $this->loadKnownNodes();
-        $this->recoveryManager = new BlockchainRecoveryManager($binaryStorage);
+        
+        // Create recovery manager if sync manager is provided
+        if ($syncManager !== null) {
+            $this->recoveryManager = new BlockchainRecoveryManager($database, $binaryStorage, $syncManager, $this->nodeId, $config);
+        }
         
         // Create node status table if not exists
         $this->createNodeStatusTable();
@@ -386,7 +392,7 @@ class NodeHealthMonitor
             }
             
             // Use MultiCurl for fast notification to all nodes
-            $multiCurl = new \Core\Network\MultiCurl();
+            $multiCurl = new \Blockchain\Core\Network\MultiCurl();
             
             $requests = [];
             foreach ($urls as $url) {
@@ -495,7 +501,7 @@ class NodeHealthMonitor
         }
         
         try {
-            $multiCurl = new \Core\Network\MultiCurl();
+            $multiCurl = new \Blockchain\Core\Network\MultiCurl();
             $requests = [];
             
             foreach ($this->knownNodes as $node) {

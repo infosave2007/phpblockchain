@@ -40,6 +40,9 @@
         "symfony/var-dumper": "^6.0"
     },
     "autoload": {
+        "files": [
+            "compat_functions.php"
+        ],
         "psr-4": {
             "Blockchain\\": ".",
             "Blockchain\\Core\\": "core/",

@@ -7,16 +7,17 @@
 require_once __DIR__ . '/vendor/autoload.php';
 require_once __DIR__ . '/config/config.php';
 
-use Core\Application;
-use Core\Recovery\BlockchainRecoveryManager;
-use Core\Storage\BlockchainBinaryStorage;
-use Core\Network\NodeHealthMonitor;
-use Core\Network\HealthCheckMiddleware;
+use Blockchain\Core\Application;
+use Blockchain\Core\Recovery\BlockchainRecoveryManager;
+use Blockchain\Core\Storage\BlockchainBinaryStorage;
+use Blockchain\Core\Storage\SelectiveBlockchainSyncManager;
+use Blockchain\Core\Network\NodeHealthMonitor;
+use Blockchain\Core\Network\HealthCheckMiddleware;
 
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
-ini_set('log_errors', 1);
-ini_set('error_log', __DIR__ . '/logs/app_errors.log');
+// error_reporting(E_ALL);
+// ini_set('display_errors', 1);
+// ini_set('log_errors', 1);
+// ini_set('error_log', __DIR__ . '/logs/app_errors.log');
 
 /**
  * Initialize application with health monitoring
@@ -26,17 +27,30 @@ function initializeApplication(): array
     try {
         // Create basic objects
         $config = include __DIR__ . '/config/config.php';
-        $binaryStorage = new BlockchainBinaryStorage();
+        
+        // Define storage directory for blockchain binary data
+        $storageDir = __DIR__ . '/storage';
+        if (!is_dir($storageDir)) {
+            mkdir($storageDir, 0755, true);
+        }
+        
+        $binaryStorage = new BlockchainBinaryStorage($storageDir, $config);
         
         // Database connection using DatabaseManager
         require_once __DIR__ . '/core/Database/DatabaseManager.php';
         $database = \Blockchain\Core\Database\DatabaseManager::getConnection();
         
-        // Initialize health monitor
-        $healthMonitor = new NodeHealthMonitor($binaryStorage, $database, $config);
+        // Initialize sync manager first
+        $syncManager = new SelectiveBlockchainSyncManager($database, $binaryStorage, $config);
+        
+        // Initialize health monitor with sync manager
+        $healthMonitor = new NodeHealthMonitor($binaryStorage, $database, $config, $syncManager);
+        
+        // Generate node ID from config or create one
+        $nodeId = $config['node_id'] ?? 'node_' . substr(hash('sha256', __DIR__ . time()), 0, 8);
         
         // Initialize recovery manager
-        $recoveryManager = new BlockchainRecoveryManager($binaryStorage);
+        $recoveryManager = new BlockchainRecoveryManager($database, $binaryStorage, $syncManager, $nodeId, $config);
         
         // Initialize application
         $app = new Application($config);

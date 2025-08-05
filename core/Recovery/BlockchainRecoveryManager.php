@@ -34,8 +34,11 @@ class BlockchainRecoveryManager
         $this->syncManager = $syncManager;
         $this->nodeId = $nodeId;
         $this->config = $config;
-        $this->backupDir = $config['storage_path'] . '/backups';
-        $this->recoveryLogFile = $config['storage_path'] . '/recovery.log';
+        
+        // Use storage_path from config or default to current directory
+        $storagePath = $config['storage_path'] ?? __DIR__ . '/../../storage';
+        $this->backupDir = $storagePath . '/backups';
+        $this->recoveryLogFile = $storagePath . '/recovery.log';
         
         $this->ensureDirectories();
     }
@@ -632,7 +635,13 @@ class BlockchainRecoveryManager
     private function ensureDirectories(): void
     {
         if (!is_dir($this->backupDir)) {
-            mkdir($this->backupDir, 0755, true);
+            try {
+                if (!mkdir($this->backupDir, 0755, true)) {
+                    error_log("Warning: Could not create backup directory: {$this->backupDir}");
+                }
+            } catch (Exception $e) {
+                error_log("Warning: Failed to create backup directory: {$this->backupDir} - " . $e->getMessage());
+            }
         }
     }
     
