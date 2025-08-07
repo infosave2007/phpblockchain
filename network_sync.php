@@ -116,7 +116,7 @@ class NetworkSyncManager {
     
     public function syncAll() {
         $this->log("=== Starting Full Blockchain Synchronization ===");
-        $totalSteps = 9; // + quorum check + mempool cleanup
+        $totalSteps = 10; // + wallets sync step
         $currentStep = 0;
         
         try {
@@ -150,17 +150,22 @@ class NetworkSyncManager {
             $this->updateProgress($currentStep, $totalSteps, "Syncing transactions...");
             $transactionsSynced = $this->syncTransactions($bestNode);
 
-            // Step 7: Quorum check of last hashes and penalize suspicious source
+            // Step 7: Sync wallets and balances
+            $currentStep++;
+            $this->updateProgress($currentStep, $totalSteps, "Syncing wallets and balances...");
+            $walletsSynced = $this->syncWallets($bestNode);
+
+            // Step 8: Quorum check of last hashes and penalize suspicious source
             $currentStep++;
             $this->updateProgress($currentStep, $totalSteps, "Validating hashes with peers (quorum check)...");
             $this->quorumCheckAndPenalize($bestNode, 20, 3, 10);
             
-            // Step 8: Mempool cleanup (TTL + confirmed removal)
+            // Step 9: Mempool cleanup (TTL + confirmed removal)
             $currentStep++;
             $this->updateProgress($currentStep, $totalSteps, "Cleaning mempool (TTL and confirmed)...");
             $this->cleanupMempool();
 
-            // Step 9: Sync additional data (smart contracts, staking)
+            // Step 10: Sync additional data (smart contracts, staking)
             $currentStep++;
             $this->updateProgress($currentStep, $totalSteps, "Syncing smart contracts and staking...");
             $this->syncAdditionalData($bestNode);
@@ -172,6 +177,7 @@ class NetworkSyncManager {
                 'node' => $bestNode,
                 'blocks_synced' => $blocksSynced,
                 'transactions_synced' => $transactionsSynced,
+                'wallets_synced' => $walletsSynced,
                 'completion_time' => date('Y-m-d H:i:s')
             ];
             
@@ -253,15 +259,20 @@ class NetworkSyncManager {
             throw new Exception('No external network nodes available for synchronization. Cannot sync with self.');
         }
 
-        $strategy = $this->config['node_selection_strategy'] ?? 'fastest_response';
+        $strategy = $this->config['node_selection_strategy'] ?? 'longest_chain';
         $this->log("Testing " . count($nodeUrls) . " network nodes with strategy: $strategy");
 
         $nodeResults = [];
         foreach ($nodeUrls as $node) {
             $result = $this->testNode($node);
             $nodeResults[] = array_merge(['url' => $node], $result);
-            $this->log("Node $node: " . ($result['accessible'] ? 'OK' : 'FAIL') .
-                      ($result['accessible'] ? " ({$result['response_time']}ms)" : " - {$result['error']}"));
+            
+            if ($result['accessible']) {
+                $height = $result['block_height'] ?? 0;
+                $this->log("Node $node: OK (height: $height, {$result['response_time']}ms)");
+            } else {
+                $this->log("Node $node: FAIL - {$result['error']}");
+            }
         }
 
         $accessibleNodes = array_filter($nodeResults, fn($n) => $n['accessible']);
@@ -269,20 +280,33 @@ class NetworkSyncManager {
             throw new Exception("No accessible external nodes found for synchronization");
         }
 
-        if ($strategy === 'fastest_response') {
-            usort($accessibleNodes, fn($a, $b) => $a['response_time'] <=> $b['response_time']);
+        // Always prioritize longest chain to prevent forks
+        if ($strategy === 'longest_chain' || $strategy === 'fastest_response') {
+            // Sort by block height first (descending), then by response time (ascending)
+            usort($accessibleNodes, function($a, $b) {
+                $heightA = $a['block_height'] ?? 0;
+                $heightB = $b['block_height'] ?? 0;
+                
+                if ($heightA !== $heightB) {
+                    return $heightB <=> $heightA; // Higher height wins
+                }
+                
+                // If heights are equal, use faster response
+                return $a['response_time'] <=> $b['response_time'];
+            });
         }
 
-        $bestNode = $accessibleNodes[0]['url'];
-        $this->log("Selected best node: $bestNode");
-        return $bestNode;
+        $bestNode = $accessibleNodes[0];
+        $height = $bestNode['block_height'] ?? 0;
+        $this->log("Selected best node: {$bestNode['url']} (height: $height, strategy: $strategy)");
+        return $bestNode['url'];
     }
     
     private function testNode($nodeUrl) {
-        // Пробуем сначала get_network_config, если нет — get_network_stats
+        // Test with network stats endpoint which includes block height
         $endpoints = [
-            '/api/explorer/index.php?action=get_network_config',
             '/api/explorer/index.php?action=get_network_stats',
+            '/api/explorer/index.php?action=get_network_config',
         ];
         $errors = [];
         $best = null;
@@ -298,7 +322,7 @@ class NetworkSyncManager {
                 ]
             ]);
             $result = @file_get_contents($testUrl, false, $context);
-            $responseTime = (microtime(true) - $startTime) * 1000;
+            $responseTime = round((microtime(true) - $startTime) * 1000, 2);
 
             if ($result === false) {
                 $errors[] = "Connection failed: $testUrl";
@@ -311,18 +335,38 @@ class NetworkSyncManager {
                 continue;
             }
 
-            // Принимаем оба формата: {success:true,data:{...}} или просто конфиг
-            $ok = (isset($data['success']) && $data['success'] === true) || isset($data['network_name']) || isset($data['data']);
+            // Check for different response formats
+            $blockHeight = null;
+            
+            if (isset($data['current_height'])) {
+                // Direct network stats format
+                $blockHeight = (int)$data['current_height'];
+                $ok = true;
+            } elseif (isset($data['success']) && $data['success'] === true) {
+                // API wrapper format
+                if (isset($data['data']['current_height'])) {
+                    $blockHeight = (int)$data['data']['current_height'];
+                } elseif (isset($data['data']['block_height'])) {
+                    $blockHeight = (int)$data['data']['block_height'];
+                }
+                $ok = true;
+            } elseif (isset($data['network_name']) || isset($data['data'])) {
+                // Legacy config format - try to get height separately
+                $ok = true;
+                $blockHeight = 0; // Default if we can't get height
+            } else {
+                $errors[] = "Unexpected response format: $testUrl";
+                continue;
+            }
+            
             if ($ok) {
                 $best = [
                     'accessible' => true,
                     'response_time' => $responseTime,
-                    'block_height' => $data['data']['block_height'] ?? null,
+                    'block_height' => $blockHeight,
                     'error' => null
                 ];
                 break;
-            } else {
-                $errors[] = "Unexpected response format: $testUrl";
             }
         }
 
@@ -333,6 +377,7 @@ class NetworkSyncManager {
         return [
             'accessible' => false,
             'response_time' => null,
+            'block_height' => 0,
             'error' => implode('; ', $errors) ?: 'Connection failed'
         ];
     }
@@ -354,7 +399,7 @@ class NetworkSyncManager {
         
         if (!$exists) {
             $stmt = $this->pdo->prepare("
-                INSERT INTO blocks (height, hash, previous_hash, merkle_root, timestamp, nonce, difficulty, creator, signature)
+                INSERT INTO blocks (height, hash, parent_hash, merkle_root, timestamp, validator, signature, transactions_count, metadata)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
             $stmt->execute([
@@ -363,10 +408,10 @@ class NetworkSyncManager {
                 '',
                 $block['merkle_root'] ?? '',
                 $block['timestamp'],
-                $block['nonce'] ?? 0,
-                $block['difficulty'] ?? 1,
-                $block['creator'] ?? '',
-                $block['signature'] ?? ''
+                $block['validator'] ?? '',
+                $block['signature'] ?? '',
+                $block['transactions_count'] ?? 0,
+                $block['metadata'] ?? '{}'
             ]);
             $this->log("Genesis block synced: " . $block['hash']);
         } else {
@@ -567,119 +612,379 @@ class NetworkSyncManager {
         
         $this->log("Local blockchain height: $localHeight");
         
-        $totalSynced = 0;
-        $page = 0;
-        $limit = 100;
+        // Get remote height to check for fork resolution
+        $remoteStatsUrl = rtrim($node, '/') . '/api/explorer/index.php?action=get_network_stats';
+        $remoteStats = $this->makeApiCall($remoteStatsUrl);
+        $remoteHeight = $remoteStats['current_height'] ?? 0;
         
-        do {
-            $url = rtrim($node, '/') . "/api/explorer/index.php?action=get_blocks&page=$page&limit=$limit";
-            $response = $this->makeApiCall($url);
+        $this->log("Remote blockchain height: $remoteHeight");
+        
+        // Check for potential fork - if we have blocks that differ from remote
+        $forkDetected = false;
+        if ($localHeight >= 0 && $remoteHeight > $localHeight) {
+            // Check if our latest blocks match the remote ones
+            for ($h = max(0, $localHeight - 5); $h <= $localHeight; $h++) {
+                $localBlock = $this->getLocalBlock($h);
+                if ($localBlock) {
+                    $remoteBlockUrl = rtrim($node, '/') . "/api/explorer/index.php?action=get_block&block_id=$h";
+                    $remoteBlockResponse = $this->makeApiCall($remoteBlockUrl);
+                    
+                    if ($remoteBlockResponse && isset($remoteBlockResponse['success']) && $remoteBlockResponse['success']) {
+                        $remoteBlock = $remoteBlockResponse['data'];
+                        if ($localBlock['hash'] !== $remoteBlock['hash']) {
+                            $this->log("Fork detected at height $h: local={$localBlock['hash']}, remote={$remoteBlock['hash']}");
+                            $forkDetected = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // If fork detected and remote chain is longer, replace our chain from fork point
+        if ($forkDetected && $remoteHeight > $localHeight) {
+            $this->log("Fork resolution: Remote chain is longer, replacing local blocks from fork point");
             
-            if (!$response || !isset($response['success']) || !$response['success']) {
-                $this->log("No more blocks to sync (page $page)");
-                break;
+            // Find the common ancestor
+            $commonHeight = -1;
+            for ($h = 0; $h <= min($localHeight, $remoteHeight); $h++) {
+                $localBlock = $this->getLocalBlock($h);
+                if ($localBlock) {
+                    $remoteBlockUrl = rtrim($node, '/') . "/api/explorer/index.php?action=get_block&block_id=$h";
+                    $remoteBlockResponse = $this->makeApiCall($remoteBlockUrl);
+                    
+                    if ($remoteBlockResponse && isset($remoteBlockResponse['success']) && $remoteBlockResponse['success']) {
+                        $remoteBlock = $remoteBlockResponse['data'];
+                        if ($localBlock['hash'] === $remoteBlock['hash']) {
+                            $commonHeight = $h;
+                        } else {
+                            break;
+                        }
+                    }
+                }
             }
             
-            $blocks = $response['data']['blocks'] ?? [];
-            if (empty($blocks)) {
-                $this->log("No blocks found on page $page");
-                break;
+            // Remove blocks after common ancestor
+            if ($commonHeight >= 0) {
+                $this->log("Common ancestor found at height $commonHeight, removing blocks above this height");
+                $stmt = $this->pdo->prepare("DELETE FROM blocks WHERE height > ?");
+                $stmt->execute([$commonHeight]);
+                $removedBlocks = $stmt->rowCount();
+                $this->log("Removed $removedBlocks blocks from local chain");
+                
+                // Also remove related transactions
+                $stmt = $this->pdo->prepare("DELETE FROM transactions WHERE block_hash NOT IN (SELECT hash FROM blocks)");
+                $stmt->execute();
+                $removedTxs = $stmt->rowCount();
+                $this->log("Removed $removedTxs orphaned transactions");
+                
+                // Update local height
+                $localHeight = $commonHeight;
             }
+        }
+        
+        $totalSynced = 0;
+        
+        // Try to sync remaining blocks individually since get_blocks API doesn't work
+        for ($h = $localHeight + 1; $h <= $remoteHeight; $h++) {
+            $blockUrl = rtrim($node, '/') . "/api/explorer/index.php?action=get_block&block_id=$h";
+            $blockResponse = $this->makeApiCall($blockUrl);
             
-            $newBlocks = 0;
-            foreach ($blocks as $block) {
-                if ($block['height'] <= $localHeight) continue;
+            if ($blockResponse && isset($blockResponse['success']) && $blockResponse['success']) {
+                $block = $blockResponse['data'];
                 
                 $stmt = $this->pdo->prepare("
-                    INSERT IGNORE INTO blocks (height, hash, previous_hash, merkle_root, timestamp, nonce, difficulty, creator, signature)
+                    INSERT IGNORE INTO blocks (height, hash, parent_hash, merkle_root, timestamp, validator, signature, transactions_count, metadata)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ");
                 $result = $stmt->execute([
                     $block['height'],
                     $block['hash'],
-                    $block['previous_hash'] ?? '',
+                    $block['parent_hash'] ?? '',
                     $block['merkle_root'] ?? '',
                     $block['timestamp'],
-                    $block['nonce'] ?? 0,
-                    $block['difficulty'] ?? 1,
-                    $block['creator'] ?? '',
-                    $block['signature'] ?? ''
+                    $block['validator'] ?? '',
+                    $block['signature'] ?? '',
+                    $block['transactions_count'] ?? 0,
+                    $block['metadata'] ?? '{}'
                 ]);
                 
                 if ($result && $stmt->rowCount() > 0) {
-                    $newBlocks++;
+                    $totalSynced++;
+                    $this->log("Synced block $h: {$block['hash']}");
+                    
+                    if ($this->isWebMode) {
+                        echo json_encode(['status' => 'progress', 'message' => "Synced block $h"]) . "\n";
+                        flush();
+                    }
+                } else {
+                    $this->log("Block $h already exists or insert failed");
                 }
+            } else {
+                $this->log("Failed to fetch block $h from remote node");
+                break;
             }
+        }
+        
+        // Fallback: Try paginated API if individual block fetching didn't work completely
+        if ($totalSynced < ($remoteHeight - $localHeight)) {
+            $this->log("Trying paginated block sync as fallback");
+            $page = 0;
+            $limit = 100;
             
-            $totalSynced += $newBlocks;
-            $this->log("Page $page: synced $newBlocks new blocks");
-            
-            if ($this->isWebMode) {
-                echo json_encode(['status' => 'progress', 'message' => "Synced $totalSynced blocks"]) . "\n";
-                flush();
-            }
-            
-            $page++;
-            
-        } while (count($blocks) == $limit);
+            do {
+                $url = rtrim($node, '/') . "/api/explorer/index.php?action=get_blocks&page=$page&limit=$limit";
+                $response = $this->makeApiCall($url);
+                
+                if (!$response || !isset($response['success']) || !$response['success']) {
+                    $this->log("No more blocks to sync (page $page)");
+                    break;
+                }
+                
+                $blocks = $response['data']['blocks'] ?? [];
+                if (empty($blocks)) {
+                    $this->log("No blocks found on page $page");
+                    break;
+                }
+                
+                $newBlocks = 0;
+                foreach ($blocks as $block) {
+                    if ($block['height'] <= $localHeight) continue;
+                    
+                    $stmt = $this->pdo->prepare("
+                        INSERT IGNORE INTO blocks (height, hash, parent_hash, merkle_root, timestamp, validator, signature, transactions_count, metadata)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ");
+                    $result = $stmt->execute([
+                        $block['height'],
+                        $block['hash'],
+                        $block['parent_hash'] ?? '',
+                        $block['merkle_root'] ?? '',
+                        $block['timestamp'],
+                        $block['validator'] ?? '',
+                        $block['signature'] ?? '',
+                        $block['transactions_count'] ?? 0,
+                        $block['metadata'] ?? '{}'
+                    ]);
+                    
+                    if ($result && $stmt->rowCount() > 0) {
+                        $newBlocks++;
+                    }
+                }
+                
+                $totalSynced += $newBlocks;
+                $this->log("Page $page: synced $newBlocks new blocks");
+                
+                if ($this->isWebMode) {
+                    echo json_encode(['status' => 'progress', 'message' => "Synced $totalSynced blocks"]) . "\n";
+                    flush();
+                }
+                
+                $page++;
+                
+            } while (count($blocks) == $limit);
+        }
         
         $this->log("Total blocks synced: $totalSynced");
         return $totalSynced;
     }
     
+    private function getLocalBlock($height) {
+        $stmt = $this->pdo->prepare("SELECT height, hash, parent_hash FROM blocks WHERE height = ? LIMIT 1");
+        $stmt->execute([$height]);
+        return $stmt->fetch(PDO::FETCH_ASSOC);
+    }
+    
     private function syncTransactions($node) {
+        $this->log("Starting transaction sync from blocks...");
+        $totalSynced = 0;
+        
+        // Get all blocks to extract transactions from
+        $stmt = $this->pdo->prepare("SELECT height, hash FROM blocks ORDER BY height");
+        $stmt->execute();
+        $blocks = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        foreach ($blocks as $block) {
+            $blockHeight = $block['height'];
+            $blockHash = $block['hash'];
+            
+            // Get block details with transactions from remote node
+            $url = rtrim($node, '/') . "/api/explorer/index.php?action=get_block&block_id=$blockHeight";
+            $response = $this->makeApiCall($url);
+            
+            if ($response && isset($response['success']) && $response['success']) {
+                $blockData = $response['data'];
+                $transactions = $blockData['transactions'] ?? [];
+                
+                $newTransactions = 0;
+                foreach ($transactions as $tx) {
+                    // Extract transaction data from block
+                    $txHash = $tx['hash'] ?? $tx['transaction_hash'] ?? '';
+                    $fromAddr = $tx['from'] ?? $tx['from_address'] ?? '';
+                    $toAddr = $tx['to'] ?? $tx['to_address'] ?? '';
+                    $amount = $tx['amount'] ?? $tx['value'] ?? 0;
+                    $fee = $tx['fee'] ?? $tx['gas_used'] ?? 0;
+                    $timestamp = $blockData['timestamp'] ?? time();
+                    $nonce = $tx['nonce'] ?? 0;
+                    
+                    if (!empty($txHash)) {
+                        $stmt = $this->pdo->prepare("
+                            INSERT IGNORE INTO transactions (hash, from_address, to_address, amount, fee, timestamp, block_hash, status, nonce, gas_limit)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ");
+                        $result = $stmt->execute([
+                            $txHash,
+                            $fromAddr,
+                            $toAddr,
+                            $amount,
+                            $fee,
+                            $timestamp,
+                            $blockHash,
+                            'confirmed',
+                            $nonce,
+                            21000
+                        ]);
+                        
+                        if ($result && $stmt->rowCount() > 0) {
+                            $newTransactions++;
+                        }
+                    }
+                }
+                
+                $totalSynced += $newTransactions;
+                if ($newTransactions > 0) {
+                    $this->log("Block $blockHeight: synced $newTransactions new transactions");
+                }
+                
+                if ($this->isWebMode) {
+                    echo json_encode(['status' => 'progress', 'message' => "Block $blockHeight: synced $newTransactions transactions"]) . "\n";
+                    flush();
+                }
+            }
+        }
+        
+        // Fallback: Try paginated API if available
+        if ($totalSynced == 0) {
+            $this->log("No transactions found in blocks, trying paginated API...");
+            $page = 0;
+            $limit = 100;
+            
+            do {
+                $url = rtrim($node, '/') . "/api/explorer/index.php?action=get_transactions&page=$page&limit=$limit";
+                $response = $this->makeApiCall($url);
+                
+                if (!$response || !isset($response['success']) || !$response['success']) {
+                    break;
+                }
+                
+                $transactions = $response['data']['transactions'] ?? [];
+                if (empty($transactions)) break;
+                
+                $newTransactions = 0;
+                foreach ($transactions as $tx) {
+                    $stmt = $this->pdo->prepare("
+                        INSERT IGNORE INTO transactions (hash, from_address, to_address, amount, fee, timestamp, block_hash, status, nonce, gas_limit)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ");
+                    $result = $stmt->execute([
+                        $tx['hash'],
+                        $tx['from_address'] ?? '',
+                        $tx['to_address'] ?? '',
+                        $tx['amount'] ?? 0,
+                        $tx['fee'] ?? 0,
+                        $tx['timestamp'],
+                        $tx['block_hash'] ?? '',
+                        $tx['status'] ?? 'confirmed',
+                        $tx['nonce'] ?? 0,
+                        $tx['gas_limit'] ?? 21000
+                    ]);
+                    
+                    if ($result && $stmt->rowCount() > 0) {
+                        $newTransactions++;
+                    }
+                }
+                
+                $totalSynced += $newTransactions;
+                $this->log("Page $page: synced $newTransactions new transactions");
+                
+                if ($this->isWebMode) {
+                    echo json_encode(['status' => 'progress', 'message' => "Synced $totalSynced transactions"]) . "\n";
+                    flush();
+                }
+                
+                $page++;
+                
+            } while (count($transactions) == $limit);
+        }
+        
+        $this->log("Total transactions synced: $totalSynced");
+        return $totalSynced;
+    }
+    
+    private function syncWallets($node) {
         $totalSynced = 0;
         $page = 0;
         $limit = 100;
         
         do {
-            $url = rtrim($node, '/') . "/api/explorer/index.php?action=get_transactions&page=$page&limit=$limit";
+            $url = rtrim($node, '/') . "/api/explorer/index.php?action=get_wallets&page=$page&limit=$limit";
             $response = $this->makeApiCall($url);
             
             if (!$response || !isset($response['success']) || !$response['success']) {
+                $this->log("No wallet data available from node (page $page)");
                 break;
             }
             
-            $transactions = $response['data']['transactions'] ?? [];
-            if (empty($transactions)) break;
+            $wallets = $response['data']['wallets'] ?? [];
+            if (empty($wallets)) {
+                $this->log("No wallets found on page $page");
+                break;
+            }
             
-            $newTransactions = 0;
-            foreach ($transactions as $tx) {
-                $stmt = $this->pdo->prepare("
-                    INSERT IGNORE INTO transactions (hash, from_address, to_address, amount, fee, timestamp, block_hash, status, nonce, gas_limit)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ");
-                $result = $stmt->execute([
-                    $tx['hash'],
-                    $tx['from_address'] ?? '',
-                    $tx['to_address'] ?? '',
-                    $tx['amount'] ?? 0,
-                    $tx['fee'] ?? 0,
-                    $tx['timestamp'],
-                    $tx['block_hash'] ?? '',
-                    $tx['status'] ?? 'confirmed',
-                    $tx['nonce'] ?? 0,
-                    $tx['gas_limit'] ?? 21000
-                ]);
+            $newWallets = 0;
+            foreach ($wallets as $wallet) {
+                // Only sync if wallet has some activity (balance > 0 or transactions)
+                $balance = $wallet['balance'] ?? 0;
+                $stakedBalance = $wallet['staked_balance'] ?? 0;
+                $nonce = $wallet['nonce'] ?? 0;
                 
-                if ($result && $stmt->rowCount() > 0) {
-                    $newTransactions++;
+                if ($balance > 0 || $stakedBalance > 0 || $nonce > 0) {
+                    $stmt = $this->pdo->prepare("
+                        INSERT INTO wallets (address, public_key, balance, staked_balance, nonce)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON DUPLICATE KEY UPDATE
+                            balance = VALUES(balance),
+                            staked_balance = VALUES(staked_balance),
+                            nonce = VALUES(nonce),
+                            updated_at = CURRENT_TIMESTAMP
+                    ");
+                    $result = $stmt->execute([
+                        $wallet['address'],
+                        $wallet['public_key'] ?? '',
+                        $balance,
+                        $stakedBalance,
+                        $nonce
+                    ]);
+                    
+                    if ($result) {
+                        $newWallets++;
+                    }
                 }
             }
             
-            $totalSynced += $newTransactions;
-            $this->log("Page $page: synced $newTransactions new transactions");
+            $totalSynced += $newWallets;
+            $this->log("Page $page: synced $newWallets active wallets");
             
             if ($this->isWebMode) {
-                echo json_encode(['status' => 'progress', 'message' => "Synced $totalSynced transactions"]) . "\n";
+                echo json_encode(['status' => 'progress', 'message' => "Synced $totalSynced wallets"]) . "\n";
                 flush();
             }
             
             $page++;
             
-        } while (count($transactions) == $limit);
+        } while (count($wallets) == $limit);
         
-        $this->log("Total transactions synced: $totalSynced");
+        $this->log("Total wallets synced: $totalSynced");
         return $totalSynced;
     }
     
@@ -1025,31 +1330,42 @@ class NetworkSyncManager {
             $this->log("Note: Source node validation in micro networks provides limited security but better than none");
             $urls = $allActiveNodes;
         } else {
-            // In larger networks, apply normal exclusion rules
+            // In larger networks, apply exclusion rules based on network size
             
-            // Add the source node URL to exclusion list
-            if ($excludeUrl) {
-                $excludeUrls[] = rtrim($excludeUrl, '/');
-                $this->log("Excluding source node from peer list: $excludeUrl");
-            }
-            
-            // Get current node configuration and add to exclusion list if network is large enough
+            // Get current node configuration
             $currentNodeDomain = null;
             try {
                 $currentNodeDomain = $this->getCurrentNodeDomain();
-                if ($currentNodeDomain) {
-                    if ($totalNodes > 3) {
-                        // Only exclude current node if we have more than 3 nodes total
-                        $excludeUrls[] = rtrim($currentNodeDomain, '/');
-                        $this->log("Excluding current node from peer list: $currentNodeDomain");
-                    } else {
-                        $this->log("Small network detected ($totalNodes nodes) - keeping current node for validation: $currentNodeDomain");
-                    }
-                } else {
-                    $this->log("Could not determine current node domain - proceeding without self-exclusion");
-                }
             } catch (\Throwable $e) {
                 $this->log("Warning: Could not determine current node domain: " . $e->getMessage());
+            }
+            
+            if ($totalNodes == 3) {
+                // In 3-node networks, exclude only the source node to avoid self-sync
+                // but keep current node for validation to have at least 2 peers
+                $this->log("Small network detected ($totalNodes nodes) - excluding only source node for optimal validation");
+                
+                if ($excludeUrl) {
+                    $excludeUrls[] = rtrim($excludeUrl, '/');
+                    $this->log("Excluding source node from peer list: $excludeUrl");
+                }
+                
+                if ($currentNodeDomain) {
+                    $this->log("Keeping current node for validation: $currentNodeDomain");
+                }
+            } else {
+                // In networks with 4+ nodes, exclude both source and current node
+                $this->log("Medium/large network detected ($totalNodes nodes) - excluding source and current nodes");
+                
+                if ($excludeUrl) {
+                    $excludeUrls[] = rtrim($excludeUrl, '/');
+                    $this->log("Excluding source node from peer list: $excludeUrl");
+                }
+                
+                if ($currentNodeDomain) {
+                    $excludeUrls[] = rtrim($currentNodeDomain, '/');
+                    $this->log("Excluding current node from peer list: $currentNodeDomain");
+                }
             }
             
             // Filter nodes based on exclusion list
@@ -1148,6 +1464,62 @@ class NetworkSyncManager {
         $port2 = $parsed2['port'] ?? (($parsed2['scheme'] ?? 'http') === 'https' ? 443 : 80);
         
         return $port1 === $port2;
+    }
+
+    // Public method to sync blocks only from a specific source
+    public function syncBlocksOnly($sourceNode = null) {
+        $this->log("=== Starting Blocks-Only Synchronization ===");
+        
+        try {
+            if (!$sourceNode) {
+                $sourceNode = $this->selectBestNode();
+            }
+            
+            $this->log("Syncing blocks from: $sourceNode");
+            $blocksSynced = $this->syncBlocks($sourceNode);
+            
+            $result = [
+                'status' => 'success',
+                'source_node' => $sourceNode,
+                'blocks_synced' => $blocksSynced,
+                'completion_time' => date('Y-m-d H:i:s')
+            ];
+            
+            $this->log("Blocks sync completed: " . json_encode($result));
+            return $result;
+            
+        } catch (Exception $e) {
+            $this->log("Blocks sync failed: " . $e->getMessage());
+            throw $e;
+        }
+    }
+    
+    // Public method to sync transactions only from a specific source
+    public function syncTransactionsOnly($sourceNode = null) {
+        $this->log("=== Starting Transactions-Only Synchronization ===");
+        
+        try {
+            if (!$sourceNode) {
+                $sourceNode = $this->selectBestNode();
+            }
+            
+            $this->log("Syncing transactions from: $sourceNode");
+            $transactionsSynced = $this->syncTransactions($sourceNode);
+            
+            $result = [
+                'status' => 'success',
+                'source_node' => $sourceNode,
+                'transactions_synced' => $transactionsSynced,
+                'completion_time' => date('Y-m-d H:i:s')
+            ];
+            
+            $this->log("Transactions sync completed: " . json_encode($result));
+            return $result;
+            
+        } catch (Exception $e) {
+            $this->log("Transactions sync failed: " . $e->getMessage());
+            throw $e;
+        }
     }
 
     // Periodic mempool maintenance - can be called independently
@@ -1293,9 +1665,226 @@ class NetworkSyncManager {
         }
     }
     
+    // Sync transactions from source node with exact data replication
+    public function syncTransactionsFromSource($sourceNode = null) {
+        $this->log("=== Starting Exact Transaction Synchronization ===");
+        
+        try {
+            if (!$sourceNode) {
+                $sourceNode = $this->selectBestNode();
+            }
+            
+            // First, clear existing transactions to ensure clean sync
+            $stmt = $this->pdo->prepare("DELETE FROM transactions");
+            $stmt->execute();
+            $cleared = $stmt->rowCount();
+            $this->log("Cleared $cleared existing transactions for clean sync");
+            
+            // Get source transactions via direct database sync call
+            $syncUrl = rtrim($sourceNode, '/') . '/sync_web.php?action=export_transactions';
+            $response = $this->makeApiCall($syncUrl);
+            
+            if ($response && isset($response['status']) && $response['status'] === 'success') {
+                $transactions = $response['transactions'] ?? [];
+                $totalSynced = 0;
+                
+                foreach ($transactions as $tx) {
+                    $stmt = $this->pdo->prepare("
+                        INSERT INTO transactions (hash, from_address, to_address, amount, fee, timestamp, block_hash, status, nonce, gas_limit)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ");
+                    $result = $stmt->execute([
+                        $tx['hash'],
+                        $tx['from_address'],
+                        $tx['to_address'],
+                        $tx['amount'],
+                        $tx['fee'],
+                        $tx['timestamp'],
+                        $tx['block_hash'],
+                        $tx['status'],
+                        $tx['nonce'],
+                        $tx['gas_limit']
+                    ]);
+                    
+                    if ($result) {
+                        $totalSynced++;
+                    }
+                }
+                
+                $this->log("Synced $totalSynced exact transactions from source");
+                
+                // Update block transaction counts
+                $this->recalculateStats();
+                
+                $result = [
+                    'status' => 'success',
+                    'source_node' => $sourceNode,
+                    'transactions_synced' => $totalSynced,
+                    'completion_time' => date('Y-m-d H:i:s')
+                ];
+                
+                return $result;
+            } else {
+                throw new Exception("Failed to export transactions from source node");
+            }
+            
+        } catch (Exception $e) {
+            $this->log("Exact transaction sync failed: " . $e->getMessage());
+            throw $e;
+        }
+    }
+    
+    // Export all transactions for replication
+    public function exportTransactions() {
+        try {
+            $stmt = $this->pdo->prepare("SELECT * FROM transactions ORDER BY timestamp, hash");
+            $stmt->execute();
+            $transactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            return [
+                'status' => 'success',
+                'transactions' => $transactions,
+                'count' => count($transactions),
+                'export_time' => date('Y-m-d H:i:s')
+            ];
+            
+        } catch (Exception $e) {
+            return [
+                'status' => 'error',
+                'message' => $e->getMessage()
+            ];
+        }
+    }
+
+    // Generate test transactions based on block transaction counts
+    public function generateTestTransactions() {
+        $this->log("=== Generating Test Transactions ===");
+        
+        try {
+            $stmt = $this->pdo->prepare("SELECT height, hash, transactions_count, timestamp FROM blocks ORDER BY height");
+            $stmt->execute();
+            $blocks = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            $totalGenerated = 0;
+            
+            foreach ($blocks as $block) {
+                $txCount = (int)$block['transactions_count'];
+                $blockHash = $block['hash'];
+                $height = $block['height'];
+                $timestamp = $block['timestamp'];
+                
+                for ($i = 0; $i < $txCount; $i++) {
+                    $txHash = hash('sha256', $blockHash . $i . time());
+                    $fromAddr = '0x' . substr(hash('sha256', 'from' . $height . $i), 0, 40);
+                    $toAddr = '0x' . substr(hash('sha256', 'to' . $height . $i), 0, 40);
+                    $amount = rand(1, 1000);
+                    $fee = rand(1, 10);
+                    
+                    $stmt = $this->pdo->prepare("
+                        INSERT IGNORE INTO transactions (hash, from_address, to_address, amount, fee, timestamp, block_hash, status, nonce, gas_limit)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ");
+                    $result = $stmt->execute([
+                        $txHash,
+                        $fromAddr,
+                        $toAddr,
+                        $amount,
+                        $fee,
+                        $timestamp,
+                        $blockHash,
+                        'confirmed',
+                        $i,
+                        21000
+                    ]);
+                    
+                    if ($result && $stmt->rowCount() > 0) {
+                        $totalGenerated++;
+                    }
+                }
+                
+                if ($txCount > 0) {
+                    $this->log("Generated $txCount test transactions for block $height");
+                }
+            }
+            
+            $result = [
+                'status' => 'success',
+                'transactions_generated' => $totalGenerated,
+                'generation_time' => date('Y-m-d H:i:s')
+            ];
+            
+            $this->log("Test transactions generation completed: " . json_encode($result));
+            return $result;
+            
+        } catch (Exception $e) {
+            $this->log("Test transactions generation failed: " . $e->getMessage());
+            throw $e;
+        }
+    }
+
+    // Recalculate transaction counts and fix database inconsistencies
+    public function recalculateStats() {
+        $this->log("=== Starting Statistics Recalculation ===");
+        
+        try {
+            // 1. Update transaction counts in blocks table
+            $stmt = $this->pdo->prepare("
+                UPDATE blocks b 
+                SET transactions_count = (
+                    SELECT COUNT(*) 
+                    FROM transactions t 
+                    WHERE t.block_hash = b.hash
+                )
+            ");
+            $stmt->execute();
+            $blocksUpdated = $stmt->rowCount();
+            $this->log("Updated transaction counts for $blocksUpdated blocks");
+            
+            // 2. Clean up orphaned transactions (no matching block)
+            $stmt = $this->pdo->prepare("
+                DELETE FROM transactions 
+                WHERE block_hash NOT IN (SELECT hash FROM blocks)
+                AND block_hash != ''
+            ");
+            $stmt->execute();
+            $orphanedTxs = $stmt->rowCount();
+            $this->log("Removed $orphanedTxs orphaned transactions");
+            
+            // 3. Update wallet balances and nonces from transaction history
+            $stmt = $this->pdo->prepare("
+                UPDATE wallets w SET 
+                nonce = (
+                    SELECT COALESCE(MAX(t.nonce), 0) + 1
+                    FROM transactions t 
+                    WHERE t.from_address = w.address 
+                    AND t.status = 'confirmed'
+                )
+                WHERE w.address IN (SELECT DISTINCT from_address FROM transactions WHERE status = 'confirmed')
+            ");
+            $stmt->execute();
+            $walletsUpdated = $stmt->rowCount();
+            $this->log("Updated nonces for $walletsUpdated wallets");
+            
+            $result = [
+                'status' => 'success',
+                'blocks_updated' => $blocksUpdated,
+                'orphaned_transactions_removed' => $orphanedTxs,
+                'wallets_updated' => $walletsUpdated,
+                'recalc_time' => date('Y-m-d H:i:s')
+            ];
+            
+            $this->log("Statistics recalculation completed: " . json_encode($result));
+            return $result;
+            
+        } catch (Exception $e) {
+            $this->log("Statistics recalculation failed: " . $e->getMessage());
+            throw $e;
+        }
+    }
+
     public function getStatus() {
         // Get database statistics
-        $tables = ['blocks', 'transactions', 'nodes', 'validators', 'smart_contracts', 'staking'];
+        $tables = ['blocks', 'transactions', 'nodes', 'validators', 'smart_contracts', 'staking', 'wallets'];
         $stats = [];
         
         foreach ($tables as $table) {
