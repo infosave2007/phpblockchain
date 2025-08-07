@@ -160,7 +160,13 @@ class NetworkSyncManager {
             $this->updateProgress($currentStep, $totalSteps, "Validating hashes with peers (quorum check)...");
             $this->quorumCheckAndPenalize($bestNode, 20, 3, 10);
             
-            // Step 9: Mempool cleanup (TTL + confirmed removal)
+            // Step 9: Mempool synchronization from network
+            $currentStep++;
+            $this->updateProgress($currentStep, $totalSteps, "Synchronizing mempool from network...");
+            $mempoolSynced = $this->syncMempoolFromNetwork($bestNode);
+            $this->log("Mempool sync completed: $mempoolSynced transactions synchronized");
+
+            // Step 10: Mempool cleanup (TTL + confirmed removal)
             $currentStep++;
             $this->updateProgress($currentStep, $totalSteps, "Cleaning mempool (TTL and confirmed)...");
             $this->cleanupMempool();
@@ -796,129 +802,316 @@ class NetworkSyncManager {
     }
     
     private function syncTransactions($node) {
-        $this->log("Starting transaction sync from blocks...");
+        $this->log("Starting direct transaction sync from paginated API...");
         $totalSynced = 0;
         
-        // Get all blocks to extract transactions from
-        $stmt = $this->pdo->prepare("SELECT height, hash FROM blocks ORDER BY height");
-        $stmt->execute();
-        $blocks = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        // Use paginated transactions API directly instead of extracting from blocks
+        $page = 0;
+        $limit = 100;
         
-        foreach ($blocks as $block) {
-            $blockHeight = $block['height'];
-            $blockHash = $block['hash'];
-            
-            // Get block details with transactions from remote node
-            $url = rtrim($node, '/') . "/api/explorer/index.php?action=get_block&block_id=$blockHeight";
+        do {
+            $url = rtrim($node, '/') . "/api/explorer/transactions?page=$page&limit=$limit";
             $response = $this->makeApiCall($url);
             
-            if ($response && isset($response['success']) && $response['success']) {
-                $blockData = $response['data'];
-                $transactions = $blockData['transactions'] ?? [];
-                
-                $newTransactions = 0;
-                foreach ($transactions as $tx) {
-                    // Extract transaction data from block
-                    $txHash = $tx['hash'] ?? $tx['transaction_hash'] ?? '';
-                    $fromAddr = $tx['from'] ?? $tx['from_address'] ?? '';
-                    $toAddr = $tx['to'] ?? $tx['to_address'] ?? '';
-                    $amount = $tx['amount'] ?? $tx['value'] ?? 0;
-                    $fee = $tx['fee'] ?? $tx['gas_used'] ?? 0;
-                    $timestamp = $blockData['timestamp'] ?? time();
-                    $nonce = $tx['nonce'] ?? 0;
-                    
-                    if (!empty($txHash)) {
-                        $stmt = $this->pdo->prepare("
-                            INSERT IGNORE INTO transactions (hash, from_address, to_address, amount, fee, timestamp, block_hash, status, nonce, gas_limit)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ");
-                        $result = $stmt->execute([
-                            $txHash,
-                            $fromAddr,
-                            $toAddr,
-                            $amount,
-                            $fee,
-                            $timestamp,
-                            $blockHash,
-                            'confirmed',
-                            $nonce,
-                            21000
-                        ]);
-                        
-                        if ($result && $stmt->rowCount() > 0) {
-                            $newTransactions++;
-                        }
-                    }
-                }
-                
-                $totalSynced += $newTransactions;
-                if ($newTransactions > 0) {
-                    $this->log("Block $blockHeight: synced $newTransactions new transactions");
-                }
-                
-                if ($this->isWebMode) {
-                    echo json_encode(['status' => 'progress', 'message' => "Block $blockHeight: synced $newTransactions transactions"]) . "\n";
-                    flush();
-                }
+            if (!$response || !isset($response['transactions'])) {
+                $this->log("No transaction data available from node (page $page)");
+                break;
             }
-        }
-        
-        // Fallback: Try paginated API if available
-        if ($totalSynced == 0) {
-            $this->log("No transactions found in blocks, trying paginated API...");
-            $page = 0;
-            $limit = 100;
             
-            do {
-                $url = rtrim($node, '/') . "/api/explorer/index.php?action=get_transactions&page=$page&limit=$limit";
-                $response = $this->makeApiCall($url);
+            $transactions = $response['transactions'] ?? [];
+            if (empty($transactions)) break;
+            
+            $newTransactions = 0;
+            foreach ($transactions as $tx) {
+                $txHash = $tx['hash'] ?? '';
+                $fromAddr = $tx['from'] ?? '';
+                $toAddr = $tx['to'] ?? '';
+                $amount = $tx['amount'] ?? 0;
+                $timestamp = $tx['timestamp'] ?? time();
+                $blockHash = $tx['block_hash'] ?? '';
+                $blockHeight = $tx['block_index'] ?? 0;
+                $status = $tx['status'] ?? 'confirmed';
+                $type = $tx['type'] ?? '';
                 
-                if (!$response || !isset($response['success']) || !$response['success']) {
-                    break;
-                }
-                
-                $transactions = $response['data']['transactions'] ?? [];
-                if (empty($transactions)) break;
-                
-                $newTransactions = 0;
-                foreach ($transactions as $tx) {
+                if (!empty($txHash)) {
+                    // Insert transaction with all available data
                     $stmt = $this->pdo->prepare("
-                        INSERT IGNORE INTO transactions (hash, from_address, to_address, amount, fee, timestamp, block_hash, status, nonce, gas_limit)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT IGNORE INTO transactions 
+                        (hash, from_address, to_address, amount, fee, timestamp, block_hash, block_height, status, nonce, gas_limit, gas_used, gas_price, data, signature)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ");
+                    
                     $result = $stmt->execute([
-                        $tx['hash'],
-                        $tx['from_address'] ?? '',
-                        $tx['to_address'] ?? '',
-                        $tx['amount'] ?? 0,
-                        $tx['fee'] ?? 0,
-                        $tx['timestamp'],
-                        $tx['block_hash'] ?? '',
-                        $tx['status'] ?? 'confirmed',
-                        $tx['nonce'] ?? 0,
-                        $tx['gas_limit'] ?? 21000
+                        $txHash,
+                        $fromAddr,
+                        $toAddr,
+                        $amount,
+                        0, // fee - will be 0 for now
+                        $timestamp,
+                        $blockHash,
+                        $blockHeight,
+                        $status,
+                        0, // nonce
+                        21000, // gas_limit
+                        0, // gas_used
+                        0, // gas_price
+                        json_encode(['type' => $type]), // data
+                        '' // signature
                     ]);
                     
                     if ($result && $stmt->rowCount() > 0) {
                         $newTransactions++;
                     }
                 }
-                
-                $totalSynced += $newTransactions;
-                $this->log("Page $page: synced $newTransactions new transactions");
-                
-                if ($this->isWebMode) {
-                    echo json_encode(['status' => 'progress', 'message' => "Synced $totalSynced transactions"]) . "\n";
-                    flush();
-                }
-                
-                $page++;
-                
-            } while (count($transactions) == $limit);
-        }
+            }
+            
+            $totalSynced += $newTransactions;
+            $this->log("Page $page: synced $newTransactions new transactions");
+            
+            if ($this->isWebMode) {
+                echo json_encode(['status' => 'progress', 'message' => "Page $page: synced $newTransactions transactions"]) . "\n";
+                flush();
+            }
+            
+            $page++;
+            
+        } while (count($transactions) == $limit);
         
         $this->log("Total transactions synced: $totalSynced");
         return $totalSynced;
+    }
+    
+    /**
+     * Synchronize mempool transactions from network nodes
+     */
+    private function syncMempoolFromNetwork($sourceNode = null): int {
+        $this->log("Starting mempool synchronization from network...");
+        $totalSynced = 0;
+        
+        $nodes = $sourceNode ? [$sourceNode] : $this->getActiveNodes();
+        
+        foreach ($nodes as $node) {
+            try {
+                $this->log("Syncing mempool from node: $node");
+                
+                // Get mempool from remote node
+                $url = rtrim($node, '/') . '/api/explorer/index.php?action=get_mempool';
+                $response = $this->makeApiCall($url);
+                
+                if (!$response || !isset($response['success']) || !$response['success']) {
+                    $this->log("Failed to get mempool from $node");
+                    continue;
+                }
+                
+                $transactions = $response['data'] ?? [];
+                $nodeSynced = 0;
+                
+                foreach ($transactions as $tx) {
+                    $txHash = $tx['tx_hash'] ?? '';
+                    if (empty($txHash)) continue;
+                    
+                    // Check if transaction already exists in our mempool or is confirmed
+                    $stmt = $this->pdo->prepare("
+                        SELECT COUNT(*) FROM mempool WHERE tx_hash = ?
+                        UNION ALL
+                        SELECT COUNT(*) FROM transactions WHERE hash = ?
+                    ");
+                    $stmt->execute([$txHash, $txHash]);
+                    $exists = array_sum($stmt->fetchAll(PDO::FETCH_COLUMN));
+                    
+                    if ($exists > 0) {
+                        continue; // Transaction already exists
+                    }
+                    
+                    // Validate transaction structure
+                    $fromAddr = $tx['from_address'] ?? '';
+                    $toAddr = $tx['to_address'] ?? '';
+                    $amount = $tx['amount'] ?? 0;
+                    $fee = $tx['fee'] ?? 0;
+                    $signature = $tx['signature'] ?? '';
+                    $data = $tx['data'] ?? '';
+                    $nonce = $tx['nonce'] ?? 0;
+                    $gasLimit = $tx['gas_limit'] ?? 21000;
+                    $gasPrice = $tx['gas_price'] ?? 0;
+                    
+                    // Insert into local mempool
+                    $stmt = $this->pdo->prepare("
+                        INSERT IGNORE INTO mempool 
+                        (tx_hash, from_address, to_address, amount, fee, gas_price, gas_limit, nonce, data, signature, priority_score, status, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW())
+                    ");
+                    
+                    $priorityScore = $this->calculatePriorityScore($amount, $fee);
+                    
+                    $result = $stmt->execute([
+                        $txHash,
+                        $fromAddr,
+                        $toAddr,
+                        $amount,
+                        $fee,
+                        $gasPrice,
+                        $gasLimit,
+                        $nonce,
+                        $data,
+                        $signature,
+                        $priorityScore
+                    ]);
+                    
+                    if ($result && $stmt->rowCount() > 0) {
+                        $nodeSynced++;
+                        $this->log("Synced transaction: $txHash from $node");
+                    }
+                }
+                
+                $totalSynced += $nodeSynced;
+                $this->log("Synced $nodeSynced transactions from $node");
+                
+            } catch (\Exception $e) {
+                $this->log("Error syncing mempool from $node: " . $e->getMessage());
+            }
+        }
+        
+        $this->log("Total mempool transactions synced: $totalSynced");
+        return $totalSynced;
+    }
+    
+    /**
+     * Calculate priority score for mempool transaction
+     */
+    private function calculatePriorityScore($amount, $fee): float {
+        $amount = (float)$amount;
+        $fee = (float)$fee;
+        
+        // Base score from fee
+        $score = $fee * 10;
+        
+        // Bonus for larger amounts (up to 100 points)
+        if ($amount > 0) {
+            $score += min(100, log10($amount + 1) * 20);
+        }
+        
+        return round($score, 2);
+    }
+    
+    /**
+     * Enhanced mempool synchronization and processing
+     */
+    public function enhancedMempoolSync(): array {
+        $this->log("=== Starting Enhanced Mempool Synchronization ===");
+        
+        try {
+            // Step 1: Sync mempool from all network nodes
+            $this->log("Step 1: Synchronizing mempool from network...");
+            $synced = $this->syncMempoolFromNetwork();
+            
+            // Step 2: Clean up expired/invalid transactions
+            $this->log("Step 2: Cleaning up mempool...");
+            $this->cleanupMempool();
+            
+            // Step 3: Check if we should mine pending transactions
+            $this->log("Step 3: Checking for pending transactions to mine...");
+            $stmt = $this->pdo->query("SELECT COUNT(*) FROM mempool WHERE status = 'pending'");
+            $pendingCount = $stmt->fetchColumn();
+            
+            $result = [
+                'success' => true,
+                'transactions_synced' => $synced,
+                'pending_transactions' => $pendingCount,
+                'mining_attempted' => false,
+                'mining_result' => null
+            ];
+            
+            // Step 4: If there are pending transactions and we're the mining leader, process them
+            if ($pendingCount > 0 && $this->shouldThisNodeMine()) {
+                $this->log("Step 4: Mining pending transactions...");
+                $result['mining_attempted'] = true;
+                
+                $miningResult = $this->mineNewBlock(min($pendingCount, 100));
+                $result['mining_result'] = $miningResult;
+                
+                if ($miningResult['success']) {
+                    $this->log("Successfully mined block with {$pendingCount} transactions");
+                    
+                    // Broadcast the new block to network
+                    $this->enhancedBlockBroadcast($miningResult['block']);
+                }
+            } else if ($pendingCount > 0) {
+                $this->log("Found {$pendingCount} pending transactions, but this node is not the mining leader");
+            } else {
+                $this->log("No pending transactions found");
+            }
+            
+            $this->log("Enhanced mempool sync completed: " . json_encode($result));
+            return $result;
+            
+        } catch (Exception $e) {
+            $error = "Enhanced mempool sync failed: " . $e->getMessage();
+            $this->log($error);
+            return [
+                'success' => false,
+                'error' => $error,
+                'transactions_synced' => 0,
+                'pending_transactions' => 0,
+                'mining_attempted' => false
+            ];
+        }
+    }
+    
+    /**
+     * Propagate local mempool transaction to network
+     */
+    public function propagateTransactionToNetwork($txHash): bool {
+        try {
+            // Get transaction from local mempool
+            $stmt = $this->pdo->prepare("SELECT * FROM mempool WHERE tx_hash = ? AND status = 'pending'");
+            $stmt->execute([$txHash]);
+            $tx = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$tx) {
+                $this->log("Transaction $txHash not found in local mempool");
+                return false;
+            }
+            
+            $nodes = $this->getActiveNodes();
+            $propagated = 0;
+            
+            foreach ($nodes as $node) {
+                try {
+                    $url = rtrim($node, '/') . '/api/transactions/submit';
+                    
+                    $payload = [
+                        'tx_hash' => $tx['tx_hash'],
+                        'from_address' => $tx['from_address'],
+                        'to_address' => $tx['to_address'],
+                        'amount' => $tx['amount'],
+                        'fee' => $tx['fee'],
+                        'gas_price' => $tx['gas_price'],
+                        'gas_limit' => $tx['gas_limit'],
+                        'nonce' => $tx['nonce'],
+                        'data' => $tx['data'],
+                        'signature' => $tx['signature'],
+                        'propagation' => true
+                    ];
+                    
+                    $response = $this->makeApiCall($url, 'POST', $payload);
+                    
+                    if ($response && isset($response['success']) && $response['success']) {
+                        $propagated++;
+                        $this->log("Transaction $txHash propagated to $node");
+                    }
+                    
+                } catch (\Exception $e) {
+                    $this->log("Failed to propagate transaction $txHash to $node: " . $e->getMessage());
+                }
+            }
+            
+            $this->log("Transaction $txHash propagated to $propagated nodes");
+            return $propagated > 0;
+            
+        } catch (\Exception $e) {
+            $this->log("Error propagating transaction $txHash: " . $e->getMessage());
+            return false;
+        }
     }
     
     private function syncWallets($node) {
@@ -2689,7 +2882,62 @@ if (php_sapi_name() === 'cli') {
                 } else {
                     echo "Error: " . ($result['message'] ?? 'Unknown error') . "\n";
                 }
+                break;
+                
+            case 'sync-mempool':
+                echo "Running enhanced mempool synchronization...\n\n";
+                $result = $syncManager->enhancedMempoolSync();
+                
+                echo "=== Enhanced Mempool Sync Result ===\n";
+                echo "Status: " . ($result['success'] ? 'SUCCESS' : 'FAILED') . "\n";
+                echo "Transactions synced: " . $result['transactions_synced'] . "\n";
+                echo "Pending transactions: " . $result['pending_transactions'] . "\n";
+                echo "Mining attempted: " . ($result['mining_attempted'] ? 'YES' : 'NO') . "\n";
+                
+                if ($result['mining_attempted'] && isset($result['mining_result'])) {
+                    $miningResult = $result['mining_result'];
+                    echo "Mining result: " . ($miningResult['success'] ? 'SUCCESS' : 'FAILED') . "\n";
+                    if ($miningResult['success']) {
+                        echo "New block height: " . $miningResult['block']['height'] . "\n";
+                        echo "Block hash: " . $miningResult['block']['hash'] . "\n";
+                        echo "Transactions processed: " . count($miningResult['block']['transactions']) . "\n";
+                    } else {
+                        echo "Mining error: " . ($miningResult['message'] ?? 'Unknown error') . "\n";
+                    }
+                }
+                
+                if (!$result['success']) {
+                    echo "Error: " . ($result['error'] ?? 'Unknown error') . "\n";
+                }
                 echo "Completed at: " . $result['maintenance_time'] . "\n";
+                break;
+                
+            case 'enhanced-mempool':
+                // Enhanced mempool synchronization and processing
+                echo "Starting enhanced mempool synchronization...\n";
+                $result = $syncManager->enhancedMempoolSync();
+                
+                echo "Results:\n";
+                echo "Success: " . ($result['success'] ? 'YES' : 'NO') . "\n";
+                echo "Transactions synced: " . $result['transactions_synced'] . "\n";
+                echo "Pending transactions: " . $result['pending_transactions'] . "\n";
+                echo "Mining attempted: " . ($result['mining_attempted'] ? 'YES' : 'NO') . "\n";
+                
+                if ($result['mining_attempted'] && isset($result['mining_result'])) {
+                    $miningResult = $result['mining_result'];
+                    echo "Mining result: " . ($miningResult['success'] ? 'SUCCESS' : 'FAILED') . "\n";
+                    if ($miningResult['success']) {
+                        echo "New block height: " . $miningResult['block']['height'] . "\n";
+                        echo "Block hash: " . $miningResult['block']['hash'] . "\n";
+                        echo "Transactions processed: " . count($miningResult['block']['transactions']) . "\n";
+                    } else {
+                        echo "Mining error: " . ($miningResult['message'] ?? 'Unknown error') . "\n";
+                    }
+                }
+                
+                if (!$result['success']) {
+                    echo "Error: " . ($result['error'] ?? 'Unknown error') . "\n";
+                }
                 break;
                 
             case 'mine':
@@ -2729,6 +2977,7 @@ if (php_sapi_name() === 'cli') {
                 echo "  sync         - Full blockchain synchronization\n";
                 echo "  status       - Show network status\n";
                 echo "  mempool      - Run mempool maintenance\n";
+                echo "  sync-mempool - Enhanced mempool sync and processing\n";
                 echo "  mine         - Start coordinated PoS mining (recommended for multi-node networks)\n";
                 echo "  mine-simple  - Start simple PoS mining (single node or testing)\n";
                 echo "  mine-once    - Mine a single block from mempool\n";
@@ -2769,6 +3018,39 @@ if (isset($_GET['action'])) {
             case 'mempool_maintenance':
                 $result = $syncManager->runMempoolMaintenance();
                 echo json_encode($result);
+                break;
+                
+            case 'enhanced_mempool_sync':
+                try {
+                    $result = $syncManager->enhancedMempoolSync();
+                    echo json_encode($result);
+                } catch (Exception $e) {
+                    echo json_encode([
+                        'success' => false,
+                        'error' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString()
+                    ]);
+                }
+                break;
+                
+            case 'test_mempool_sync':
+                try {
+                    // Simple test version
+                    $stmt = $syncManager->pdo->query("SELECT COUNT(*) FROM mempool WHERE status = 'pending'");
+                    $pendingCount = $stmt->fetchColumn();
+                    
+                    $result = [
+                        'success' => true,
+                        'pending_transactions' => $pendingCount,
+                        'message' => 'Test successful'
+                    ];
+                    echo json_encode($result);
+                } catch (Exception $e) {
+                    echo json_encode([
+                        'success' => false,
+                        'error' => $e->getMessage()
+                    ]);
+                }
                 break;
                 
             case 'mine_block':

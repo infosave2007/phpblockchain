@@ -12,17 +12,20 @@ function showUsage() {
     echo "==========================\n\n";
     echo "Usage: php quick_sync.php [command] [options]\n\n";
     echo "Commands:\n";
-    echo "  sync     - Start full synchronization\n";
-    echo "  status   - Show current database status\n";
-    echo "  check    - Quick network connectivity check\n";
-    echo "  repair   - Repair and re-sync missing data\n";
-    echo "  help     - Show this help message\n\n";
+    echo "  sync           - Start full synchronization\n";
+    echo "  enhanced-sync  - Enhanced sync with mempool processing and recovery\n";
+    echo "  status         - Show current database status\n";
+    echo "  check          - Quick network connectivity check\n";
+    echo "  repair         - Repair and re-sync missing data\n";
+    echo "  mempool-status - Show detailed mempool status\n";
+    echo "  help           - Show this help message\n\n";
     echo "Options:\n";
     echo "  --verbose  - Show detailed output\n";
     echo "  --quiet    - Minimal output\n";
     echo "  --force    - Force sync even if up-to-date\n\n";
     echo "Examples:\n";
     echo "  php quick_sync.php sync --verbose\n";
+    echo "  php quick_sync.php enhanced-sync\n";
     echo "  php quick_sync.php status\n";
     echo "  php quick_sync.php repair --force\n\n";
 }
@@ -74,6 +77,98 @@ function showStatus($syncManager, $verbose = false) {
     }
 }
 
+function showMempoolStatus($syncManager, $verbose = false) {
+    echo "🧹 Mempool Status\n";
+    echo "=================\n\n";
+    
+    try {
+        // Get pdo safely
+        $reflection = new ReflectionClass($syncManager);
+        if ($reflection->hasProperty('pdo')) {
+            $pdoProperty = $reflection->getProperty('pdo');
+            $pdoProperty->setAccessible(true);
+            $pdo = $pdoProperty->getValue($syncManager);
+            
+            // Local mempool status
+            $stmt = $pdo->prepare("
+                SELECT status, COUNT(*) as count 
+                FROM mempool 
+                GROUP BY status
+            ");
+            $stmt->execute();
+            $mempoolStats = [];
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $mempoolStats[$row['status']] = $row['count'];
+            }
+            
+            echo "📊 Local Mempool:\n";
+            if (empty($mempoolStats)) {
+                echo "  No transactions in mempool\n";
+            } else {
+                foreach ($mempoolStats as $status => $count) {
+                    printf("  %-10s: %s transactions\n", ucfirst($status), number_format($count));
+                }
+            }
+            
+            // Network mempool comparison
+            if ($verbose) {
+                echo "\n🌐 Network Mempool Comparison:\n";
+                
+                // Hardcoded nodes for compatibility
+                $nodes = [
+                    'https://wallet.coursefactory.pro',
+                    'https://node1.coursefactory.pro', 
+                    'https://node2.globhouse.com'
+                ];
+                
+                foreach ($nodes as $node) {
+                    try {
+                        $url = rtrim($node, '/') . '/api/explorer/index.php?action=get_mempool';
+                        $response = $syncManager->makeApiCall($url);
+                        
+                        if ($response && isset($response['total'])) {
+                            printf("  %-30s: %s pending\n", $node, $response['total']);
+                        } else {
+                            printf("  %-30s: Unable to fetch\n", $node);
+                        }
+                    } catch (Exception $e) {
+                        printf("  %-30s: Error - %s\n", $node, $e->getMessage());
+                    }
+                }
+            }
+            
+            // Recent mempool activity
+            $stmt = $pdo->prepare("
+                SELECT 
+                    status,
+                    COUNT(*) as count,
+                    MIN(created_at) as earliest,
+                    MAX(created_at) as latest
+                FROM mempool 
+                WHERE created_at > NOW() - INTERVAL 1 HOUR
+                GROUP BY status
+            ");
+            $stmt->execute();
+            $recentActivity = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            if (!empty($recentActivity)) {
+                echo "\n📈 Recent Activity (Last Hour):\n";
+                foreach ($recentActivity as $activity) {
+                    printf("  %s: %s transactions (from %s to %s)\n", 
+                        ucfirst($activity['status']), 
+                        $activity['count'],
+                        $activity['earliest'],
+                        $activity['latest']
+                    );
+                }
+            }
+        }
+        
+    } catch (Exception $e) {
+        echo "❌ Error retrieving mempool status: " . $e->getMessage() . "\n";
+    }
+}
+
 function checkConnectivity($syncManager) {
     echo "🌐 Network Connectivity Check\n";
     echo "=============================\n\n";
@@ -103,8 +198,8 @@ function performSync($syncManager, $options = []) {
     $force = in_array('--force', $options);
     
     if (!$quiet) {
-        echo "🚀 Starting Blockchain Synchronization\n";
-        echo "======================================\n\n";
+        echo "🚀 Starting Enhanced Blockchain Synchronization\n";
+        echo "================================================\n\n";
         
         if ($force) {
             echo "⚠️  Force mode enabled - will re-sync all data\n\n";
@@ -113,15 +208,117 @@ function performSync($syncManager, $options = []) {
     
     try {
         $startTime = microtime(true);
+        
+        // Step 1: Check current status before sync
+        if ($verbose) {
+            echo "📊 Pre-sync status check...\n";
+            $preStatus = $syncManager->getStatus();
+            echo "Current blocks: " . $preStatus['latest_block'] . "\n";
+            echo "Current transactions: " . $preStatus['tables']['transactions'] . "\n";
+        }
+        
+        // Step 2: Perform main synchronization
+        if (!$quiet) echo "🔄 Performing blockchain synchronization...\n";
         $result = $syncManager->syncAll();
+        
+        // Step 3: Enhanced mempool processing and recovery
+        if (!$quiet) echo "🧹 Processing mempool and pending transactions...\n";
+        
+        try {
+            // Check for pending transactions in mempool - use reflection to access private methods safely
+            $reflection = new ReflectionClass($syncManager);
+            
+            // Get pdo instance safely
+            if ($reflection->hasProperty('pdo')) {
+                $pdoProperty = $reflection->getProperty('pdo');
+                $pdoProperty->setAccessible(true);
+                $pdo = $pdoProperty->getValue($syncManager);
+                
+                $stmt = $pdo->query("SELECT COUNT(*) FROM mempool WHERE status = 'pending'");
+                $pendingCount = $stmt->fetchColumn();
+                
+                if ($pendingCount > 0) {
+                    if ($verbose) echo "Found {$pendingCount} pending transactions in mempool\n";
+                    
+                    // Try to mine pending transactions if this node should be mining
+                    if ($reflection->hasMethod('shouldThisNodeMine')) {
+                        $shouldMineMethod = $reflection->getMethod('shouldThisNodeMine');
+                        $shouldMineMethod->setAccessible(true);
+                        $shouldMine = $shouldMineMethod->invoke($syncManager);
+                        
+                        if ($shouldMine && $reflection->hasMethod('mineNewBlock')) {
+                            if ($verbose) echo "This node is designated for mining, processing pending transactions...\n";
+                            $mineMethod = $reflection->getMethod('mineNewBlock');
+                            $mineMethod->setAccessible(true);
+                            $miningResult = $mineMethod->invoke($syncManager, min($pendingCount, 100));
+                            
+                            if ($miningResult['success']) {
+                                if (!$quiet) echo "✅ Mined block #{$miningResult['block_height']} with {$miningResult['transactions_count']} transactions\n";
+                                
+                                // Broadcast the new block - check if block data exists
+                                if (isset($miningResult['block']) && $reflection->hasMethod('enhancedBlockBroadcast')) {
+                                    $broadcastMethod = $reflection->getMethod('enhancedBlockBroadcast');
+                                    $broadcastMethod->setAccessible(true);
+                                    $broadcastMethod->invoke($syncManager, $miningResult['block']);
+                                } else if ($verbose) {
+                                    echo "Block data not available for broadcast\n";
+                                }
+                            }
+                        } else if ($verbose) {
+                            echo "This node is not designated for mining\n";
+                        }
+                    }
+                    
+                    // Clean up mempool
+                    if ($reflection->hasMethod('cleanupMempool')) {
+                        $cleanupMethod = $reflection->getMethod('cleanupMempool');
+                        $cleanupMethod->setAccessible(true);
+                        $cleanupMethod->invoke($syncManager);
+                    }
+                }
+            }
+        } catch (Exception $e) {
+            if ($verbose) echo "Mempool processing warning: " . $e->getMessage() . "\n";
+        }
+        
+        // Step 4: Data consistency check and recovery
+        if (!$quiet) echo "🔍 Checking data consistency and performing recovery...\n";
+        
+        try {
+            // Simplified recovery check using available methods
+            $currentStatus = $syncManager->getStatus();
+            
+            if ($verbose) {
+                printf("Current status: %d blocks, %d transactions\n", 
+                    $currentStatus['latest_block'], 
+                    $currentStatus['tables']['transactions'] ?? 0
+                );
+            }
+            
+            // Force one more sync to ensure consistency
+            if ($force || $verbose) {
+                if (!$quiet) echo "🔄 Performing final consistency sync...\n";
+                $finalSync = $syncManager->syncAll();
+                if (!$quiet) echo "✅ Final sync completed\n";
+            }
+            
+        } catch (Exception $e) {
+            if ($verbose) echo "Recovery check warning: " . $e->getMessage() . "\n";
+        }
+        
         $duration = microtime(true) - $startTime;
         
+        // Final status check
+        $postStatus = $syncManager->getStatus();
+        
         if (!$quiet) {
-            echo "\n✅ Synchronization Completed Successfully!\n";
-            echo "==========================================\n\n";
+            echo "\n✅ Enhanced Synchronization Completed Successfully!\n";
+            echo "==================================================\n\n";
             printf("📊 Blocks synced: %s\n", number_format($result['blocks_synced']));
             printf("💰 Transactions synced: %s\n", number_format($result['transactions_synced']));
             printf("🌐 Source node: %s\n", $result['node']);
+            printf("📈 Final block height: %s\n", $postStatus['latest_block']);
+            printf("📈 Final transaction count: %s\n", number_format($postStatus['tables']['transactions']));
             printf("⏱️  Duration: %.2f seconds\n", $duration);
             printf("📅 Completed at: %s\n", $result['completion_time']);
         }
@@ -285,7 +482,7 @@ try {
     // HTTP mode handling
     if (php_sapi_name() !== 'cli') {
         // Only allow selected commands via HTTP
-        if (!in_array($command, ['sync', 'status', 'check'], true)) {
+        if (!in_array($command, ['sync', 'enhanced-sync', 'status', 'check', 'mempool-status'], true)) {
             http_response_code(404);
             echo json_encode(['success' => false, 'error' => 'Route not found', 'cmd' => $command], JSON_UNESCAPED_UNICODE);
             exit;
@@ -345,9 +542,19 @@ try {
             performSync($syncManager, $options);
             break;
             
+        case 'enhanced-sync':
+            // Enhanced sync is the same as regular sync now (enhanced version is default)
+            performSync($syncManager, array_merge($options, ['--verbose']));
+            break;
+            
         case 'status':
             $verbose = in_array('--verbose', $options);
             showStatus($syncManager, $verbose);
+            break;
+            
+        case 'mempool-status':
+            $verbose = in_array('--verbose', $options);
+            showMempoolStatus($syncManager, $verbose);
             break;
             
         case 'check':
