@@ -119,7 +119,7 @@ function getDatabaseStats(): array
             
             // For PoS, we show "blocks per hour" instead of traditional hash rate
             if ($blocksLastHour > 0) {
-                $stats['hash_rate'] = $blocksLastHour . ' blocks/h';
+                $stats['hash_rate'] = $blocksLastHour . ' H';
             } else {
                 // Fallback: get average from last 24 hours
                 $twentyFourHoursAgo = time() - (24 * 3600);
@@ -127,10 +127,10 @@ function getDatabaseStats(): array
                 $stmt->execute([$twentyFourHoursAgo]);
                 $blocksLast24h = $stmt->fetchColumn();
                 $averagePerHour = $blocksLast24h > 0 ? round($blocksLast24h / 24, 1) : 0;
-                $stats['hash_rate'] = $averagePerHour . ' blocks/h';
+                $stats['hash_rate'] = $averagePerHour . ' H';
             }
         } catch (Exception $e) {
-            $stats['hash_rate'] = '0 blocks/h';
+            $stats['hash_rate'] = '0 H';
         }
         
         return $stats;
@@ -150,7 +150,7 @@ function getDatabaseStats(): array
             'network_stats' => [],
             'mempool_stats' => [],
             'active_nodes' => 0,
-            'hash_rate' => '0 blocks/h'
+            'hash_rate' => '0 H'
         ];
     }
 }
@@ -498,16 +498,17 @@ function renderDashboard($app, NodeHealthMonitor $healthMonitor): string
         }
         
         .lang-btn {
-            padding: 8px 15px;
+            padding: 12px 20px;
             border: 2px solid var(--primary-color);
             background: transparent;
             color: var(--primary-color);
             border-radius: 25px;
             cursor: pointer;
-            font-weight: 500;
+            font-weight: 600;
+            font-size: 16px;
             transition: all 0.3s ease;
             text-decoration: none;
-            font-size: 14px;
+            min-width: 80px;
         }
         
         .lang-btn.active, .lang-btn:hover {
@@ -559,15 +560,17 @@ function renderDashboard($app, NodeHealthMonitor $healthMonitor): string
         .btn {
             background: linear-gradient(135deg, var(--info-color) 0%, #1976D2 100%);
             color: white;
-            padding: 12px 24px;
+            padding: 16px 32px;
             border: none;
-            border-radius: 8px;
+            border-radius: 10px;
             cursor: pointer;
-            font-weight: 500;
+            font-weight: 600;
+            font-size: 16px;
             transition: all 0.3s ease;
             text-decoration: none;
             display: inline-block;
-            margin: 4px;
+            margin: 6px;
+            min-width: 140px;
         }
         
         .btn:hover {
@@ -737,12 +740,6 @@ function renderDashboard($app, NodeHealthMonitor $healthMonitor): string
             .language-selector { position: static; margin-top: 15px; justify-content: center; }
             .grid { grid-template-columns: 1fr; }
             .service-grid { grid-template-columns: 1fr; }
-            
-            #apiModal > div {
-                margin: 20px auto;
-                padding: 20px;
-                max-height: 90vh;
-            }
         }
         
         .fade-in {
@@ -801,6 +798,10 @@ function renderDashboard($app, NodeHealthMonitor $healthMonitor): string
                 apiHealthDesc: 'Node health check and status',
                 apiStatusDesc: 'Full node status with network information',
                 apiExample: '💡 Example Usage:',
+                commonParams: '📋 Common Parameters',
+                responseFormat: '🔒 Response Format',
+                successResponse: 'Success Response:',
+                errorResponse: 'Error Response:',
                 cliCommands: '📋 CLI Commands & Tools',
                 networkSync: 'Network Synchronization:',
                 walletOps: 'Wallet Operations:',
@@ -856,6 +857,10 @@ function renderDashboard($app, NodeHealthMonitor $healthMonitor): string
                 apiHealthDesc: 'Проверка состояния и статуса ноды',
                 apiStatusDesc: 'Полный статус ноды с информацией о сети',
                 apiExample: '💡 Пример использования:',
+                commonParams: '📋 Общие параметры',
+                responseFormat: '🔒 Формат ответа',
+                successResponse: 'Успешный ответ:',
+                errorResponse: 'Ответ с ошибкой:',
                 cliCommands: '📋 CLI команды и инструменты',
                 networkSync: 'Сетевая синхронизация:',
                 walletOps: 'Операции кошелька:',
@@ -908,22 +913,10 @@ function renderDashboard($app, NodeHealthMonitor $healthMonitor): string
             window.open('/wallet/' + langParam, '_blank');
         }
         
-        function showApiDocs() {
-            document.getElementById('apiModal').style.display = 'block';
-            // Apply current language to modal content
-            updateLanguage();
-        }
-        
-        function closeApiDocs() {
-            document.getElementById('apiModal').style.display = 'none';
-        }
-        
-        // Close modal when clicking outside
-        window.onclick = function(event) {
-            const modal = document.getElementById('apiModal');
-            if (event.target === modal) {
-                closeApiDocs();
-            }
+        function openApiDocs() {
+            // Open API documentation page with current language
+            const langParam = currentLang === 'ru' ? '?lang=ru' : '?lang=en';
+            window.open('/api-docs.php' + langParam, '_blank');
         }
         
         function copyCommand(command) {
@@ -954,6 +947,14 @@ function renderDashboard($app, NodeHealthMonitor $healthMonitor): string
                     card.classList.add('fade-in');
                 }, index * 100);
             });
+            
+            // Verify modal exists
+            const modal = document.getElementById('apiModal');
+            if (!modal) {
+                console.error('API Modal not found in DOM!');
+            } else {
+                console.log('API Modal successfully loaded');
+            }
         });
         
         // Auto-refresh every 30 seconds
@@ -973,9 +974,9 @@ function renderDashboard($app, NodeHealthMonitor $healthMonitor): string
         <div class='card quick-access'>
             <h2 data-translate='quickAccess'>🚀 Quick Access Panel</h2>
             <div style='display: flex; gap: 15px; flex-wrap: wrap; justify-content: center; margin-top: 20px;'>
-                <button class='btn' onclick=\"openWallet()\" data-translate='wallet'>💰 Wallet</button>
-                <button class='btn' onclick=\"window.open('/explorer/', '_blank')\" data-translate='explorer'>🔍 Explorer</button>
-                <button class='btn' onclick=\"showApiDocs()\" data-translate='api'>🔌 API</button>
+                <button class='btn' onclick='openWallet()' data-translate='wallet'>💰 Wallet</button>
+                <button class='btn' onclick='window.open(\"/explorer/\", \"_blank\")' data-translate='explorer'>🔍 Explorer</button>
+                <button class='btn' onclick='openApiDocs()' data-translate='api'>🔌 API</button>
             </div>
         </div>
         
@@ -1061,9 +1062,9 @@ function renderDashboard($app, NodeHealthMonitor $healthMonitor): string
         <div class='card'>
             <h3 data-translate='quickActions'>Quick Actions</h3>
             <div style='display: flex; gap: 10px; flex-wrap: wrap;'>
-                <button class='btn' onclick=\"window.open('/api/health', '_blank')\" data-translate='apiHealthCheck'>API Health Check</button>
-                <button class='btn btn-success' onclick=\"window.open('/api/status', '_blank')\" data-translate='fullStatus'>Full Status</button>
-                <button class='btn btn-secondary' onclick=\"window.open('/status', '_self')\" data-translate='detailedPage'>Detailed Page</button>
+                <button class='btn' onclick='window.open(\"/api/health\", \"_blank\")' data-translate='apiHealthCheck'>API Health Check</button>
+                <button class='btn btn-success' onclick='window.open(\"/api/status\", \"_blank\")' data-translate='fullStatus'>Full Status</button>
+                <button class='btn btn-secondary' onclick='window.open(\"/status\", \"_self\")' data-translate='detailedPage'>Detailed Page</button>
             </div>
         </div>
         
@@ -1076,8 +1077,8 @@ function renderDashboard($app, NodeHealthMonitor $healthMonitor): string
                     <h4 data-translate='wallet'>💰 Wallet</h4>
                     <p data-translate='walletDesc'>Manage cryptocurrency transactions</p>
                     <div>
-                        <button class='btn btn-warning' onclick=\"openWallet()\" data-translate='walletInterface'>Wallet Interface</button>
-                        <button class='btn btn-purple' onclick=\"window.open('/wallet/wallet_api.php', '_blank')\" data-translate='walletAPI'>Wallet API</button>
+                        <button class='btn btn-warning' onclick='openWallet()' data-translate='walletInterface'>Wallet Interface</button>
+                        <button class='btn btn-purple' onclick='window.open(\"/wallet/wallet_api.php\", \"_blank\")' data-translate='walletAPI'>Wallet API</button>
                     </div>
                 </div>
                 
@@ -1086,8 +1087,8 @@ function renderDashboard($app, NodeHealthMonitor $healthMonitor): string
                     <h4 data-translate='explorer'>� Explorer</h4>
                     <p data-translate='explorerDesc'>Browse blocks and transactions</p>
                     <div>
-                        <button class='btn btn-secondary' onclick=\"window.open('/explorer/', '_blank')\" data-translate='blockExplorer'>Block Explorer</button>
-                        <button class='btn btn-brown' onclick=\"window.open('/api/explorer/', '_blank')\" data-translate='explorerAPI'>Explorer API</button>
+                        <button class='btn btn-secondary' onclick='window.open(\"/explorer/\", \"_blank\")' data-translate='blockExplorer'>Block Explorer</button>
+                        <button class='btn btn-brown' onclick='window.open(\"/api/explorer/\", \"_blank\")' data-translate='explorerAPI'>Explorer API</button>
                     </div>
                 </div>
                 
@@ -1096,70 +1097,11 @@ function renderDashboard($app, NodeHealthMonitor $healthMonitor): string
                     <h4 data-translate='apiDocs'>� API Documentation</h4>
                     <p data-translate='apiDocsDesc'>Available blockchain API endpoints</p>
                     <div>
-                        <button class='btn btn-info' onclick=\"showApiDocs()\" data-translate='viewApiDocs'>View API Docs</button>
-                        <button class='btn btn-indigo' onclick=\"window.open('/api/explorer/?action=stats', '_blank')\" data-translate='testApi'>Test API</button>
+                        <button class='btn btn-info' onclick='openApiDocs()' data-translate='viewApiDocs'>View API Docs</button>
+                        <button class='btn btn-indigo' onclick='window.open(\"/api/explorer/?action=stats\", \"_blank\")' data-translate='testApi'>Test API</button>
                     </div>
                 </div>
                 
-            </div>
-        </div>
-        
-        <!-- API Documentation Modal -->
-        <div id='apiModal' style='display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; padding: 20px; box-sizing: border-box;'>
-            <div style='background: white; max-width: 900px; margin: 50px auto; border-radius: 12px; padding: 30px; max-height: 80vh; overflow-y: auto;'>
-                <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;'>
-                    <h2 data-translate='apiDocumentation'>🔌 API Documentation</h2>
-                    <button onclick='closeApiDocs()' style='background: #f44336; color: white; border: none; padding: 8px 12px; border-radius: 5px; cursor: pointer;'>✕</button>
-                </div>
-                
-                <div class='api-section'>
-                    <h3 data-translate='explorerApi'>📊 Explorer API</h3>
-                    <div class='api-endpoint'>
-                        <code>GET /api/explorer/?action=stats</code>
-                        <p data-translate='apiStatsDesc'>Get blockchain statistics (blocks, transactions, nodes)</p>
-                    </div>
-                    <div class='api-endpoint'>
-                        <code>GET /api/explorer/?action=get_blocks&limit=10</code>
-                        <p data-translate='apiBlocksDesc'>Get recent blocks with pagination</p>
-                    </div>
-                    <div class='api-endpoint'>
-                        <code>GET /api/explorer/?action=get_block&block_id=123</code>
-                        <p data-translate='apiBlockDesc'>Get specific block by height or hash</p>
-                    </div>
-                    <div class='api-endpoint'>
-                        <code>GET /api/explorer/?action=get_transactions&limit=10</code>
-                        <p data-translate='apiTxDesc'>Get recent transactions with pagination</p>
-                    </div>
-                    <div class='api-endpoint'>
-                        <code>GET /api/explorer/?action=get_nodes_list</code>
-                        <p data-translate='apiNodesDesc'>Get list of network nodes</p>
-                    </div>
-                </div>
-                
-                <div class='api-section'>
-                    <h3 data-translate='walletApi'>💰 Wallet API</h3>
-                    <div class='api-endpoint'>
-                        <code>POST /wallet/wallet_api.php</code>
-                        <p data-translate='apiWalletDesc'>Wallet operations (balance, send, receive)</p>
-                    </div>
-                </div>
-                
-                <div class='api-section'>
-                    <h3 data-translate='nodeApi'>🔗 Node API</h3>
-                    <div class='api-endpoint'>
-                        <code>GET /api/health</code>
-                        <p data-translate='apiHealthDesc'>Node health check and status</p>
-                    </div>
-                    <div class='api-endpoint'>
-                        <code>GET /api/status</code>
-                        <p data-translate='apiStatusDesc'>Full node status with network information</p>
-                    </div>
-                </div>
-                
-                <div style='margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px;'>
-                    <h4 data-translate='apiExample'>💡 Example Usage:</h4>
-                    <code>curl -s \"https://wallet.coursefactory.pro/api/explorer/?action=stats\" | jq .</code>
-                </div>
             </div>
         </div>
         

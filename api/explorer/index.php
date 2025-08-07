@@ -379,7 +379,7 @@ function getNetworkStats(PDO $pdo, string $network): array
                 $stmt->execute([$twentyFourHoursAgo]);
                 $blocksLast24h = $stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0;
                 $averagePerHour = $blocksLast24h > 0 ? round($blocksLast24h / 24, 1) : 0;
-                $stats['hash_rate'] = $averagePerHour . ' blocks/h';
+                $stats['hash_rate'] = $averagePerHour . ' H';
             }
             
             if ($debug) {
