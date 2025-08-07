@@ -1124,7 +1124,7 @@ async function checkWalletBalance() {
         // Get saved form data
         const savedData = JSON.parse(localStorage.getItem('blockchain_install_data') || '{}');
         const walletAddress = savedData.existing_wallet_address;
-        const networkNodes = savedData.network_nodes || 'https://wallet.coursefactory.pro';
+        const networkNodes = savedData.network_nodes;
         
         if (!walletAddress) {
             alert('Wallet address not found in saved data. Please go back to the form and enter your wallet address.');
