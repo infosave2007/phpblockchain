@@ -201,6 +201,18 @@ try {
         case 'repair':
             performRepair($syncManager, $options);
             break;
+
+        case 'auto-start':
+            // Автозапуск синхронизации при наличии флага от инсталлятора
+            $flag = __DIR__ . '/storage/sync_autostart.flag';
+            if (file_exists($flag)) {
+                echo "Auto-start flag found. Starting synchronization...\n";
+                @unlink($flag);
+                performSync($syncManager, $options);
+            } else {
+                echo "No auto-start flag present. Nothing to do.\n";
+            }
+            break;
             
         case 'help':
         case '--help':

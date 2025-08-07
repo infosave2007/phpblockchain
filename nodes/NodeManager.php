@@ -311,7 +311,7 @@ class NodeManager
     }
 
     /**
-     * Обработка ответов от узлов
+     * Process responses from nodes
      */
     private function processNodeResponses(array $results, string $operation): void
     {
@@ -325,7 +325,7 @@ class NodeManager
     }
 
     /**
-     * Обработка успешного ответа от узла
+     * Handle successful response from node
      */
     private function handleSuccessfulResponse(string $nodeId, array $result, string $operation): void
     {
@@ -343,7 +343,7 @@ class NodeManager
     }
 
     /**
-     * Обработка неудачного ответа от узла
+     * Handle failed response from node
      */
     private function handleFailedResponse(string $nodeId, array $result, string $operation): void
     {
@@ -361,14 +361,14 @@ class NodeManager
             'error_count' => $this->nodeStatuses[$nodeId]['errors'] ?? 0
         ]);
 
-        // Банним узел если слишком много ошибок
+        // Ban node if too many errors
         if (($this->nodeStatuses[$nodeId]['errors'] ?? 0) >= 10) {
             $this->banNode($nodeId, 'Too many errors');
         }
     }
 
     /**
-     * Поиск узла с самой длинной цепью
+     * Find node with the longest chain
      */
     private function findLongestChainNode(array $chainInfoResults): ?array
     {
@@ -480,7 +480,7 @@ class NodeManager
     }
 
     /**
-     * Разбан узла
+     * Unban node
      */
     public function unbanNode(string $nodeId): void
     {
@@ -490,7 +490,7 @@ class NodeManager
     }
 
     /**
-     * Добавление доверенного узла
+     * Add trusted node
      */
     public function addTrustedNode(string $nodeId): void
     {
@@ -500,7 +500,7 @@ class NodeManager
     }
 
     /**
-     * Translate текущего ID узла
+     * Get current node ID
      */
     private function getCurrentNodeId(): string
     {
@@ -509,7 +509,28 @@ class NodeManager
     }
 
     /**
-     * Translate статистики сети
+     * Возвращает базовые URL активных узлов для синхронизации
+     * Формат: [nodeId => baseUrl]
+     */
+    public function getActiveNodeUrls(): array
+    {
+        $urls = [];
+        foreach ($this->getActiveNodes() as $nodeId => $node) {
+            // Предпочитаем явный метод getApiUrl() у NodeInterface
+            if (is_object($node) && method_exists($node, 'getApiUrl')) {
+                $urls[$nodeId] = rtrim($node->getApiUrl(), '/');
+                continue;
+            }
+            // Compatibility: if the node is stored as an array
+            if (is_array($node) && isset($node['url'])) {
+                $urls[$nodeId] = rtrim($node['url'], '/');
+            }
+        }
+        return $urls;
+    }
+
+    /**
+     * Get network statistics
      */
     public function getNetworkStats(): array
     {
@@ -535,34 +556,60 @@ class NodeManager
     }
 
     /**
-     * Request specific block from node
+     * Request specific block from node using MultiCurl
+     * Приводим endpoint к explorer API, совместимому с network_sync.php
      */
     private function requestBlockFromNode(string $nodeId, int $height): ?array
     {
         if (!isset($this->nodes[$nodeId])) {
             return null;
         }
-        
+
         $node = $this->nodes[$nodeId];
-        $url = $node['url'] . '/api/block/' . $height;
-        
+
+        // Получаем базовый URL
+        $baseUrl = null;
+        if (is_object($node) && method_exists($node, 'getApiUrl')) {
+            $baseUrl = rtrim($node->getApiUrl(), '/');
+        } elseif (is_array($node) && isset($node['url'])) {
+            $baseUrl = rtrim($node['url'], '/');
+        }
+        if (!$baseUrl) {
+            return null;
+        }
+
+        // Унифицированная конечная точка получения блока
+        // Используем explorer API: /api/explorer/index.php?action=get_block&block_id={height}
+        $url = $baseUrl . '/api/explorer/index.php?action=get_block&block_id=' . $height;
+
         try {
-            $response = $this->httpClient->get($url, [
-                'timeout' => 10,
-                'headers' => [
-                    'Content-Type' => 'application/json',
-                    'User-Agent' => 'BlockchainNode/1.0'
-                ]
+            $result = $this->multiCurl->get($url, [
+                'User-Agent: ' . $this->getUserAgent(),
+                'X-Node-Id: ' . $this->getCurrentNodeId(),
+                'Accept: application/json'
             ]);
-            
-            if ($response->getStatusCode() === 200) {
-                return json_decode($response->getBody()->getContents(), true);
+            if (($result['success'] ?? false) && isset($result['data'])) {
+                // Если API отдает обертку {success, data}, извлекаем data
+                if (isset($result['data']['success']) && $result['data']['success'] && isset($result['data']['data'])) {
+                    return $result['data']['data'];
+                }
+                return $result['data'];
             }
-            
-        } catch (Exception $e) {
+
+            // Попытка распарсить "response" если 'data' пуст
+            if (!empty($result['response'])) {
+                $decoded = json_decode($result['response'], true);
+                if (json_last_error() === JSON_ERROR_NONE) {
+                    if (isset($decoded['success']) && $decoded['success'] && isset($decoded['data'])) {
+                        return $decoded['data'];
+                    }
+                    return $decoded;
+                }
+            }
+        } catch (\Throwable $e) {
             $this->logger->warning("Failed to request block from node $nodeId: " . $e->getMessage());
         }
-        
+
         return null;
     }
     

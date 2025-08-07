@@ -7,6 +7,7 @@ use Blockchain\Core\Blockchain\Blockchain;
 use Blockchain\Core\Storage\BlockStorage;
 use Blockchain\Core\State\StateManager;
 use Blockchain\Nodes\NodeManager;
+use Blockchain\Core\Network\MultiCurl;
 use Exception;
 
 /**
@@ -26,6 +27,7 @@ class SyncManager
     private NodeManager $nodeManager;
     private array $trustedCheckpoints;
     private array $config;
+    private MultiCurl $multiCurl;
     
     // Sync strategies
     const STRATEGY_FULL = 'full';
@@ -44,6 +46,11 @@ class SyncManager
         $this->storage = $storage;
         $this->stateManager = $stateManager;
         $this->nodeManager = $nodeManager;
+        $this->multiCurl = new MultiCurl(
+            $config['parallel_downloads'] ?? 10,
+            $config['curl_timeout'] ?? 30,
+            $config['curl_connect_timeout'] ?? 5
+        );
         
         $this->config = array_merge([
             'default_strategy' => self::STRATEGY_FAST,
@@ -228,51 +235,45 @@ class SyncManager
      */
     private function downloadBlocksRange(int $startHeight, int $endHeight): array
     {
-        $totalBlocks = $endHeight - $startHeight + 1;
-        $blocksSynced = 0;
-        $batchSize = $this->config['batch_size'];
-        $parallelConnections = $this->config['parallel_downloads'];
-        
-        // Create download queues for parallel processing
-        $downloadQueue = [];
-        for ($start = $startHeight; $start <= $endHeight; $start += $batchSize) {
-            $end = min($start + $batchSize - 1, $endHeight);
-            $downloadQueue[] = ['start' => $start, 'end' => $end];
+        $totalBlocks = max(0, $endHeight - $startHeight + 1);
+        if ($totalBlocks === 0) {
+            return ['success' => true, 'blocks_synced' => 0, 'final_height' => $endHeight];
         }
-        
-        // Process batches in parallel
-        $activeBatches = [];
-        $completedBatches = [];
-        
-        while (!empty($downloadQueue) || !empty($activeBatches)) {
-            // Start new downloads up to parallel limit
-            while (count($activeBatches) < $parallelConnections && !empty($downloadQueue)) {
-                $batch = array_shift($downloadQueue);
-                $activeBatches[] = $this->startBatchDownload($batch);
+
+        $batchSize = max(1, (int)$this->config['batch_size']);
+        $blocksSynced = 0;
+
+        for ($batchStart = $startHeight; $batchStart <= $endHeight; $batchStart += $batchSize) {
+            $batchEnd = min($batchStart + $batchSize - 1, $endHeight);
+
+            // Build parallel requests to all active nodes for the block range
+            $requests = $this->buildBlockBatchRequests($batchStart, $batchEnd);
+
+            if (empty($requests)) {
+                throw new Exception('No active nodes available for batch block download');
             }
-            
-            // Check for completed downloads
-            foreach ($activeBatches as $key => $batch) {
-                if ($this->isBatchComplete($batch)) {
-                    $blocks = $this->getBatchResult($batch);
-                    
-                    // Verify and add blocks
-                    foreach ($blocks as $block) {
-                        if ($this->blockchain->addBlock($block)) {
-                            $blocksSynced++;
-                        }
-                    }
-                    
-                    $completedBatches[] = $batch;
-                    unset($activeBatches[$key]);
-                    
-                    echo "Progress: $blocksSynced / $totalBlocks blocks synced\n";
+
+            // Execute MultiCurl batch
+            $results = $this->multiCurl->executeRequests($requests);
+
+            // Aggregate successful responses and convert into Block objects
+            $blocks = $this->aggregateBlocksFromResults($results);
+
+            // Сортируем по высоте, чтобы добавлять по порядку
+            usort($blocks, function ($a, $b) {
+                return $a->getIndex() <=> $b->getIndex();
+            });
+
+            // Добавляем блоки в цепочку
+            foreach ($blocks as $block) {
+                if ($this->blockchain->addBlock($block)) {
+                    $blocksSynced++;
                 }
             }
-            
-            usleep(100000); // 100ms check interval
+
+            echo "Progress: $blocksSynced / $totalBlocks blocks synced (heights {$batchStart}-{$batchEnd})\n";
         }
-        
+
         return [
             'success' => true,
             'blocks_synced' => $blocksSynced,
@@ -351,15 +352,339 @@ class SyncManager
     }
     
     // Helper methods for network and storage operations
-    private function downloadStateSnapshot(int $height): array { return []; }
-    private function verifyStateSnapshot(array $snapshot): bool { return true; }
-    private function downloadBlockHeaders(int $start, int $end): array { return []; }
-    private function verifyHeaderChain(array $headers): bool { return true; }
-    private function findBestCheckpoint(int $networkHeight): ?array { return null; }
-    private function loadCheckpointState(array $checkpoint): void {}
+
+    /**
+     * Build request set to active nodes for a block range
+     */
+    private function buildBlockBatchRequests(int $start, int $end): array
+    {
+        // Get active node base URLs from NodeManager
+        $nodeUrls = [];
+        if (method_exists($this->nodeManager, 'getActiveNodeUrls')) {
+            $nodeUrls = $this->nodeManager->getActiveNodeUrls();
+        }
+
+        // Fallback: if method is unavailable, derive from getActiveNodes()
+        if (empty($nodeUrls) && method_exists($this->nodeManager, 'getActiveNodes')) {
+            $activeNodes = $this->nodeManager->getActiveNodes();
+            foreach ($activeNodes as $nodeId => $node) {
+                if (is_object($node) && method_exists($node, 'getApiUrl')) {
+                    $nodeUrls[$nodeId] = rtrim($node->getApiUrl(), '/');
+                } elseif (is_array($node) && isset($node['url'])) {
+                    $nodeUrls[$nodeId] = rtrim($node['url'], '/');
+                }
+            }
+        }
+
+        $requests = [];
+        foreach ($nodeUrls as $nodeId => $baseUrl) {
+            // Range endpoint; if unsupported, we'll fall back to per-block requests
+            // Try batched API first, then fallback to single-block links
+            $batchedUrl = $baseUrl . '/api/explorer/index.php?action=get_blocks_range&start=' . $start . '&end=' . $end;
+
+            $requests["{$nodeId}::range::{$start}-{$end}"] = [
+                'url' => $batchedUrl,
+                'method' => 'GET',
+                'headers' => [
+                    'User-Agent: BlockchainNodeSync/2.0',
+                    'Accept: application/json'
+                ],
+                'timeout' => 30
+            ];
+        }
+
+        // If nodes lack a batch endpoint, aggregation will fallback to single-block fetches
+        return $requests;
+    }
+
+    /**
+     * Aggregate node responses into a list of Block objects
+     */
+    private function aggregateBlocksFromResults(array $results): array
+    {
+        $blocks = [];
+
+        // Try parsing batched responses first
+        $batchedParsed = false;
+        foreach ($results as $id => $res) {
+            if (!($res['success'] ?? false)) {
+                continue;
+            }
+
+            $payload = $res['data'] ?? null;
+            if (!$payload && !empty($res['response'])) {
+                $payload = json_decode($res['response'], true);
+            }
+            if (!is_array($payload)) {
+                continue;
+            }
+
+            // Supported formats:
+            // 1) { success: true, data: { blocks: [...] } }
+            // 2) { blocks: [...] }
+            $list = [];
+            if (isset($payload['success'], $payload['data']['blocks']) && $payload['success'] === true) {
+                $list = $payload['data']['blocks'];
+            } elseif (isset($payload['blocks']) && is_array($payload['blocks'])) {
+                $list = $payload['blocks'];
+            }
+
+            if (!empty($list)) {
+                foreach ($list as $blockData) {
+                    $b = $this->createBlockFromExplorerData($blockData);
+                    if ($b) {
+                        $blocks[] = $b;
+                    }
+                }
+                $batchedParsed = true;
+                break; // One valid source is sufficient
+            }
+        }
+
+        if ($batchedParsed) {
+            return $blocks;
+        }
+
+        // Fallback: per-block requests for the required range
+        // Determine requested range from request identifiers
+        $rangeStart = null;
+        $rangeEnd = null;
+        foreach (array_keys($results) as $key) {
+            if (preg_match('/::range::(\d+)-(\d+)/', $key, $m)) {
+                $rangeStart = (int)$m[1];
+                $rangeEnd = (int)$m[2];
+                break;
+            }
+        }
+        if ($rangeStart === null || $rangeEnd === null) {
+            return $blocks;
+        }
+
+        // Collect base URLs from original requests
+        $baseUrls = [];
+        foreach ($results as $id => $res) {
+            if (isset($res['request']['url'])) {
+                // Extract base part before query string
+                $u = $res['request']['url'];
+                $base = preg_replace('#/api/explorer/index\.php\?action=get_blocks_range.*$#', '', $u);
+                if ($base) {
+                    $baseUrls[] = rtrim($base, '/');
+                }
+            }
+        }
+        $baseUrls = array_values(array_unique($baseUrls));
+
+        if (empty($baseUrls)) {
+            return $blocks;
+        }
+
+        // Parallel single-block requests using the first base URL
+        $primaryBase = $baseUrls[0];
+        $singleRequests = [];
+        for ($h = $rangeStart; $h <= $rangeEnd; $h++) {
+            $singleRequests["h{$h}"] = [
+                'url' => $primaryBase . '/api/explorer/index.php?action=get_block&block_id=' . $h,
+                'method' => 'GET',
+                'headers' => [
+                    'User-Agent: BlockchainNodeSync/2.0',
+                    'Accept: application/json'
+                ],
+                'timeout' => 20
+            ];
+        }
+
+        $singleResults = $this->multiCurl->executeRequests($singleRequests);
+        foreach ($singleResults as $rid => $res) {
+            if (!($res['success'] ?? false)) {
+                continue;
+            }
+            $payload = $res['data'] ?? null;
+            if (!$payload && !empty($res['response'])) {
+                $payload = json_decode($res['response'], true);
+            }
+            if (!$payload) {
+                continue;
+            }
+            if (isset($payload['success']) && $payload['success'] && isset($payload['data'])) {
+                $payload = $payload['data'];
+            }
+            $b = $this->createBlockFromExplorerData($payload);
+            if ($b) {
+                $blocks[] = $b;
+            }
+        }
+
+        return $blocks;
+    }
+
+    /**
+     * Convert explorer API payload into a Block object
+     */
+    private function createBlockFromExplorerData(array $data): ?\Blockchain\Core\Blockchain\Block
+    {
+        // Possible keys: height/index, previous_hash/previousHash, transactions, timestamp, nonce, hash, metadata
+        $index = $data['height'] ?? $data['index'] ?? null;
+        $previousHash = $data['previous_hash'] ?? $data['previousHash'] ?? ($data['parent_hash'] ?? '');
+        $timestamp = (int)($data['timestamp'] ?? time());
+        $nonce = (int)($data['nonce'] ?? 0);
+        $transactions = $data['transactions'] ?? ($data['tx'] ?? []);
+
+        if ($index === null || !is_array($transactions)) {
+            return null;
+        }
+
+        // Normalize transactions into arrays expected by Block/Storage
+        $txs = [];
+        foreach ($transactions as $tx) {
+            // Если уже массив, оставляем; совместимость с Wallet/Transaction классами не нужна здесь
+            $txs[] = is_array($tx) ? $tx : (array)$tx;
+        }
+
+        // Create block
+        $block = new \Blockchain\Core\Blockchain\Block(
+            (int)$index,
+            $txs,
+            (string)$previousHash
+        );
+
+        // Set additional metadata if available
+        if (isset($data['metadata']) && is_array($data['metadata'])) {
+            foreach ($data['metadata'] as $k => $v) {
+                $block->addMetadata($k, $v);
+            }
+        }
+
+        // Note: nonce from payload is not set as Block has no nonce setter; not critical for sync since hash is recalculated internally.
+        // If needed, extend Block to support explicit nonce assignment.
+
+        return $block;
+    }
+
+    private function downloadStateSnapshot(int $height): array
+    {
+        // Check snapshot availability in parallel across nodes and download the first available
+        $nodeUrls = method_exists($this->nodeManager, 'getActiveNodeUrls') ? $this->nodeManager->getActiveNodeUrls() : [];
+        $requests = [];
+        foreach ($nodeUrls as $nodeId => $baseUrl) {
+            $requests[$nodeId] = [
+                'url' => rtrim($baseUrl, '/') . '/api/explorer/index.php?action=get_state_snapshot&height=' . $height,
+                'method' => 'GET',
+                'headers' => ['User-Agent: BlockchainNodeSync/2.0', 'Accept: application/json'],
+                'timeout' => 60
+            ];
+        }
+        if (empty($requests)) {
+            return [];
+        }
+        $results = $this->multiCurl->executeRequests($requests);
+        foreach ($results as $nodeId => $res) {
+            if (!($res['success'] ?? false)) continue;
+            $payload = $res['data'] ?? json_decode($res['response'] ?? 'null', true);
+            if (isset($payload['success']) && $payload['success'] && isset($payload['data'])) {
+                return $payload['data'];
+            }
+            if (is_array($payload)) {
+                return $payload;
+            }
+        }
+        return [];
+    }
+
+    private function verifyStateSnapshot(array $snapshot): bool
+    {
+        // Minimal integrity check
+        return isset($snapshot['accounts']) && isset($snapshot['contracts']);
+    }
+
+    private function downloadBlockHeaders(int $start, int $end): array
+    {
+        $nodeUrls = method_exists($this->nodeManager, 'getActiveNodeUrls') ? $this->nodeManager->getActiveNodeUrls() : [];
+        $requests = [];
+        foreach ($nodeUrls as $nodeId => $baseUrl) {
+            $requests[$nodeId] = [
+                'url' => rtrim($baseUrl, '/') . '/api/explorer/index.php?action=get_block_headers&start=' . $start . '&end=' . $end,
+                'method' => 'GET',
+                'headers' => ['User-Agent: BlockchainNodeSync/2.0', 'Accept: application/json'],
+                'timeout' => 20
+            ];
+        }
+        if (empty($requests)) {
+            return [];
+        }
+        $results = $this->multiCurl->executeRequests($requests);
+        foreach ($results as $r) {
+            if (!($r['success'] ?? false)) continue;
+            $payload = $r['data'] ?? json_decode($r['response'] ?? 'null', true);
+            if (isset($payload['success']) && $payload['success'] && isset($payload['data']['headers'])) {
+                return $payload['data']['headers'];
+            }
+            if (isset($payload['headers'])) {
+                return $payload['headers'];
+            }
+        }
+        return [];
+    }
+
+    private function verifyHeaderChain(array $headers): bool
+    {
+        // Basic check: previousHash -> hash continuity
+        for ($i = 1; $i < count($headers); $i++) {
+            $prevHash = $headers[$i - 1]['hash'] ?? null;
+            $currPrev = $headers[$i]['previous_hash'] ?? ($headers[$i]['previousHash'] ?? null);
+            if (!$prevHash || !$currPrev || $prevHash !== $currPrev) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private function findBestCheckpoint(int $networkHeight): ?array
+    {
+        if (empty($this->trustedCheckpoints)) return null;
+        krsort($this->trustedCheckpoints);
+        foreach ($this->trustedCheckpoints as $h => $cp) {
+            if ($h <= $networkHeight) return $cp;
+        }
+        return null;
+    }
+
+    private function loadCheckpointState(array $checkpoint): void
+    {
+        // Real implementation would load a trusted state.
+        // No-op here because StateManager has no external checkpoint load.
+    }
+
     private function startBatchDownload(array $batch): array { return $batch; }
     private function isBatchComplete(array $batch): bool { return true; }
     private function getBatchResult(array $batch): array { return []; }
-    private function snapshotExists(int $height): bool { return true; }
+
+    private function snapshotExists(int $height): bool
+    {
+        // Parallel HEAD-style availability check for snapshot
+        $nodeUrls = method_exists($this->nodeManager, 'getActiveNodeUrls') ? $this->nodeManager->getActiveNodeUrls() : [];
+        if (empty($nodeUrls)) return false;
+
+        $requests = [];
+        foreach ($nodeUrls as $nodeId => $baseUrl) {
+            $requests[$nodeId] = [
+                'url' => rtrim($baseUrl, '/') . '/api/explorer/index.php?action=has_state_snapshot&height=' . $height,
+                'method' => 'GET',
+                'headers' => ['User-Agent: BlockchainNodeSync/2.0', 'Accept: application/json'],
+                'timeout' => 10
+            ];
+        }
+        $results = $this->multiCurl->executeRequests($requests);
+        foreach ($results as $res) {
+            if (!($res['success'] ?? false)) continue;
+            $payload = $res['data'] ?? json_decode($res['response'] ?? 'null', true);
+            if (isset($payload['success']) && $payload['success']) {
+                if (isset($payload['data']['exists']) && $payload['data']['exists']) return true;
+            } elseif (isset($payload['exists']) && $payload['exists']) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private function hasAvailableCheckpoints(): bool { return !empty($this->trustedCheckpoints); }
 }

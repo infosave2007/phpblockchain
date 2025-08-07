@@ -205,6 +205,7 @@ try {
             ['id' => 'setup_admin', 'description' => 'Setting up administrator...'],
             ['id' => 'initialize_blockchain', 'description' => 'Initializing blockchain...'],
             ['id' => 'start_services', 'description' => 'Starting services...'],
+            ['id' => 'auto_sync_trigger', 'description' => 'Triggering network sync across nodes...'],
             ['id' => 'finalize', 'description' => 'Completing installation...']
         ];
     }
@@ -231,6 +232,49 @@ try {
     }
     
     error_log("Configuration saved successfully (" . $result . " bytes)");
+
+    // Auto-start synchronization for regular node (non-primary)
+    try {
+        if (($nodeType ?? 'primary') !== 'primary') {
+            // If a list of known nodes is provided – persist to .env as a simple config store
+            if (!empty($config['network_nodes'])) {
+                // Write NETWORK_NODES to .env (if template exists and is writable) as DB alternative
+                $envPath = __DIR__ . '/../config/.env';
+                if (file_exists($envPath) && is_writable($envPath)) {
+                    $envContent = file_get_contents($envPath);
+                    if (strpos($envContent, 'NETWORK_NODES=') === false) {
+                        $envContent .= "\nNETWORK_NODES=\"" . trim($config['network_nodes']) . "\"\n";
+                    } else {
+                        $envContent = preg_replace('/^NETWORK_NODES=.*$/m', 'NETWORK_NODES="' . trim($config['network_nodes']) . '"', $envContent);
+                    }
+                    file_put_contents($envPath, $envContent);
+                }
+            }
+
+            // Background sync trigger: write a flag-file and ping network_sync.php?action=sync
+            $flagFile = __DIR__ . '/../storage/sync_autostart.flag';
+            @file_put_contents($flagFile, date('c'));
+
+            // Try to initiate a non-blocking web request to start sync
+            $syncUrl = (isset($_SERVER['REQUEST_SCHEME']) ? $_SERVER['REQUEST_SCHEME'] : 'http') . '://' .
+                       ($_SERVER['HTTP_HOST'] ?? 'localhost') .
+                       rtrim(dirname($_SERVER['SCRIPT_NAME']), '/\\') . '/../network_sync.php?action=sync';
+
+            // Non-blocking HTTP call
+            $ctx = stream_context_create([
+                'http' => [
+                    'method' => 'GET',
+                    'timeout' => 1,
+                    'ignore_errors' => true,
+                    'header' => "User-Agent: InstallerAutoSync/1.0\r\n"
+                ]
+            ]);
+            @fopen($syncUrl, 'r', false, $ctx);
+        }
+    } catch (\Throwable $e) {
+        // Ignore auto-start errors; installation should still complete successfully
+        file_put_contents(__DIR__ . '/install_debug.log', "Auto sync trigger failed: " . $e->getMessage() . "\n", FILE_APPEND);
+    }
 
     echo json_encode([
         'status' => 'success',
