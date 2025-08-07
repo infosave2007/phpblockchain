@@ -287,19 +287,25 @@ class NetworkSyncManager {
         }
 
         // Always prioritize longest chain to prevent forks
-        if ($strategy === 'longest_chain' || $strategy === 'fastest_response') {
+        if ($strategy === 'longest_chain' || $strategy === 'fastest_response' || $strategy === 'consensus_majority') {
             // Sort by block height first (descending), then by response time (ascending)
             usort($accessibleNodes, function($a, $b) {
                 $heightA = $a['block_height'] ?? 0;
                 $heightB = $b['block_height'] ?? 0;
                 
                 if ($heightA !== $heightB) {
-                    return $heightB <=> $heightA; // Higher height wins
+                    return $heightB <=> $heightA; // Higher height wins (longest chain rule)
                 }
                 
                 // If heights are equal, use faster response
                 return $a['response_time'] <=> $b['response_time'];
             });
+            
+            // Debug: log sorting results
+            $this->log("Nodes after sorting by height (descending):");
+            foreach ($accessibleNodes as $i => $node) {
+                $this->log("  $i: {$node['url']} - height: {$node['block_height']}, time: {$node['response_time']}ms");
+            }
         }
 
         $bestNode = $accessibleNodes[0];

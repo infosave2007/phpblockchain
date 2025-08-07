@@ -806,10 +806,10 @@ class WalletBlockchainManager
                 // Determine if this is a genesis transaction
                 $isGenesisTransaction = ($index == 0) || (isset($tx['data']['genesis']) && $tx['data']['genesis'] === true) || ($tx['from'] === 'genesis' || $tx['from'] === 'genesis_address');
                 
-                // All transactions included in a block should be confirmed (not pending)
-                $transactionStatus = 'confirmed';
+                // Transactions should be confirmed only if block has valid height
+                $transactionStatus = ($index !== null && $index >= 0) ? 'confirmed' : 'pending';
                 
-                \WalletLogger::debug("Saving transaction {$tx['hash']} with status: $transactionStatus (genesis: " . ($isGenesisTransaction ? 'yes' : 'no') . ")");
+                \WalletLogger::debug("Saving transaction {$tx['hash']} with status: $transactionStatus (genesis: " . ($isGenesisTransaction ? 'yes' : 'no') . ", block_height: " . ($index ?? 'null') . ")");
                 
                 $stmt = $this->database->prepare("
                     INSERT INTO transactions (hash, block_hash, block_height, from_address, to_address, amount, fee, data, signature, status, timestamp, created_at)
@@ -819,7 +819,10 @@ class WalletBlockchainManager
                     block_height = VALUES(block_height),
                     data = VALUES(data),
                     signature = VALUES(signature),
-                    status = 'confirmed'
+                    status = CASE 
+                        WHEN VALUES(block_height) IS NOT NULL AND VALUES(block_height) >= 0 THEN 'confirmed'
+                        ELSE 'pending'
+                    END
                 ");
                 
                 $stmt->execute([

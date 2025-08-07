@@ -205,13 +205,16 @@ class SyncManager {
         }
         
         $bestNode = null;
-        $bestTime = PHP_FLOAT_MAX;
+        $bestHeight = -1;
+        $nodeResults = [];
         
         foreach ($nodeUrls as $node) {
             $startTime = microtime(true);
+            
+            // Test blockchain height instead of just connectivity
             $ch = curl_init();
             curl_setopt_array($ch, [
-                CURLOPT_URL => $node . '/api/explorer/index.php?action=get_network_config',
+                CURLOPT_URL => $node . '/api/explorer/index.php?action=get_network_stats',
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_TIMEOUT => 10,
                 CURLOPT_CONNECTTIMEOUT => 5,
@@ -223,16 +226,33 @@ class SyncManager {
             $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             curl_close($ch);
             
-            if ($httpCode === 200 && $response && $responseTime < $bestTime) {
-                $bestTime = $responseTime;
-                $bestNode = $node;
+            if ($httpCode === 200 && $response) {
+                $data = json_decode($response, true);
+                $nodeHeight = $data['current_height'] ?? 0;
+                
+                $nodeResults[] = [
+                    'url' => $node,
+                    'height' => $nodeHeight,
+                    'response_time' => round($responseTime * 1000, 2)
+                ];
+                
+                $this->log("Node $node: height $nodeHeight ({$nodeResults[count($nodeResults)-1]['response_time']}ms)");
+                
+                // Select node with highest blockchain (longest chain rule)
+                if ($nodeHeight > $bestHeight) {
+                    $bestHeight = $nodeHeight;
+                    $bestNode = $node;
+                }
+            } else {
+                $this->log("Node $node: unreachable");
             }
         }
         
         if (!$bestNode) {
-            throw new Exception('No accessible network nodes found');
+            throw new Exception('No accessible network nodes found with valid blockchain data');
         }
         
+        $this->log("Selected best node: $bestNode (height: $bestHeight, longest chain rule)");
         return $bestNode;
     }
     

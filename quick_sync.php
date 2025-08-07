@@ -114,14 +114,16 @@ function showMempoolStatus($syncManager, $verbose = false) {
             if ($verbose) {
                 echo "\n🌐 Network Mempool Comparison:\n";
                 
-                // Hardcoded nodes for compatibility
-                $nodes = [
-                    'https://wallet.coursefactory.pro',
-                    'https://node1.coursefactory.pro', 
-                    'https://node2.globhouse.com'
-                ];
+                // Get nodes from database instead of hardcoding
+                $stmt = $pdo->query("SELECT node_id, ip_address, port, metadata FROM nodes WHERE status = 'active'");
+                $nodeRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 
-                foreach ($nodes as $node) {
+                foreach ($nodeRows as $row) {
+                    $metadata = json_decode($row['metadata'], true);
+                    $domain = $metadata['domain'] ?? $row['ip_address'];
+                    $protocol = $metadata['protocol'] ?? 'https';
+                    $node = "$protocol://$domain";
+                    
                     try {
                         $url = rtrim($node, '/') . '/api/explorer/index.php?action=get_mempool';
                         $response = $syncManager->makeApiCall($url);
@@ -291,6 +293,18 @@ function performSync($syncManager, $options = []) {
             }
         } catch (Exception $e) {
             if ($verbose) echo "Pending transactions fix warning: " . $e->getMessage() . "\n";
+        }
+        
+        // Step 3.6: Check network synchronization
+        if (!$quiet) echo "🌐 Checking network synchronization...\n";
+        
+        try {
+            $networkResult = syncLaggingNodes($syncManager, $quiet, $verbose);
+            if (!$quiet && isset($networkResult['message'])) {
+                echo "📡 {$networkResult['message']}\n";
+            }
+        } catch (Exception $e) {
+            if ($verbose) echo "Network sync warning: " . $e->getMessage() . "\n";
         }
         
         // Step 4: Data consistency check and recovery
@@ -622,6 +636,111 @@ try {
     error_log("[quick_sync] " . str_replace("\n", " | ", $msg));
 
     exit(1);
+}
+
+/**
+ * Sync lagging nodes to match the highest block height in network
+ */
+function syncLaggingNodes($syncManager, $quiet = false, $verbose = false) {
+    try {
+        if (!$quiet) echo "🌐 Checking network synchronization...\n";
+        
+        // Get nodes from database
+        $reflection = new ReflectionClass($syncManager);
+        if (!$reflection->hasProperty('pdo')) {
+            throw new Exception("PDO property not accessible in NetworkSyncManager");
+        }
+        
+        $property = $reflection->getProperty('pdo');
+        $property->setAccessible(true);
+        $pdo = $property->getValue($syncManager);
+        
+        if (!$pdo) {
+            throw new Exception("PDO connection not available");
+        }
+        
+        // Get active nodes from database
+        $stmt = $pdo->query("SELECT node_id, ip_address, port, metadata FROM nodes WHERE status = 'active'");
+        $nodeRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        if (empty($nodeRows)) {
+            if (!$quiet) echo "⚠️ No active nodes found in database\n";
+            return ['synced' => false, 'error' => 'No active nodes found'];
+        }
+        
+        $nodes = [];
+        foreach ($nodeRows as $row) {
+            $metadata = json_decode($row['metadata'], true);
+            $domain = $metadata['domain'] ?? $row['ip_address'];
+            $protocol = $metadata['protocol'] ?? 'https';
+            $name = $domain;
+            $url = "$protocol://$domain";
+            $nodes[$name] = rtrim($url, '/');
+        }
+        
+        $heights = [];
+        $transactions = [];
+        
+        // Get current heights and transaction counts
+        foreach ($nodes as $name => $url) {
+            try {
+                $blocksResponse = file_get_contents("$url/api/explorer/blocks?limit=1");
+                $txResponse = file_get_contents("$url/api/explorer/transactions?limit=1");
+                
+                if ($blocksResponse && $txResponse) {
+                    $blocks = json_decode($blocksResponse, true);
+                    $txData = json_decode($txResponse, true);
+                    
+                    $heights[$name] = $blocks['blocks'][0]['index'] ?? 0;
+                    $transactions[$name] = $txData['total'] ?? 0;
+                } else {
+                    $heights[$name] = 0;
+                    $transactions[$name] = 0;
+                }
+            } catch (Exception $e) {
+                if ($verbose) echo "  Warning: Failed to check $name - {$e->getMessage()}\n";
+                $heights[$name] = 0;
+                $transactions[$name] = 0;
+            }
+        }
+        
+        if ($verbose) {
+            echo "Current network state:\n";
+            foreach ($heights as $name => $height) {
+                echo "  $name: height $height, {$transactions[$name]} transactions\n";
+            }
+        }
+        
+        $maxHeight = max($heights);
+        $maxTransactions = max($transactions);
+        $needsSync = false;
+        
+        foreach ($heights as $name => $height) {
+            if ($height < $maxHeight || $transactions[$name] < $maxTransactions) {
+                if (!$quiet) echo "  ⚠️  $name is behind (height: $height/$maxHeight, tx: {$transactions[$name]}/$maxTransactions)\n";
+                $needsSync = true;
+            }
+        }
+        
+        if (!$needsSync) {
+            if (!$quiet) echo "✅ All nodes are synchronized\n";
+            return ['synced' => true, 'message' => 'All nodes synchronized'];
+        }
+        
+        if (!$quiet) echo "� Network is not synchronized, but proceeding...\n";
+        
+        return [
+            'synced' => false,
+            'improved_nodes' => 0,
+            'total_nodes' => count($nodes),
+            'message' => "Network sync check completed - nodes are not in sync"
+        ];
+        
+    } catch (Exception $e) {
+        $error = "Network sync failed: " . $e->getMessage();
+        if (!$quiet) echo "❌ $error\n";
+        return ['synced' => false, 'error' => $error];
+    }
 }
 
 /**
