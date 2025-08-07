@@ -186,6 +186,9 @@ class NetworkSyncManager {
     }
     
     private function selectBestNode() {
+        // Get current node domain to exclude from sync
+        $currentNodeUrl = $this->getCurrentNodeDomain();
+        
         // 1) Попробовать получить активные узлы из таблицы nodes (источник после установки)
         // Exclude nodes with low reputation (below 50) to avoid suspicious sources
         $nodeUrls = [];
@@ -217,6 +220,13 @@ class NetworkSyncManager {
                 $defaultPort = ($protocol === 'https') ? 443 : 80;
                 $portPart = ($port > 0 && $port !== $defaultPort) ? (':' . $port) : '';
                 $url = sprintf('%s://%s%s', $protocol, rtrim($host, '/'), $portPart);
+                
+                // Exclude current node from sync
+                if ($currentNodeUrl && $this->isSameNode($url, $currentNodeUrl)) {
+                    $this->log("Excluding current node from sync: $url");
+                    continue;
+                }
+                
                 $nodeUrls[] = $url;
             }
         } catch (\Throwable $e) {
@@ -227,11 +237,20 @@ class NetworkSyncManager {
         if (empty($nodeUrls)) {
             $rawNodes = $this->config['network_nodes'] ?? '';
             $candidates = preg_split('/[\r\n,]+/', (string)$rawNodes);
-            $nodeUrls = array_values(array_filter(array_map('trim', $candidates)));
+            $filteredNodes = array_values(array_filter(array_map('trim', $candidates)));
+            
+            // Exclude current node from fallback list
+            foreach ($filteredNodes as $node) {
+                if ($currentNodeUrl && $this->isSameNode($node, $currentNodeUrl)) {
+                    $this->log("Excluding current node from sync (fallback): $node");
+                    continue;
+                }
+                $nodeUrls[] = $node;
+            }
         }
 
         if (empty($nodeUrls)) {
-            throw new Exception('No network nodes configured. Please add network nodes to your configuration.');
+            throw new Exception('No external network nodes available for synchronization. Cannot sync with self.');
         }
 
         $strategy = $this->config['node_selection_strategy'] ?? 'fastest_response';
@@ -247,7 +266,7 @@ class NetworkSyncManager {
 
         $accessibleNodes = array_filter($nodeResults, fn($n) => $n['accessible']);
         if (empty($accessibleNodes)) {
-            throw new Exception("No accessible nodes found");
+            throw new Exception("No accessible external nodes found for synchronization");
         }
 
         if ($strategy === 'fastest_response') {
@@ -1057,17 +1076,16 @@ class NetworkSyncManager {
     
     private function getCurrentNodeDomain(): ?string {
         try {
-            // 1) Try to get from config table node.domain
+            // 1) Try to get from config table node.domain and node.protocol
             $stmt = $this->pdo->prepare("SELECT value FROM config WHERE key_name = 'node.domain' LIMIT 1");
             $stmt->execute();
             $domain = $stmt->fetchColumn();
             
             if ($domain) {
-                // Determine protocol (check if SSL/HTTPS is configured)
-                $stmt = $this->pdo->prepare("SELECT value FROM config WHERE key_name = 'node.ssl_enabled' LIMIT 1");
+                // Get protocol from config
+                $stmt = $this->pdo->prepare("SELECT value FROM config WHERE key_name = 'node.protocol' LIMIT 1");
                 $stmt->execute();
-                $sslEnabled = $stmt->fetchColumn();
-                $protocol = ($sslEnabled === 'true' || $sslEnabled === '1') ? 'https' : 'http';
+                $protocol = $stmt->fetchColumn() ?: 'https';
                 
                 return "$protocol://$domain";
             }
@@ -1104,6 +1122,32 @@ class NetworkSyncManager {
         } catch (\Throwable $e) {
             return null;
         }
+    }
+
+    /**
+     * Check if two URLs represent the same node
+     */
+    private function isSameNode(string $url1, string $url2): bool {
+        $parsed1 = parse_url($url1);
+        $parsed2 = parse_url($url2);
+        
+        if (!$parsed1 || !$parsed2) {
+            return false;
+        }
+        
+        // Compare hosts (case insensitive)
+        $host1 = strtolower($parsed1['host'] ?? '');
+        $host2 = strtolower($parsed2['host'] ?? '');
+        
+        if ($host1 !== $host2) {
+            return false;
+        }
+        
+        // Compare ports (use default if not specified)
+        $port1 = $parsed1['port'] ?? (($parsed1['scheme'] ?? 'http') === 'https' ? 443 : 80);
+        $port2 = $parsed2['port'] ?? (($parsed2['scheme'] ?? 'http') === 'https' ? 443 : 80);
+        
+        return $port1 === $port2;
     }
 
     // Periodic mempool maintenance - can be called independently
