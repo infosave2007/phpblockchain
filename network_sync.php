@@ -1905,6 +1905,509 @@ class NetworkSyncManager {
             'sync_time' => date('Y-m-d H:i:s')
         ];
     }
+
+    /**
+     * PoS Block Mining - Process mempool transactions into new blocks
+     */
+    public function startBlockMining($intervalSeconds = 30, $maxTransactionsPerBlock = 100) {
+        $this->log("=== Starting PoS Block Mining Process ===");
+        $this->log("Block interval: {$intervalSeconds} seconds");
+        $this->log("Max transactions per block: {$maxTransactionsPerBlock}");
+        $this->log("Press Ctrl+C to stop mining");
+        
+        $lastBlockTime = 0;
+        $miningCount = 0;
+        
+        while (true) {
+            try {
+                $currentTime = time();
+                
+                // Check if enough time has passed since last block
+                if ($currentTime - $lastBlockTime >= $intervalSeconds) {
+                    $result = $this->mineNewBlock($maxTransactionsPerBlock);
+                    if ($result['success']) {
+                        $lastBlockTime = $currentTime;
+                        $miningCount++;
+                        $this->log("✅ Block #{$result['block_height']} mined successfully");
+                        $this->log("   Hash: {$result['block_hash']}");
+                        $this->log("   Transactions: {$result['transactions_count']}");
+                        $this->log("   Validator: {$result['validator']}");
+                        $this->log("   Total blocks mined this session: {$miningCount}");
+                    } else {
+                        $this->log("ℹ️  {$result['message']}");
+                    }
+                } else {
+                    $remaining = $intervalSeconds - ($currentTime - $lastBlockTime);
+                    $this->log("Waiting {$remaining}s until next block opportunity...");
+                }
+                
+                sleep(10); // Check every 10 seconds
+                
+            } catch (Exception $e) {
+                $this->log("Mining error: " . $e->getMessage());
+                sleep(30); // Wait longer on errors
+            }
+        }
+    }
+    
+    /**
+     * Mine a single new block from mempool transactions
+     */
+    public function mineNewBlock($maxTransactionsPerBlock = 100) {
+        try {
+            // Get pending transactions from mempool
+            $stmt = $this->pdo->prepare("
+                SELECT * FROM mempool 
+                WHERE status = 'pending' 
+                AND (expires_at IS NULL OR expires_at > NOW())
+                ORDER BY priority_score DESC, fee DESC, created_at ASC 
+                LIMIT " . (int)$maxTransactionsPerBlock
+            );
+            $stmt->execute();
+            $pendingTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            if (empty($pendingTransactions)) {
+                return [
+                    'success' => false,
+                    'message' => 'No pending transactions in mempool'
+                ];
+            }
+            
+            // Get current blockchain state
+            $stmt = $this->pdo->prepare("SELECT * FROM blocks ORDER BY height DESC LIMIT 1");
+            $stmt->execute();
+            $latestBlock = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            $nextHeight = $latestBlock ? ($latestBlock['height'] + 1) : 1;
+            $previousHash = $latestBlock ? $latestBlock['hash'] : '0000000000000000000000000000000000000000000000000000000000000000';
+            
+            // Select validator using PoS algorithm
+            $validator = $this->selectValidatorForBlock($nextHeight, $previousHash);
+            if (!$validator) {
+                return [
+                    'success' => false,
+                    'message' => 'No validator available for block creation'
+                ];
+            }
+            
+            // Create new block
+            $blockData = $this->createNewBlock($nextHeight, $previousHash, $pendingTransactions, $validator);
+            
+            if ($blockData) {
+                // Remove processed transactions from mempool
+                $txHashes = array_column($pendingTransactions, 'tx_hash');
+                $this->removeFromMempool($txHashes);
+                
+                // Broadcast new block to network nodes
+                $this->broadcastNewBlock($blockData);
+                
+                return [
+                    'success' => true,
+                    'block_height' => $nextHeight,
+                    'block_hash' => $blockData['hash'],
+                    'transactions_count' => count($pendingTransactions),
+                    'validator' => $validator['address'],
+                    'broadcast_status' => 'sent'
+                ];
+            } else {
+                return [
+                    'success' => false,
+                    'message' => 'Failed to create block'
+                ];
+            }
+            
+        } catch (Exception $e) {
+            return [
+                'success' => false,
+                'message' => 'Mining failed: ' . $e->getMessage()
+            ];
+        }
+    }
+    
+    /**
+     * Select validator for block creation using PoS algorithm
+     */
+    private function selectValidatorForBlock($blockHeight, $previousHash) {
+        // Get active validators with stake
+        $stmt = $this->pdo->prepare("
+            SELECT v.*, w.balance as stake 
+            FROM validators v 
+            LEFT JOIN wallets w ON v.address = w.address 
+            WHERE v.status = 'active' 
+            AND w.balance >= 1000
+            ORDER BY w.balance DESC
+        ");
+        $stmt->execute();
+        $validators = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        if (empty($validators)) {
+            // Create system validator if none exist
+            return $this->createSystemValidator();
+        }
+        
+        // Simple PoS selection: weighted by stake
+        $totalStake = array_sum(array_column($validators, 'stake'));
+        $seed = hexdec(substr(hash('sha256', $previousHash . $blockHeight), 0, 8));
+        $randomValue = ($seed % 1000000) / 1000000; // 0 to 1
+        $targetValue = $randomValue * $totalStake;
+        
+        $cumulativeStake = 0;
+        foreach ($validators as $validator) {
+            $cumulativeStake += $validator['stake'];
+            if ($targetValue <= $cumulativeStake) {
+                return $validator;
+            }
+        }
+        
+        // Fallback: return first validator
+        return $validators[0];
+    }
+    
+    /**
+     * Create system validator if none exist
+     */
+    private function createSystemValidator() {
+        try {
+            // Load ValidatorManager
+            require_once __DIR__ . '/core/Consensus/ValidatorManager.php';
+            $validatorManager = new \Blockchain\Core\Consensus\ValidatorManager($this->pdo);
+            
+            return $validatorManager->createSystemValidator();
+        } catch (Exception $e) {
+            $this->log("Failed to create system validator: " . $e->getMessage());
+            return null;
+        }
+    }
+    
+    /**
+     * Create a new block with transactions
+     */
+    private function createNewBlock($height, $previousHash, $transactions, $validator) {
+        try {
+            $this->pdo->beginTransaction();
+            
+            // Create block data
+            $timestamp = time();
+            $merkleRoot = $this->calculateMerkleRoot($transactions);
+            $blockHash = hash('sha256', $height . $timestamp . $previousHash . $merkleRoot . $validator['address']);
+            
+            // Sign block with validator
+            $signature = hash('sha256', $blockHash . $validator['address']);
+            
+            // Insert block
+            $stmt = $this->pdo->prepare("
+                INSERT INTO blocks (hash, parent_hash, height, timestamp, validator, signature, merkle_root, transactions_count, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ");
+            
+            $metadata = json_encode([
+                'miner' => 'NetworkSyncManager',
+                'pos_algorithm' => 'stake_weighted',
+                'created_at' => date('c'),
+                'validator_stake' => $validator['stake']
+            ]);
+            
+            $stmt->execute([
+                $blockHash,
+                $previousHash,
+                $height,
+                $timestamp,
+                $validator['address'],
+                $signature,
+                $merkleRoot,
+                count($transactions),
+                $metadata
+            ]);
+            
+            // Insert transactions
+            foreach ($transactions as $tx) {
+                $stmt = $this->pdo->prepare("
+                    INSERT INTO transactions (hash, block_hash, block_height, from_address, to_address, amount, fee, gas_limit, gas_used, gas_price, nonce, data, signature, status, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?)
+                    ON DUPLICATE KEY UPDATE 
+                    block_hash = VALUES(block_hash),
+                    block_height = VALUES(block_height),
+                    status = 'confirmed'
+                ");
+                
+                $stmt->execute([
+                    $tx['tx_hash'],
+                    $blockHash,
+                    $height,
+                    $tx['from_address'],
+                    $tx['to_address'],
+                    $tx['amount'],
+                    $tx['fee'],
+                    $tx['gas_limit'] ?? 21000,
+                    $tx['gas_limit'] ?? 21000,
+                    $tx['gas_price'] ?? 0,
+                    $tx['nonce'],
+                    $tx['data'] ?? '',
+                    $tx['signature'],
+                    $timestamp
+                ]);
+                
+                // Process transaction effects (wallet balances)
+                $this->processTransactionEffects($tx, $height);
+            }
+            
+            $this->pdo->commit();
+            
+            return [
+                'hash' => $blockHash,
+                'height' => $height,
+                'transactions_count' => count($transactions),
+                'validator' => $validator['address']
+            ];
+            
+        } catch (Exception $e) {
+            $this->pdo->rollBack();
+            $this->log("Block creation failed: " . $e->getMessage());
+            return null;
+        }
+    }
+    
+    /**
+     * Calculate Merkle root for transactions
+     */
+    private function calculateMerkleRoot($transactions) {
+        if (empty($transactions)) {
+            return hash('sha256', '');
+        }
+        
+        $hashes = array_map(function($tx) {
+            return $tx['tx_hash'];
+        }, $transactions);
+        
+        while (count($hashes) > 1) {
+            $newHashes = [];
+            for ($i = 0; $i < count($hashes); $i += 2) {
+                $left = $hashes[$i];
+                $right = $hashes[$i + 1] ?? $hashes[$i];
+                $newHashes[] = hash('sha256', $left . $right);
+            }
+            $hashes = $newHashes;
+        }
+        
+        return $hashes[0];
+    }
+    
+    /**
+     * Process transaction effects on wallet balances
+     */
+    private function processTransactionEffects($transaction, $blockHeight) {
+        // Update wallet balances for transfers
+        if ($transaction['from_address'] !== 'genesis' && $transaction['from_address'] !== 'genesis_address') {
+            // Deduct from sender
+            $stmt = $this->pdo->prepare("
+                UPDATE wallets 
+                SET balance = balance - ?, 
+                    nonce = nonce + 1,
+                    updated_at = NOW()
+                WHERE address = ?
+            ");
+            $stmt->execute([$transaction['amount'] + $transaction['fee'], $transaction['from_address']]);
+        }
+        
+        // Add to receiver
+        $stmt = $this->pdo->prepare("
+            INSERT INTO wallets (address, balance, created_at, updated_at)
+            VALUES (?, ?, NOW(), NOW())
+            ON DUPLICATE KEY UPDATE 
+            balance = balance + ?,
+            updated_at = NOW()
+        ");
+        $stmt->execute([
+            $transaction['to_address'],
+            $transaction['amount'],
+            $transaction['amount']
+        ]);
+    }
+    
+    /**
+     * Remove transactions from mempool
+     */
+    private function removeFromMempool($txHashes) {
+        if (empty($txHashes)) return;
+        
+        $placeholders = str_repeat('?,', count($txHashes) - 1) . '?';
+        $stmt = $this->pdo->prepare("DELETE FROM mempool WHERE tx_hash IN ($placeholders)");
+        $stmt->execute($txHashes);
+        
+        $this->log("Removed " . count($txHashes) . " transactions from mempool");
+    }
+    
+    /**
+     * Broadcast newly mined block to all network nodes
+     */
+    private function broadcastNewBlock($blockData) {
+        try {
+            $this->log("Broadcasting new block {$blockData['hash']} to network nodes...");
+            
+            // Get all active network nodes (excluding current node)
+            $networkNodes = $this->getNetworkNodesForBroadcast();
+            
+            if (empty($networkNodes)) {
+                $this->log("No network nodes available for broadcast");
+                return false;
+            }
+            
+            $successCount = 0;
+            $totalNodes = count($networkNodes);
+            
+            foreach ($networkNodes as $nodeUrl) {
+                if ($this->broadcastToNode($nodeUrl, $blockData)) {
+                    $successCount++;
+                    $this->log("✅ Block broadcast successful: $nodeUrl");
+                } else {
+                    $this->log("❌ Block broadcast failed: $nodeUrl");
+                }
+            }
+            
+            $this->log("Block broadcast completed: {$successCount}/{$totalNodes} nodes notified");
+            
+            // If we successfully broadcast to majority of nodes, trigger sync on them
+            if ($successCount > 0) {
+                $this->triggerNetworkSync($networkNodes);
+            }
+            
+            return $successCount > 0;
+            
+        } catch (Exception $e) {
+            $this->log("Block broadcast failed: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Get network nodes for broadcasting (excluding current node)
+     */
+    private function getNetworkNodesForBroadcast() {
+        $nodes = [];
+        
+        try {
+            // Get nodes from database
+            $stmt = $this->pdo->prepare("
+                SELECT ip_address, port, metadata 
+                FROM nodes 
+                WHERE status = 'active' 
+                AND reputation_score >= 50
+            ");
+            $stmt->execute();
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            foreach ($rows as $row) {
+                $ip = trim($row['ip_address'] ?? '');
+                $port = (int)($row['port'] ?? 80);
+                $meta = $row['metadata'] ?? null;
+                
+                $metaArr = [];
+                if (is_string($meta) && $meta !== '') {
+                    $decoded = json_decode($meta, true);
+                    if (is_array($decoded)) $metaArr = $decoded;
+                } elseif (is_array($meta)) {
+                    $metaArr = $meta;
+                }
+                
+                $protocol = $metaArr['protocol'] ?? 'https';
+                $domain = $metaArr['domain'] ?? '';
+                $host = $domain !== '' ? $domain : $ip;
+                if ($host === '') continue;
+                
+                $defaultPort = ($protocol === 'https') ? 443 : 80;
+                $portPart = ($port > 0 && $port !== $defaultPort) ? (':' . $port) : '';
+                $url = sprintf('%s://%s%s', $protocol, rtrim($host, '/'), $portPart);
+                
+                // Exclude current node
+                $currentDomain = $this->getCurrentNodeDomain();
+                if ($currentDomain && $this->isSameNode($url, $currentDomain)) {
+                    continue;
+                }
+                
+                $nodes[] = $url;
+            }
+            
+            // Fallback to config nodes if database is empty
+            if (empty($nodes)) {
+                $configNodes = $this->config['network_nodes'] ?? '';
+                $candidates = preg_split('/[\r\n,]+/', (string)$configNodes);
+                $nodes = array_values(array_filter(array_map('trim', $candidates)));
+            }
+            
+        } catch (Exception $e) {
+            $this->log("Failed to get network nodes: " . $e->getMessage());
+        }
+        
+        return $nodes;
+    }
+    
+    /**
+     * Broadcast block to a specific node
+     */
+    private function broadcastToNode($nodeUrl, $blockData) {
+        try {
+            // Try to notify node about new block via sync endpoint
+            $syncUrl = rtrim($nodeUrl, '/') . '/network_sync.php?action=sync_new_block';
+            
+            $postData = json_encode([
+                'block_hash' => $blockData['hash'],
+                'block_height' => $blockData['height'],
+                'source_node' => $this->getCurrentNodeDomain(),
+                'timestamp' => time()
+            ]);
+            
+            $context = stream_context_create([
+                'http' => [
+                    'method' => 'POST',
+                    'header' => "Content-Type: application/json\r\n" .
+                               "Content-Length: " . strlen($postData) . "\r\n",
+                    'content' => $postData,
+                    'timeout' => 10
+                ]
+            ]);
+            
+            $result = @file_get_contents($syncUrl, false, $context);
+            
+            if ($result !== false) {
+                $response = json_decode($result, true);
+                return isset($response['status']) && $response['status'] === 'success';
+            }
+            
+            return false;
+            
+        } catch (Exception $e) {
+            $this->log("Broadcast to $nodeUrl failed: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Trigger sync on network nodes after broadcasting
+     */
+    private function triggerNetworkSync($nodes) {
+        foreach ($nodes as $nodeUrl) {
+            try {
+                // Trigger async sync on remote node
+                $syncTriggerUrl = rtrim($nodeUrl, '/') . '/network_sync.php?action=trigger_sync';
+                
+                $context = stream_context_create([
+                    'http' => [
+                        'method' => 'GET',
+                        'timeout' => 5, // Short timeout for trigger
+                        'header' => "User-Agent: BlockMiner-SyncTrigger/1.0\r\n"
+                    ]
+                ]);
+                
+                // Fire and forget - don't wait for response
+                @file_get_contents($syncTriggerUrl, false, $context);
+                
+            } catch (Exception $e) {
+                // Ignore errors for sync triggers
+            }
+        }
+        
+        $this->log("Sync triggers sent to " . count($nodes) . " nodes");
+    }
 }
 
 // CLI Mode
@@ -1964,11 +2467,39 @@ if (php_sapi_name() === 'cli') {
                 echo "Completed at: " . $result['maintenance_time'] . "\n";
                 break;
                 
+            case 'mine':
+                // Start PoS block mining
+                $interval = isset($argv[2]) ? (int)$argv[2] : 30;
+                $maxTx = isset($argv[3]) ? (int)$argv[3] : 100;
+                echo "Starting PoS block mining (interval: {$interval}s, max transactions: {$maxTx})\n";
+                $syncManager->startBlockMining($interval, $maxTx);
+                break;
+                
+            case 'mine-once':
+                // Mine a single block
+                echo "Mining single block from mempool...\n";
+                $result = $syncManager->mineNewBlock(100);
+                if ($result['success']) {
+                    echo "✅ Block mined successfully!\n";
+                    echo "   Height: {$result['block_height']}\n";
+                    echo "   Hash: {$result['block_hash']}\n";
+                    echo "   Transactions: {$result['transactions_count']}\n";
+                    echo "   Validator: {$result['validator']}\n";
+                } else {
+                    echo "ℹ️  {$result['message']}\n";
+                }
+                break;
+                
             default:
-                echo "Usage: php network_sync.php [sync|status|mempool]\n";
-                echo "  sync    - Perform full blockchain synchronization\n";
-                echo "  status  - Show current database status\n";
-                echo "  mempool - Run mempool maintenance and cleanup\n";
+                echo "Available commands:\n";
+                echo "  sync         - Full blockchain synchronization\n";
+                echo "  status       - Show network status\n";
+                echo "  mempool      - Run mempool maintenance\n";
+                echo "  mine         - Start continuous PoS mining (interval_seconds max_transactions)\n";
+                echo "  mine-once    - Mine a single block from mempool\n";
+                echo "\nExamples:\n";
+                echo "  php network_sync.php mine 30 50    # Mine every 30 seconds, max 50 tx per block\n";
+                echo "  php network_sync.php mine-once     # Mine one block now\n";
                 break;
         }
         
@@ -1999,6 +2530,72 @@ if (isset($_GET['action'])) {
             case 'mempool_maintenance':
                 $result = $syncManager->runMempoolMaintenance();
                 echo json_encode($result);
+                break;
+                
+            case 'mine_block':
+                $result = $syncManager->mineNewBlock(100);
+                echo json_encode($result);
+                break;
+                
+            case 'get_mempool_status':
+                $stmt = $syncManager->pdo->prepare("
+                    SELECT status, COUNT(*) as count 
+                    FROM mempool 
+                    GROUP BY status
+                ");
+                $stmt->execute();
+                $mempoolStats = [];
+                while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                    $mempoolStats[$row['status']] = $row['count'];
+                }
+                
+                echo json_encode([
+                    'status' => 'success',
+                    'mempool_stats' => $mempoolStats,
+                    'timestamp' => date('Y-m-d H:i:s')
+                ]);
+                break;
+                
+            case 'sync_new_block':
+                // Handle notification about new block from another node
+                $input = json_decode(file_get_contents('php://input'), true);
+                if ($input && isset($input['block_hash'], $input['block_height'])) {
+                    $syncManager->log("Received new block notification: {$input['block_hash']} at height {$input['block_height']}");
+                    
+                    // Check if we need to sync this block
+                    $stmt = $syncManager->pdo->prepare("SELECT COUNT(*) FROM blocks WHERE hash = ?");
+                    $stmt->execute([$input['block_hash']]);
+                    $exists = $stmt->fetchColumn() > 0;
+                    
+                    if (!$exists) {
+                        // Block doesn't exist, trigger sync
+                        $syncManager->log("Block not found locally, triggering sync...");
+                        try {
+                            $sourceNode = $input['source_node'] ?? null;
+                            if ($sourceNode) {
+                                $result = $syncManager->syncBlocksOnly($sourceNode);
+                                echo json_encode(['status' => 'success', 'message' => 'Sync completed', 'result' => $result]);
+                            } else {
+                                echo json_encode(['status' => 'success', 'message' => 'Block notification received']);
+                            }
+                        } catch (Exception $e) {
+                            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+                        }
+                    } else {
+                        echo json_encode(['status' => 'success', 'message' => 'Block already exists']);
+                    }
+                } else {
+                    echo json_encode(['status' => 'error', 'message' => 'Invalid block notification']);
+                }
+                break;
+                
+            case 'trigger_sync':
+                // Trigger background sync (non-blocking)
+                $syncManager->log("Sync trigger received from external node");
+                echo json_encode(['status' => 'success', 'message' => 'Sync trigger acknowledged']);
+                
+                // In a production environment, this would trigger a background job
+                // For now, we just acknowledge the trigger
                 break;
                 
             default:
