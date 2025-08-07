@@ -236,7 +236,7 @@ function getNetworkStats(PDO $pdo, string $network): array
         'last_block_time' => null,
         'hash_rate' => '0 H/s',
         'difficulty' => 1,
-        'active_nodes' => 1,
+        'active_nodes' => 0,
         'consensus' => 'pos',
         'version' => '1.0.0'
     ];
@@ -338,6 +338,56 @@ function getNetworkStats(PDO $pdo, string $network): array
             }
         } else if ($debug) {
             $debugInfo['db_transactions_table'] = 'not_exists';
+        }
+        
+        // Get active nodes count
+        $stmt = $pdo->query("SHOW TABLES LIKE 'nodes'");
+        if ($stmt->rowCount() > 0) {
+            $stmt = $pdo->query("SELECT COUNT(*) as count FROM nodes WHERE status = 'active'");
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+            $activeNodesCount = $result['count'] ?? 0;
+            $stats['active_nodes'] = $activeNodesCount;
+            
+            if ($debug) {
+                $debugInfo['db_nodes_table'] = 'exists';
+                $debugInfo['db_active_nodes_count'] = $activeNodesCount;
+            }
+        } else {
+            // Default to 1 if nodes table doesn't exist
+            $stats['active_nodes'] = 1;
+            if ($debug) {
+                $debugInfo['db_nodes_table'] = 'not_exists';
+            }
+        }
+        
+        // Calculate hash rate (blocks per hour for PoS)
+        $stmt = $pdo->query("SHOW TABLES LIKE 'blocks'");
+        if ($stmt->rowCount() > 0) {
+            // Get blocks from last hour
+            $oneHourAgo = time() - 3600;
+            $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM blocks WHERE timestamp > ?");
+            $stmt->execute([$oneHourAgo]);
+            $blocksLastHour = $stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0;
+            
+            // For PoS, we show "blocks per hour" instead of traditional hash rate
+            if ($blocksLastHour > 0) {
+                $stats['hash_rate'] = $blocksLastHour . ' H';
+            } else {
+                // Fallback: get average from last 24 hours
+                $twentyFourHoursAgo = time() - (24 * 3600);
+                $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM blocks WHERE timestamp > ?");
+                $stmt->execute([$twentyFourHoursAgo]);
+                $blocksLast24h = $stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0;
+                $averagePerHour = $blocksLast24h > 0 ? round($blocksLast24h / 24, 1) : 0;
+                $stats['hash_rate'] = $averagePerHour . ' blocks/h';
+            }
+            
+            if ($debug) {
+                $debugInfo['hash_rate_calculation'] = [
+                    'blocks_last_hour' => $blocksLastHour,
+                    'one_hour_ago_timestamp' => $oneHourAgo
+                ];
+            }
         }
     } catch (Exception $e) {
         // Database tables might not exist yet, use file-based data
