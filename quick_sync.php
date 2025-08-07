@@ -281,6 +281,18 @@ function performSync($syncManager, $options = []) {
             if ($verbose) echo "Mempool processing warning: " . $e->getMessage() . "\n";
         }
         
+        // Step 3.5: Fix pending transactions
+        if (!$quiet) echo "🔧 Fixing pending transactions...\n";
+        
+        try {
+            $fixResult = fixPendingTransactions($syncManager, $quiet, $verbose);
+            if (isset($fixResult['fixed']) && $fixResult['fixed'] > 0) {
+                if (!$quiet) echo "✅ Fixed {$fixResult['fixed']} pending transactions\n";
+            }
+        } catch (Exception $e) {
+            if ($verbose) echo "Pending transactions fix warning: " . $e->getMessage() . "\n";
+        }
+        
         // Step 4: Data consistency check and recovery
         if (!$quiet) echo "🔍 Checking data consistency and performing recovery...\n";
         
@@ -610,5 +622,106 @@ try {
     error_log("[quick_sync] " . str_replace("\n", " | ", $msg));
 
     exit(1);
+}
+
+/**
+ * Fix pending transactions that should be confirmed
+ * Updates status from 'pending' to 'confirmed' for transactions that have block_hash but missing block_height
+ */
+function fixPendingTransactions($syncManager, $quiet = false, $verbose = false) {
+    try {
+        if (!$quiet) echo "🔧 Fixing pending transactions with missing block heights...\n";
+        
+        // Get PDO connection via reflection (safe access)
+        $reflection = new ReflectionClass($syncManager);
+        if (!$reflection->hasProperty('pdo')) {
+            throw new Exception("PDO property not accessible in NetworkSyncManager");
+        }
+        
+        $property = $reflection->getProperty('pdo');
+        $property->setAccessible(true);
+        $pdo = $property->getValue($syncManager);
+        
+        if (!$pdo) {
+            throw new Exception("PDO connection not available");
+        }
+        
+        // Find pending transactions that have block_hash but missing block_height
+        $stmt = $pdo->prepare("
+            SELECT t.*, b.height as actual_block_height, b.hash as actual_block_hash
+            FROM transactions t
+            LEFT JOIN blocks b ON t.block_hash = b.hash
+            WHERE t.status = 'pending' 
+            AND t.block_hash IS NOT NULL 
+            AND t.block_hash != ''
+            AND b.hash IS NOT NULL
+        ");
+        $stmt->execute();
+        $pendingTxs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        if (empty($pendingTxs)) {
+            if (!$quiet) echo "✅ No pending transactions to fix\n";
+            return ['fixed' => 0, 'message' => 'No pending transactions found'];
+        }
+        
+        if ($verbose) {
+            echo "Found " . count($pendingTxs) . " pending transactions to fix:\n";
+            foreach ($pendingTxs as $tx) {
+                echo "  - {$tx['hash']} -> block {$tx['actual_block_height']} ({$tx['actual_block_hash']})\n";
+            }
+        }
+        
+        $pdo->beginTransaction();
+        $fixedCount = 0;
+        
+        // Update each pending transaction
+        foreach ($pendingTxs as $tx) {
+            $updateStmt = $pdo->prepare("
+                UPDATE transactions 
+                SET status = 'confirmed', 
+                    block_height = ?
+                WHERE hash = ? 
+                AND status = 'pending'
+            ");
+            
+            $result = $updateStmt->execute([
+                $tx['actual_block_height'],
+                $tx['hash']
+            ]);
+            
+            if ($result && $updateStmt->rowCount() > 0) {
+                $fixedCount++;
+                if ($verbose) {
+                    echo "  ✅ Fixed: {$tx['hash']} -> confirmed at height {$tx['actual_block_height']}\n";
+                }
+            }
+        }
+        
+        $pdo->commit();
+        
+        if (!$quiet) {
+            echo "✅ Fixed $fixedCount pending transactions\n";
+        }
+        
+        return [
+            'fixed' => $fixedCount,
+            'total_found' => count($pendingTxs),
+            'message' => "Successfully fixed $fixedCount pending transactions"
+        ];
+        
+    } catch (Exception $e) {
+        if (isset($pdo) && $pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        
+        $error = "Failed to fix pending transactions: " . $e->getMessage();
+        if (!$quiet) echo "❌ $error\n";
+        error_log("[quick_sync] fixPendingTransactions error: " . $error);
+        
+        return [
+            'fixed' => 0,
+            'error' => $error
+        ];
+    }
 }
 ?>

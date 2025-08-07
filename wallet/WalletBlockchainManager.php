@@ -806,8 +806,8 @@ class WalletBlockchainManager
                 // Determine if this is a genesis transaction
                 $isGenesisTransaction = ($index == 0) || (isset($tx['data']['genesis']) && $tx['data']['genesis'] === true) || ($tx['from'] === 'genesis' || $tx['from'] === 'genesis_address');
                 
-                // Genesis transactions are confirmed immediately, others start as pending
-                $transactionStatus = $isGenesisTransaction ? 'confirmed' : 'pending';
+                // All transactions included in a block should be confirmed (not pending)
+                $transactionStatus = 'confirmed';
                 
                 \WalletLogger::debug("Saving transaction {$tx['hash']} with status: $transactionStatus (genesis: " . ($isGenesisTransaction ? 'yes' : 'no') . ")");
                 
@@ -819,7 +819,7 @@ class WalletBlockchainManager
                     block_height = VALUES(block_height),
                     data = VALUES(data),
                     signature = VALUES(signature),
-                    status = ?
+                    status = 'confirmed'
                 ");
                 
                 $stmt->execute([
@@ -834,12 +834,27 @@ class WalletBlockchainManager
                     $tx['signature'],
                     $transactionStatus,
                     $tx['timestamp'],
-                    $tx['timestamp'],
-                    $transactionStatus
+                    $tx['timestamp']
                 ]);
             }
             
             \WalletLogger::debug("Processing " . count($transactions) . " transactions for wallet creation");
+            
+            // Update any existing pending transactions to confirmed status
+            \WalletLogger::debug("Updating pending transactions to confirmed status");
+            $txHashes = array_column($transactions, 'hash');
+            if (!empty($txHashes)) {
+                $placeholders = str_repeat('?,', count($txHashes) - 1) . '?';
+                $updateStmt = $this->database->prepare("
+                    UPDATE transactions 
+                    SET status = 'confirmed', block_hash = ?, block_height = ? 
+                    WHERE hash IN ($placeholders) AND status = 'pending'
+                ");
+                $updateParams = array_merge([$hash, $index], $txHashes);
+                $updateStmt->execute($updateParams);
+                $updatedRows = $updateStmt->rowCount();
+                \WalletLogger::debug("Updated $updatedRows pending transactions to confirmed status");
+            }
             
             // Process wallet_create transactions to ensure wallets exist in database
             foreach ($transactions as $tx) {
