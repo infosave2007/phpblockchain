@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/Version-2.0.0-orange.svg)](https://github.com/infosave2007/phpblockchain)
 
-A professional blockchain platform built with PHP 8+, featuring Proof of Stake consensus, smart contracts, advanced synchronization systems, and enterprise security.
+A professional blockchain platform built with PHP 8+, featuring Proof of Stake consensus, smart contracts, advanced synchronization systems, enterprise security, and comprehensive web dashboard.
 
 ## ✨ Key Features
 
@@ -14,11 +14,18 @@ A professional blockchain platform built with PHP 8+, featuring Proof of Stake c
 - **Advanced Cryptography** - secp256k1, ECDSA, Keccak-256
 - **High Performance** - 1000+ transactions per second
 
+### 🖥️ Web Interface & Management
+- **Node Dashboard** - Real-time health monitoring and statistics
+- **Web Explorer** - Built-in blockchain explorer with search
+- **Wallet Interface** - Complete wallet management system
+- **API Documentation** - Interactive API documentation page
+- **Multi-language Support** - English and Russian interface
+
 ### ⚡ Advanced Synchronization
-- **Fast Sync** - 10x faster synchronization with state snapshots
-- **Light Client** - 92% storage reduction with SPV verification
-- **Checkpoint Sync** - Instant bootstrapping from trusted checkpoints
-- **Mobile Optimized** - Efficient sync for resource-constrained devices
+- **Network Sync** - Automated network synchronization
+- **Recovery System** - Automatic blockchain recovery tools
+- **Node Management** - Multi-node network coordination
+- **Health Monitoring** - Real-time node health checks
 
 ### 🛡️ Enterprise Security
 - **Hardware Security Module** - Professional key management
@@ -29,7 +36,8 @@ A professional blockchain platform built with PHP 8+, featuring Proof of Stake c
 ### 🔧 Developer Tools
 - **RESTful API** - Complete blockchain interaction API
 - **CLI Tools** - Command-line interface for operations
-- **Web Explorer** - Built-in blockchain explorer
+- **Web Dashboard** - Node management and monitoring
+- **Network Tools** - Sync, recovery, and node management
 - **Comprehensive Tests** - Full test coverage
 
 ## 🚀 Quick Start
@@ -37,26 +45,10 @@ A professional blockchain platform built with PHP 8+, featuring Proof of Stake c
 ### Requirements
 
 #### System Requirements
-- **PHP 8.0 or higher** with the following extensions:
-  - OpenSSL (for cryptographic operations)
-  - cURL (for network communications)
-  - JSON (for data serialization)
-  - mbstring (for string manipulation)
-  - MySQLi or PDO (for database operations)
+- **PHP 8.0 or higher** with extensions: OpenSSL, cURL, JSON, mbstring
 - **Composer** (dependency management)
-- **MySQL 8.0+** or **MariaDB 10.4+** (optional, for persistent storage)
-- **Redis** (optional, for caching and session storage)
-
-#### Development Requirements
-- **Git** (for version control)
-- **Docker & Docker Compose** (optional, for containerized deployment)
-- **Node.js 16+** (optional, for frontend tools)
-
-#### Production Requirements
-- **Web server** (Apache/Nginx)
-- **SSL certificate** (for HTTPS)
-- **Firewall configuration** (ports 8545, 8546)
-- **Backup solution** (for blockchain data)
+- **MySQL 8.0+** or **MariaDB 10.4+** (for persistent storage)
+- **Web server** (Apache/Nginx for production)
 
 ### Installation
 
@@ -65,61 +57,21 @@ A professional blockchain platform built with PHP 8+, featuring Proof of Stake c
 git clone https://github.com/infosave2007/phpblockchain.git
 cd phpblockchain
 
-# Install dependencies (simplified - works without database extensions)
+# Install dependencies
 composer install --ignore-platform-req=ext-mysqli --ignore-platform-req=ext-pdo_mysql --ignore-platform-req=ext-gmp --no-dev
 
-# Alternative: Install with development tools
-# composer install --ignore-platform-req=ext-mysqli --ignore-platform-req=ext-pdo_mysql --ignore-platform-req=ext-gmp
-
-# Copy environment configuration
-cp .env.example config/.env
-
 # Set proper permissions
-chmod +x server.php cli.php crypto-cli.php check.php
+chmod +x *.php
 chmod -R 755 storage/ logs/
-
-# Create required directories
-mkdir -p storage/blocks storage/state storage/cache
-mkdir -p logs/blockchain logs/transactions
 
 # Run system check
 php check.php
-
-# Initialize configuration (optional - use web installer instead)
-php cli.php init --network="My Network" --symbol="MBC"
 ```
 
-### Configuration
+### Web-based Installation
 
-#### Environment Variables (config/.env)
-```bash
-# Blockchain Configuration
-BLOCKCHAIN_NETWORK=mainnet
-BLOCKCHAIN_SYMBOL=MBC
-CONSENSUS_ALGORITHM=pos
-BLOCK_TIME=10
-INITIAL_SUPPLY=1000000
+Open browser and navigate to: `http://localhost/web-installer/`
 
-# Database Configuration
-DB_HOST=localhost
-DB_PORT=3306
-DB_DATABASE=blockchain
-DB_USERNAME=blockchain_user
-DB_PASSWORD=your_secure_password
-
-# Network Configuration
-MAX_PEERS=25
-
-# Security
-API_KEY=your_secure_api_key_32_chars_min
-ADMIN_EMAIL=admin@yourdomain.com
-RATE_LIMIT_ENABLED=true
-```
-
-#### Web-based Installation
-
-# Open browser and navigate to:
-http://localhost:xxxx/web-installer/
 ![wallet_step1](https://github.com/user-attachments/assets/8875e33f-20e5-431d-92ca-05d485859da3)
 ![wallet_step2](https://github.com/user-attachments/assets/ebc53876-c064-4372-a4c2-34694c3c4422)
 ![wallet_step3](https://github.com/user-attachments/assets/587c6ee5-1fb5-49f8-8705-26e64987ea44)
@@ -128,86 +80,135 @@ http://localhost:xxxx/web-installer/
 ![wallet_step6](https://github.com/user-attachments/assets/97e0d06e-5438-4c57-bcf3-bfe25e1bd219)
 ![wallet_step7](https://github.com/user-attachments/assets/9fde8a23-81fa-42c5-a07f-73b467d65fc1)
 
-# Follow the installation wizard
-```
+Complete installation wizard:
+1. System requirements check
+2. Database configuration
+3. Network setup
+4. Genesis block creation
+5. Admin account setup
 
-#### Manual Database Setup
-```sql
-CREATE DATABASE blockchain;
-CREATE USER 'blockchain_user'@'localhost' IDENTIFIED BY 'your_secure_password';
-GRANT ALL PRIVILEGES ON blockchain.* TO 'blockchain_user'@'localhost';
-FLUSH PRIVILEGES;
-```
+### Browser Access
 
-### Quick Verification
+After installation, access your blockchain through web interface:
+
 ```bash
-# Run tests
-php test.php
+# Start development server
+php server.php
 
-# Start the demo
-php demo.php
-
-# Professional unit tests
-./vendor/bin/phpunit
-
-# Check system status
-php cli.php status
+# Open in browser (development)
+http://localhost
 ```
 
-### Basic Usage
+**Note**: For production, use standard HTTP (80) or HTTPS (443) ports with Apache/Nginx.
 
-```php
-<?php
-require_once 'vendor/autoload.php';
+**Features available in web interface:**
+- 🔗 **Node Dashboard** - Real-time blockchain statistics and health monitoring
+- 💰 **Wallet Interface** - Create wallets, send transactions, check balances
+- 🔍 **Blockchain Explorer** - Browse blocks, transactions, and network nodes
+- 🔌 **API Documentation** - Interactive API reference
+- 🌐 **Multi-language** - Switch between English and Russian
 
-use Blockchain\Core\Cryptography\KeyPair;
-use Blockchain\Core\Transaction\Transaction;
-use Blockchain\Core\Blockchain\Block;
+## 🖥️ Web Interface Usage
 
-// Generate keypairs
-$alice = KeyPair::generate();
-$bob = KeyPair::generate();
+### Main Dashboard
+Access your blockchain node:
+- **Development**: `http://localhost` (if using standard port)
+- **Production**: `http://yourdomain.com` or `https://yourdomain.com`
 
-// Create transaction
-$transaction = new Transaction(
-    $alice->getPublicKey(),
-    $bob->getPublicKey(),
-    100.0,
-    0.1
-);
+Features:
+- **Real-time Statistics** - Blocks, transactions, active nodes, hash rate
+- **Network Health** - Node status, component checks, network statistics
+- **Quick Actions** - Direct links to wallet, explorer, and API docs
 
-// Create block
-$block = new Block(1, [$transaction], 'previous_hash', time());
+### Wallet Management
+Click "💰 Wallet" button to:
+- Create new wallets with mnemonic phrases
+- Check wallet balances
+- Send and receive transactions
+- View transaction history
+- Manage multiple wallets
 
-echo "Block hash: " . $block->getHash() . "\n";
+### Blockchain Explorer
+Click "🔍 Explorer" button to:
+- Browse recent blocks and transactions
+- Search by block height, hash, or address
+- View network nodes and validators
+- Monitor mempool status
+
+### API Documentation
+Click "🔌 API" button for:
+- Complete API endpoint reference
+- Interactive examples with copy-to-clipboard
+- Request/response formats
+- Authentication and parameters guide
+
+### Advanced Tools (CLI)
+For advanced users and automation:
+
+```bash
+# Network synchronization
+php network_sync.php sync
+
+# Node management
+php node_manager.php
+
+# Recovery operations
+php recovery_cli.php
+
+# Generate crypto keys
+php crypto-cli.php generate
 ```
 
-## 📊 Performance Benchmarks
+## 📊 Web Interface Components
 
-| Feature | Performance |
-|---------|-------------|
-| Transaction Processing | 1,000+ tx/sec |
-| Block Validation | 10+ blocks/sec |
-| Sync Speed (Fast) | 10x improvement |
-| Storage (Light Client) | 92% reduction |
-| Memory Usage | < 10MB |
+### Node Dashboard (`index.php`)
+- **Health Monitoring** - Real-time node status and component checks
+- **Blockchain Stats** - Blocks, transactions, active nodes, hash rate display
+- **Quick Access Panel** - One-click access to wallet, explorer, API docs
+- **Multi-language** - Automatic language detection and switching
 
-## 🏗️ Architecture
+### API Documentation (`api-docs.php`)
+- **Interactive Docs** - Click-to-copy code examples
+- **Complete Reference** - All explorer, wallet, and node endpoints
+- **Live Examples** - Working curl commands for testing
+- **Multi-language** - English and Russian documentation
 
+### Additional Tools
+- `network_sync.php` - Network synchronization manager
+- `node_manager.php` - Multi-node coordination
+- `recovery_cli.php` - Blockchain recovery tools
+- `crypto-cli.php` - Cryptographic key management
+
+### Directory Structure
 ```
-├── core/
-│   ├── Blockchain/         # Blockchain core logic
-│   ├── Cryptography/       # Cryptographic functions
-│   ├── Consensus/          # Proof of Stake implementation
-│   ├── Transaction/        # Transaction processing
-│   ├── SmartContract/      # Smart contract VM
-│   ├── Sync/              # Advanced synchronization
-│   └── Security/          # Security features
-├── api/                   # REST API
-├── wallet/                # Wallet management
-├── tests/                 # Test suite
-└── examples/              # Usage examples
+├── core/               # Core blockchain logic
+├── api/               # REST API endpoints
+├── wallet/            # Wallet management
+├── explorer/          # Blockchain explorer
+├── web-installer/     # Web-based installation
+├── sync-service/      # Synchronization services
+├── storage/           # Blockchain data storage
+├── config/            # Configuration files
+└── tests/             # Test suite
 ```
+
+## 🔐 API Endpoints
+
+### Explorer API
+- `GET /api/explorer/stats` - Blockchain statistics
+- `GET /api/explorer/blocks` - Recent blocks
+- `GET /api/explorer/transactions` - Recent transactions
+- `GET /api/explorer/?action=get_nodes_list` - Network nodes
+
+### Wallet API
+- `POST /wallet/wallet_api.php` - Wallet operations
+  - `action: create_wallet` - Create new wallet
+  - `action: get_balance` - Check balance
+  - `action: transfer_tokens` - Transfer tokens
+
+### Node API
+- `GET /api/health` - Node health check
+- `GET /api/status` - Full node status
 
 ## 🔐 Security Features
 
@@ -218,140 +219,65 @@ echo "Block hash: " . $block->getHash() . "\n";
 - **Multi-signature Transaction Support**
 - **Hardware Security Module Integration**
 
-## ⚡ Synchronization Strategies
+## 🧪 Testing & Deployment
 
-### Fast Sync
-- Downloads state snapshots
-- 10x faster than full sync
-- Validates recent blocks only
+### Testing via Web Interface
+1. **Development**: Open `http://localhost` for dashboard
+2. **Production**: Open `http://yourdomain.com` for dashboard
+3. Check all components show "✅ OK" status
+4. Click "💰 Wallet" and create test wallet
+5. Click "🔍 Explorer" and verify blockchain data
+6. Click "🔌 API" for documentation testing
 
-### Light Client
-- Downloads block headers only
-- SPV verification with Merkle proofs
-- 92% storage reduction
-
-### Checkpoint Sync
-- Bootstraps from trusted checkpoints
-- Instant network joining
-- Suitable for new nodes
-
-## 🧪 Testing
-
+### Alternative Testing
 ```bash
-# Run all tests
-./vendor/bin/phpunit
+# Run basic tests
+php tests/AllTests.php
 
-# Run simple tests
-php test.php
-
-# Run performance demo
-php demo.php
+# System check
+php check.php
 ```
+
+### Production Deployment
+```bash
+# Using Docker (recommended)
+docker-compose up -d
+
+# Development server (custom port if needed)
+php server.php --port=8080
+
+# Production with Apache/Nginx (standard ports 80/443)
+# Configure virtual host to point to project directory
+```
+
+**Production Access:**
+- Dashboard: `https://yourdomain.com`
+- API Docs: `https://yourdomain.com/api-docs.php`
+- Wallet: `https://yourdomain.com/wallet/`
+- Explorer: `https://yourdomain.com/explorer/`
+
+**Development Access:**
+- Dashboard: `http://localhost`
+- API Docs: `http://localhost/api-docs.php`
+- Wallet: `http://localhost/wallet/`
+- Explorer: `http://localhost/explorer/`
 
 ## 🔧 Troubleshooting
 
 ### Common Issues
+- **Permission Errors**: `chmod -R 755 storage/ logs/`
+- **Missing Extensions**: Install php-openssl, php-curl
+- **Database Issues**: Check config/.env settings
+- **Port Conflicts**: Use `php server.php --port=8081` for custom port
+- **Browser Access**: Ensure web server is properly configured
 
-#### Permission Errors
-```bash
-# Fix file permissions
-chmod -R 755 storage/ logs/
-chown -R www-data:www-data storage/ logs/  # Linux/Ubuntu
-chown -R _www:_www storage/ logs/          # macOS
-```
-
-#### OpenSSL Extension Missing
-```bash
-# Ubuntu/Debian
-sudo apt-get install php-openssl
-
-# CentOS/RHEL
-sudo yum install php-openssl
-
-# macOS
-brew install openssl
-```
-
-#### Missing Database Extensions
-```bash
-# Ubuntu/Debian
-sudo apt-get install php-mysqli php-pdo-mysql php-gmp
-
-# CentOS/RHEL
-sudo yum install php-mysqli php-pdo php-gmp
-
-# macOS
-brew install php-gmp
-
-# Alternative: Install without database extensions
-composer install --ignore-platform-req=ext-mysqli --ignore-platform-req=ext-pdo_mysql --ignore-platform-req=ext-gmp
-```
-
-#### Composer Issues
-```bash
-# Update Composer
-composer self-update
-
-# Clear cache
-composer clear-cache
-
-# Install with increased memory
-php -d memory_limit=2G composer install
-```
-
-#### Database Connection Issues
-```bash
-# Test database connection
-php cli.php db:test
-
-# Create database manually
-mysql -u root -p -e "CREATE DATABASE blockchain;"
-```
-
-#### GitHub Authentication Issues
-```bash
-# If you get GitHub authentication errors during installation
-composer clear-cache
-rm -rf vendor/ composer.lock
-
-# Use the simplified installation
-composer install --ignore-platform-req=ext-mysqli --ignore-platform-req=ext-pdo_mysql --ignore-platform-req=ext-gmp --no-dev
-```
-
-## 📚 API Documentation
-
-### Create Transaction
-```php
-POST /api/transaction
-{
-    "from": "public_key",
-    "to": "public_key", 
-    "amount": 100.0,
-    "fee": 0.1
-}
-```
-
-### Get Block
-```php
-GET /api/block/{hash}
-```
-
-### Get Balance
-```php
-GET /api/balance/{address}
-```
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+### Web Interface Issues
+- **Dashboard not loading**: Check web server configuration
+- **Port conflicts**: Use custom port with `php server.php --port=8081`
+- **Production deployment**: Use Apache/Nginx virtual hosts for standard ports (80/443)
+- **API docs not working**: Verify `api-docs.php` file exists
+- **Wallet errors**: Check database connection and permissions
+- **Language issues**: Clear browser cache and refresh
 
 ## 🚀 Deployment
 
@@ -360,26 +286,38 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 docker-compose up -d
 ```
 
-### Traditional Server
+### Development Server
 ```bash
-# Configure web server to point to index.php
-# Set proper permissions
-chmod +x server.php
+# Start development server
 php server.php
+
+# Custom port
+php server.php --port=8080
+
+# Background mode
+nohup php server.php > server.log 2>&1 &
 ```
+
+### Production Server
+For production, use Apache or Nginx with virtual hosts pointing to project directory:
+- Standard HTTP port: 80
+- Standard HTTPS port: 443
+- SSL certificate recommended for HTTPS
 
 ## 📈 Roadmap
 
-- [ ] Layer 2 scaling solutions
-- [ ] Cross-chain interoperability  
-- [ ] Advanced governance features
-- [ ] Mobile wallet applications
-- [ ] Enterprise integration tools
+- [ ] Enhanced mobile wallet
+- [ ] Cross-chain bridges
+- [ ] Advanced governance
+- [ ] Layer 2 scaling
+- [ ] Enterprise tools
 
 ## 💬 Support
 
-- GitHub Issues: [Report bugs](https://github.com/infosave2007/phpblockchain/issues)
-- Documentation: [Wiki](https://github.com/infosave2007/phpblockchain/wiki)
+- **Issues**: [GitHub Issues](https://github.com/infosave2007/phpblockchain/issues)
+- **Documentation**: Available in `/api-docs.php`
+- **Development Dashboard**: `http://localhost`
+- **Production Dashboard**: `http://yourdomain.com`
 
 ---
 
