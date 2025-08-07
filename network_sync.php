@@ -1907,10 +1907,235 @@ class NetworkSyncManager {
     }
 
     /**
-     * PoS Block Mining - Process mempool transactions into new blocks
+     * PoS Block Mining with Network Coordination
+     * Ensures only one node mines at a time and coordinates with quick_sync
+     */
+    public function startCoordinatedMining($intervalSeconds = 45, $maxTransactionsPerBlock = 100) {
+        $this->log("=== Starting Coordinated PoS Mining Process ===");
+        $this->log("Mining interval: {$intervalSeconds} seconds");
+        $this->log("Max transactions per block: {$maxTransactionsPerBlock}");
+        $this->log("Quick sync runs every 60 seconds - mining coordinated to avoid conflicts");
+        $this->log("Press Ctrl+C to stop mining");
+        
+        $lastBlockTime = 0;
+        $miningCount = 0;
+        
+        while (true) {
+            try {
+                $currentTime = time();
+                
+                // Avoid mining during quick_sync windows (55-65 seconds of each minute)
+                $secondInMinute = $currentTime % 60;
+                if ($secondInMinute >= 55 || $secondInMinute <= 5) {
+                    $this->log("⏸️  Pausing mining for quick_sync window (second {$secondInMinute}/60)");
+                    sleep(5);
+                    continue;
+                }
+                
+                // Check if this node should mine (leader election)
+                if (!$this->shouldThisNodeMine()) {
+                    $this->log("🔄 Another node is designated as miner, staying in sync mode");
+                    sleep(10);
+                    continue;
+                }
+                
+                // Check if enough time has passed since last block
+                if ($currentTime - $lastBlockTime >= $intervalSeconds) {
+                    $result = $this->coordinatedMineBlock($maxTransactionsPerBlock);
+                    if ($result['success']) {
+                        $lastBlockTime = $currentTime;
+                        $miningCount++;
+                        $this->log("✅ Block #{$result['block_height']} mined successfully");
+                        $this->log("   Hash: {$result['block_hash']}");
+                        $this->log("   Transactions: {$result['transactions_count']}");
+                        $this->log("   Validator: {$result['validator']}");
+                        $this->log("   Total blocks mined this session: {$miningCount}");
+                        
+                        // Wait a bit for network propagation before next mining attempt
+                        sleep(5);
+                    } else {
+                        $this->log("ℹ️  {$result['message']}");
+                    }
+                } else {
+                    $remaining = $intervalSeconds - ($currentTime - $lastBlockTime);
+                    $this->log("⏳ Waiting {$remaining}s until next mining opportunity...");
+                }
+                
+                sleep(5); // Check every 5 seconds for more responsive coordination
+                
+            } catch (Exception $e) {
+                $this->log("Mining error: " . $e->getMessage());
+                sleep(30); // Wait longer on errors
+            }
+        }
+    }
+    
+    /**
+     * Determine if this node should mine (simple leader election)
+     */
+    private function shouldThisNodeMine() {
+        try {
+            // Get current domain
+            $currentDomain = $this->getCurrentNodeDomain();
+            if (!$currentDomain) {
+                return true; // If can't determine, assume yes
+            }
+            
+            // Get all active nodes
+            $nodes = $this->getNetworkNodesForBroadcast();
+            $nodes[] = $currentDomain; // Include self
+            $nodes = array_unique($nodes);
+            sort($nodes); // Deterministic order
+            
+            if (empty($nodes) || count($nodes) == 1) {
+                return true; // Single node network
+            }
+            
+            // Simple time-based rotation: change leader every 5 minutes
+            $timeSlot = floor(time() / 300); // 5-minute slots
+            $leaderIndex = $timeSlot % count($nodes);
+            $designatedLeader = $nodes[$leaderIndex];
+            
+            $isLeader = $this->isSameNode($currentDomain, $designatedLeader);
+            
+            if ($isLeader) {
+                $this->log("🎯 This node is designated as mining leader for current time slot");
+            } else {
+                $this->log("👥 Mining leader is: {$designatedLeader}");
+            }
+            
+            return $isLeader;
+            
+        } catch (Exception $e) {
+            $this->log("Leader election failed: " . $e->getMessage());
+            return false; // Be conservative on errors
+        }
+    }
+    
+    /**
+     * Mine block with additional coordination checks
+     */
+    private function coordinatedMineBlock($maxTransactionsPerBlock) {
+        try {
+            // Double-check network state before mining
+            $this->ensureNetworkSyncBeforeMining();
+            
+            // Proceed with normal mining
+            $result = $this->mineNewBlock($maxTransactionsPerBlock);
+            
+            if ($result['success']) {
+                // Enhanced broadcasting with verification
+                $this->enhancedBlockBroadcast($result);
+            }
+            
+            return $result;
+            
+        } catch (Exception $e) {
+            return [
+                'success' => false,
+                'message' => 'Coordinated mining failed: ' . $e->getMessage()
+            ];
+        }
+    }
+    
+    /**
+     * Ensure network sync before mining to avoid forks
+     */
+    private function ensureNetworkSyncBeforeMining() {
+        $this->log("🔍 Checking network sync status before mining...");
+        
+        try {
+            // Get our current height
+            $stmt = $this->pdo->prepare("SELECT MAX(height) as height FROM blocks");
+            $stmt->execute();
+            $localHeight = $stmt->fetchColumn() ?? 0;
+            
+            // Check heights on other nodes
+            $networkNodes = $this->getNetworkNodesForBroadcast();
+            $networkHeights = [];
+            
+            foreach ($networkNodes as $nodeUrl) {
+                $url = rtrim($nodeUrl, '/') . '/api/explorer/index.php?action=get_network_stats';
+                $response = $this->makeApiCall($url, 5); // Short timeout
+                
+                if ($response && isset($response['current_height'])) {
+                    $networkHeights[] = (int)$response['current_height'];
+                }
+            }
+            
+            if (!empty($networkHeights)) {
+                $maxNetworkHeight = max($networkHeights);
+                
+                if ($maxNetworkHeight > $localHeight) {
+                    $this->log("⚠️  Network ahead by " . ($maxNetworkHeight - $localHeight) . " blocks, syncing first...");
+                    
+                    // Quick sync to catch up
+                    $this->syncBlocks($this->selectBestNode());
+                    
+                    $this->log("✅ Network sync completed before mining");
+                } else {
+                    $this->log("✅ Network sync verified, ready to mine");
+                }
+            }
+            
+        } catch (Exception $e) {
+            $this->log("Network sync check failed: " . $e->getMessage());
+            // Continue anyway - don't block mining on sync check failures
+        }
+    }
+    
+    /**
+     * Enhanced block broadcast with verification
+     */
+    private function enhancedBlockBroadcast($blockResult) {
+        $this->log("📡 Starting enhanced block broadcast...");
+        
+        // Standard broadcast
+        $this->broadcastNewBlock($blockResult);
+        
+        // Wait for propagation
+        sleep(3);
+        
+        // Verify broadcast success by checking if nodes received the block
+        $networkNodes = $this->getNetworkNodesForBroadcast();
+        $successCount = 0;
+        
+        foreach ($networkNodes as $nodeUrl) {
+            try {
+                $url = rtrim($nodeUrl, '/') . '/api/explorer/index.php?action=get_network_stats';
+                $response = $this->makeApiCall($url, 5);
+                
+                if ($response && isset($response['current_height'])) {
+                    $nodeHeight = (int)$response['current_height'];
+                    if ($nodeHeight >= $blockResult['block_height']) {
+                        $successCount++;
+                        $this->log("✅ Node {$nodeUrl} confirmed block reception (height: {$nodeHeight})");
+                    } else {
+                        $this->log("⚠️  Node {$nodeUrl} not yet synced (height: {$nodeHeight})");
+                    }
+                }
+                
+            } catch (Exception $e) {
+                $this->log("❌ Failed to verify broadcast on {$nodeUrl}: " . $e->getMessage());
+            }
+        }
+        
+        $totalNodes = count($networkNodes);
+        $successRate = $totalNodes > 0 ? ($successCount / $totalNodes) * 100 : 100;
+        
+        $this->log("📊 Broadcast verification: {$successCount}/{$totalNodes} nodes confirmed ({$successRate}%)");
+        
+        if ($successRate < 50 && $totalNodes > 0) {
+            $this->log("⚠️  Low broadcast success rate, network may need manual sync");
+        }
+    }
+    
+    /**
+     * Simple PoS Block Mining - Original implementation without coordination
+     * Use this for single-node networks or testing
      */
     public function startBlockMining($intervalSeconds = 30, $maxTransactionsPerBlock = 100) {
-        $this->log("=== Starting PoS Block Mining Process ===");
+        $this->log("=== Starting Simple PoS Block Mining Process ===");
         $this->log("Block interval: {$intervalSeconds} seconds");
         $this->log("Max transactions per block: {$maxTransactionsPerBlock}");
         $this->log("Press Ctrl+C to stop mining");
@@ -2468,10 +2693,19 @@ if (php_sapi_name() === 'cli') {
                 break;
                 
             case 'mine':
-                // Start PoS block mining
+                // Start coordinated PoS block mining
+                $interval = isset($argv[2]) ? (int)$argv[2] : 45;
+                $maxTx = isset($argv[3]) ? (int)$argv[3] : 100;
+                echo "Starting coordinated PoS block mining (interval: {$interval}s, max transactions: {$maxTx})\n";
+                echo "This will coordinate with quick_sync.php running every 60 seconds\n";
+                $syncManager->startCoordinatedMining($interval, $maxTx);
+                break;
+                
+            case 'mine-simple':
+                // Start simple PoS block mining (old behavior)
                 $interval = isset($argv[2]) ? (int)$argv[2] : 30;
                 $maxTx = isset($argv[3]) ? (int)$argv[3] : 100;
-                echo "Starting PoS block mining (interval: {$interval}s, max transactions: {$maxTx})\n";
+                echo "Starting simple PoS block mining (interval: {$interval}s, max transactions: {$maxTx})\n";
                 $syncManager->startBlockMining($interval, $maxTx);
                 break;
                 
@@ -2495,11 +2729,16 @@ if (php_sapi_name() === 'cli') {
                 echo "  sync         - Full blockchain synchronization\n";
                 echo "  status       - Show network status\n";
                 echo "  mempool      - Run mempool maintenance\n";
-                echo "  mine         - Start continuous PoS mining (interval_seconds max_transactions)\n";
+                echo "  mine         - Start coordinated PoS mining (recommended for multi-node networks)\n";
+                echo "  mine-simple  - Start simple PoS mining (single node or testing)\n";
                 echo "  mine-once    - Mine a single block from mempool\n";
-                echo "\nExamples:\n";
-                echo "  php network_sync.php mine 30 50    # Mine every 30 seconds, max 50 tx per block\n";
-                echo "  php network_sync.php mine-once     # Mine one block now\n";
+                echo "\nCoordinated Mining (recommended):\n";
+                echo "  php network_sync.php mine 45 100   # Mine every 45s, coordinate with quick_sync\n";
+                echo "\nSimple Mining:\n";
+                echo "  php network_sync.php mine-simple 30 50  # Mine every 30s without coordination\n";
+                echo "\nSingle Block:\n";
+                echo "  php network_sync.php mine-once          # Mine one block now\n";
+                echo "\nNote: Coordinated mining works with quick_sync.php running every 60 seconds\n";
                 break;
         }
         
