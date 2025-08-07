@@ -54,15 +54,59 @@ class NetworkSyncManager {
     
     private function loadConfig() {
         try {
-            $stmt = $this->pdo->prepare("SELECT * FROM config WHERE id = 1");
+            // 1) Try installation.json (как в sync-service)
+            $installConfig = __DIR__ . '/config/installation.json';
+            if (file_exists($installConfig)) {
+                $data = json_decode(file_get_contents($installConfig), true);
+                if (is_array($data) && isset($data['network_nodes'])) {
+                    $this->config = [
+                        'network_nodes' => $data['network_nodes'],
+                        'node_selection_strategy' => $data['node_selection_strategy'] ?? 'fastest_response'
+                    ];
+                    $this->log("Configuration loaded successfully from installation.json");
+                    return;
+                }
+            }
+
+            // 2) Новая модель конфигурации в таблице config (как в sync-service/SyncManager)
+            $stmt = $this->pdo->prepare("SELECT key_name, value FROM config WHERE key_name LIKE 'network.%' OR key_name LIKE 'node.%'");
             $stmt->execute();
-            $configRow = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if ($configRow) {
-                $this->config = json_decode($configRow['settings'], true);
-                $this->log("Configuration loaded successfully");
-            } else {
-                throw new Exception("No configuration found in database");
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $values = [];
+            foreach ($rows as $row) {
+                $values[$row['key_name']] = $row['value'];
+            }
+
+            $networkNodes = $values['network.nodes'] ?? '';
+            $selectionStrategy = $values['node.selection_strategy'] ?? 'fastest_response';
+
+            // 3) Legacy-фоллбек: строка id=1 с колонкой settings JSON
+            if (empty($networkNodes)) {
+                $stmt = $this->pdo->prepare("SELECT * FROM config WHERE id = 1");
+                $stmt->execute();
+                $legacy = $stmt->fetch(PDO::FETCH_ASSOC);
+                if ($legacy) {
+                    $settingsJson = $legacy['settings'] ?? '{}';
+                    $settings = json_decode($settingsJson ?: '{}', true) ?: [];
+                    if (!empty($settings['network_nodes'])) {
+                        $networkNodes = $settings['network_nodes'];
+                    } elseif (!empty($legacy['network_nodes'])) {
+                        $networkNodes = $legacy['network_nodes'];
+                    } elseif (!empty($legacy['genesis_node'])) {
+                        $networkNodes = $legacy['genesis_node'];
+                    }
+                }
+            }
+
+            $this->config = [
+                'network_nodes' => $networkNodes,
+                'node_selection_strategy' => $selectionStrategy
+            ];
+
+            $this->log("Configuration loaded successfully" . (empty($networkNodes) ? " (warning: network_nodes is empty)" : ""));
+            if (empty($networkNodes)) {
+                $this->log("Warning: No network nodes configured. Please fill 'network.nodes' in config table or installation.json");
             }
         } catch (Exception $e) {
             $this->log("Failed to load config: " . $e->getMessage());
@@ -132,78 +176,134 @@ class NetworkSyncManager {
     }
     
     private function selectBestNode() {
-        $networkNodes = explode(',', $this->config['network_nodes'] ?? '');
+        // 1) Попробовать получить активные узлы из таблицы nodes (источник после установки)
+        $nodeUrls = [];
+        try {
+            $stmt = $this->pdo->prepare("SELECT ip_address, port, metadata FROM nodes WHERE status = 'active'");
+            $stmt->execute();
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($rows as $row) {
+                $ip = trim($row['ip_address'] ?? '');
+                $port = (int)($row['port'] ?? 80);
+                $meta = $row['metadata'] ?? null;
+
+                $metaArr = [];
+                if (is_string($meta) && $meta !== '') {
+                    $decoded = json_decode($meta, true);
+                    if (is_array($decoded)) {
+                        $metaArr = $decoded;
+                    }
+                } elseif (is_array($meta)) {
+                    $metaArr = $meta;
+                }
+
+                $protocol = $metaArr['protocol'] ?? 'http';
+                $domain = $metaArr['domain'] ?? '';
+                $host = $domain !== '' ? $domain : $ip;
+                if ($host === '') continue;
+
+                $defaultPort = ($protocol === 'https') ? 443 : 80;
+                $portPart = ($port > 0 && $port !== $defaultPort) ? (':' . $port) : '';
+                $url = sprintf('%s://%s%s', $protocol, rtrim($host, '/'), $portPart);
+                $nodeUrls[] = $url;
+            }
+        } catch (\Throwable $e) {
+            $this->log("Warning: failed to read nodes table: " . $e->getMessage());
+        }
+
+        // 2) Фоллбек: конфиг network_nodes (многострочный или CSV)
+        if (empty($nodeUrls)) {
+            $rawNodes = $this->config['network_nodes'] ?? '';
+            $candidates = preg_split('/[\r\n,]+/', (string)$rawNodes);
+            $nodeUrls = array_values(array_filter(array_map('trim', $candidates)));
+        }
+
+        if (empty($nodeUrls)) {
+            throw new Exception('No network nodes configured. Please add network nodes to your configuration.');
+        }
+
         $strategy = $this->config['node_selection_strategy'] ?? 'fastest_response';
-        
-        $this->log("Testing " . count($networkNodes) . " network nodes with strategy: $strategy");
-        
+        $this->log("Testing " . count($nodeUrls) . " network nodes with strategy: $strategy");
+
         $nodeResults = [];
-        foreach ($networkNodes as $node) {
-            $node = trim($node);
-            if (empty($node)) continue;
-            
+        foreach ($nodeUrls as $node) {
             $result = $this->testNode($node);
             $nodeResults[] = array_merge(['url' => $node], $result);
-            $this->log("Node $node: " . ($result['accessible'] ? 'OK' : 'FAIL') . 
+            $this->log("Node $node: " . ($result['accessible'] ? 'OK' : 'FAIL') .
                       ($result['accessible'] ? " ({$result['response_time']}ms)" : " - {$result['error']}"));
         }
-        
-        // Select best node based on strategy
-        $accessibleNodes = array_filter($nodeResults, function($node) {
-            return $node['accessible'];
-        });
-        
+
+        $accessibleNodes = array_filter($nodeResults, fn($n) => $n['accessible']);
         if (empty($accessibleNodes)) {
             throw new Exception("No accessible nodes found");
         }
-        
+
         if ($strategy === 'fastest_response') {
-            usort($accessibleNodes, function($a, $b) {
-                return $a['response_time'] <=> $b['response_time'];
-            });
+            usort($accessibleNodes, fn($a, $b) => $a['response_time'] <=> $b['response_time']);
         }
-        
+
         $bestNode = $accessibleNodes[0]['url'];
         $this->log("Selected best node: $bestNode");
         return $bestNode;
     }
     
     private function testNode($nodeUrl) {
-        $testUrl = rtrim($nodeUrl, '/') . '/api/explorer/index.php?action=get_network_stats';
-        
-        $startTime = microtime(true);
-        $context = stream_context_create([
-            'http' => [
-                'timeout' => 10,
-                'method' => 'GET'
-            ]
-        ]);
-        
-        $result = @file_get_contents($testUrl, false, $context);
-        $responseTime = (microtime(true) - $startTime) * 1000;
-        
-        if ($result === false) {
-            return [
-                'accessible' => false,
-                'response_time' => null,
-                'error' => 'Connection failed'
-            ];
+        // Пробуем сначала get_network_config, если нет — get_network_stats
+        $endpoints = [
+            '/api/explorer/index.php?action=get_network_config',
+            '/api/explorer/index.php?action=get_network_stats',
+        ];
+        $errors = [];
+        $best = null;
+
+        foreach ($endpoints as $suffix) {
+            $testUrl = rtrim($nodeUrl, '/') . $suffix;
+            $startTime = microtime(true);
+            $context = stream_context_create([
+                'http' => [
+                    'timeout' => 10,
+                    'method' => 'GET',
+                    'header' => "User-Agent: NetworkSyncManager/1.1\r\nAccept: application/json\r\n"
+                ]
+            ]);
+            $result = @file_get_contents($testUrl, false, $context);
+            $responseTime = (microtime(true) - $startTime) * 1000;
+
+            if ($result === false) {
+                $errors[] = "Connection failed: $testUrl";
+                continue;
+            }
+
+            $data = json_decode($result, true);
+            if (!$data) {
+                $errors[] = "Invalid JSON: $testUrl";
+                continue;
+            }
+
+            // Принимаем оба формата: {success:true,data:{...}} или просто конфиг
+            $ok = (isset($data['success']) && $data['success'] === true) || isset($data['network_name']) || isset($data['data']);
+            if ($ok) {
+                $best = [
+                    'accessible' => true,
+                    'response_time' => $responseTime,
+                    'block_height' => $data['data']['block_height'] ?? null,
+                    'error' => null
+                ];
+                break;
+            } else {
+                $errors[] = "Unexpected response format: $testUrl";
+            }
         }
-        
-        $data = json_decode($result, true);
-        if (!$data || !isset($data['success'])) {
-            return [
-                'accessible' => false,
-                'response_time' => $responseTime,
-                'error' => 'Invalid response format'
-            ];
+
+        if ($best) {
+            return $best;
         }
-        
+
         return [
-            'accessible' => true,
-            'response_time' => $responseTime,
-            'block_height' => $data['data']['block_height'] ?? null,
-            'error' => null
+            'accessible' => false,
+            'response_time' => null,
+            'error' => implode('; ', $errors) ?: 'Connection failed'
         ];
     }
     
@@ -258,7 +358,7 @@ class NetworkSyncManager {
     }
     
     private function syncNodesAndValidators($node) {
-        // Sync nodes
+        // Sync nodes -> адаптация под вашу схему nodes (id, node_id, ip_address, port, public_key, version, status, last_seen, blocks_synced, ping_time, reputation_score, metadata, created_at, updated_at)
         $url = rtrim($node, '/') . '/api/explorer/index.php?action=get_nodes_list';
         $response = $this->makeApiCall($url);
         
@@ -267,27 +367,109 @@ class NetworkSyncManager {
             $syncedNodes = 0;
             
             foreach ($nodes as $nodeData) {
-                $stmt = $this->pdo->prepare("
-                    INSERT INTO nodes (address, url, stake, status, last_seen, version) 
-                    VALUES (?, ?, ?, ?, ?, ?) 
-                    ON DUPLICATE KEY UPDATE 
-                    url=VALUES(url), stake=VALUES(stake), status=VALUES(status), 
-                    last_seen=VALUES(last_seen), version=VALUES(version)
-                ");
-                $stmt->execute([
-                    $nodeData['address'] ?? '',
-                    $nodeData['url'] ?? '',
-                    $nodeData['stake'] ?? 0,
-                    $nodeData['status'] ?? 'active',
-                    $nodeData['last_seen'] ?? date('Y-m-d H:i:s'),
-                    $nodeData['version'] ?? '1.0.0'
-                ]);
+                // Маппинг входных полей в вашу схему
+                $nodeId = $nodeData['node_id'] ?? ($nodeData['address'] ?? '');
+                $version = $nodeData['version'] ?? '1.0.0';
+                $status = $nodeData['status'] ?? 'active';
+                $lastSeen = $nodeData['last_seen'] ?? date('Y-m-d H:i:s');
+                $reputation = $nodeData['reputation_score'] ?? 100;
+                $publicKey = $nodeData['public_key'] ?? '';
+                
+                // Определяем ip/port/protocol/domain из url/metadata
+                $ip = '';
+                $port = 80;
+                $meta = [];
+                if (!empty($nodeData['metadata']) && is_array($nodeData['metadata'])) {
+                    $meta = $nodeData['metadata'];
+                }
+                if (!empty($nodeData['url'])) {
+                    $parts = parse_url($nodeData['url']);
+                    if (is_array($parts)) {
+                        $scheme = $parts['scheme'] ?? 'http';
+                        $host = $parts['host'] ?? '';
+                        $port = $parts['port'] ?? ($scheme === 'https' ? 443 : 80);
+                        // host может быть доменом или ip
+                        if (filter_var($host, FILTER_VALIDATE_IP)) {
+                            $ip = $host;
+                            $meta['protocol'] = $scheme;
+                        } else {
+                            // домен
+                            $meta['domain'] = $host;
+                            $meta['protocol'] = $scheme;
+                        }
+                    }
+                }
+                // Если ip пустой, но есть явные поля
+                if (empty($ip) && !empty($nodeData['ip_address'])) {
+                    $ip = $nodeData['ip_address'];
+                }
+                if (!empty($nodeData['port'])) {
+                    $port = (int)$nodeData['port'];
+                }
+                
+                // Приводим metadata к JSON
+                $metadataJson = json_encode($meta, JSON_UNESCAPED_UNICODE);
+                
+                // Вставка/обновление по уникальному комбинационному ключу (ip_address, port) или node_id, если он есть
+                if (!empty($nodeId)) {
+                    $stmt = $this->pdo->prepare("
+                        INSERT INTO nodes (node_id, ip_address, port, public_key, version, status, last_seen, reputation_score, metadata)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON DUPLICATE KEY UPDATE
+                            ip_address = VALUES(ip_address),
+                            port = VALUES(port),
+                            public_key = VALUES(public_key),
+                            version = VALUES(version),
+                            status = VALUES(status),
+                            last_seen = VALUES(last_seen),
+                            reputation_score = VALUES(reputation_score),
+                            metadata = VALUES(metadata)
+                    ");
+                    $stmt->execute([
+                        $nodeId,
+                        $ip ?: ($meta['domain'] ?? ''),
+                        $port,
+                        $publicKey,
+                        $version,
+                        $status,
+                        $lastSeen,
+                        (int)$reputation,
+                        $metadataJson
+                    ]);
+                } else {
+                    // без node_id — используем уникальность ip+port
+                    $stmt = $this->pdo->prepare("
+                        INSERT INTO nodes (node_id, ip_address, port, public_key, version, status, last_seen, reputation_score, metadata)
+                        VALUES (SHA2(CONCAT(?,':',?), 256), ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON DUPLICATE KEY UPDATE
+                            public_key = VALUES(public_key),
+                            version = VALUES(version),
+                            status = VALUES(status),
+                            last_seen = VALUES(last_seen),
+                            reputation_score = VALUES(reputation_score),
+                            metadata = VALUES(metadata)
+                    ");
+                    $stmt->execute([
+                        $ip ?: ($meta['domain'] ?? 'unknown'),
+                        (string)$port,
+                        $ip ?: ($meta['domain'] ?? ''),
+                        $port,
+                        $publicKey,
+                        $version,
+                        $status,
+                        $lastSeen,
+                        (int)$reputation,
+                        $metadataJson
+                    ]);
+                }
+                
                 $syncedNodes++;
             }
-            $this->log("Synced $syncedNodes nodes");
+            $this->log("Synced $syncedNodes nodes (mapped to schema)");
         }
         
-        // Sync validators
+        // Sync validators -> схема validators по дампу:
+        // (address, public_key, stake, delegated_stake, commission_rate, status, blocks_produced, blocks_missed, last_active_block, jail_until_block, metadata, created_at, updated_at)
         $url = rtrim($node, '/') . '/api/explorer/index.php?action=get_validators_list';
         $response = $this->makeApiCall($url);
         
@@ -295,24 +477,55 @@ class NetworkSyncManager {
             $validators = $response['data'] ?? [];
             $syncedValidators = 0;
             
-            foreach ($validators as $validatorData) {
+            foreach ($validators as $v) {
+                $address         = $v['address'] ?? ($v['public_key'] ?? ($v['validator'] ?? ''));
+                $publicKey       = $v['public_key'] ?? '';
+                $stake           = $v['stake'] ?? 0;
+                $delegatedStake  = $v['delegated_stake'] ?? 0;
+                $commissionRate  = $v['commission_rate'] ?? 0;
+                $status          = $v['status'] ?? 'inactive';
+                $blocksProduced  = $v['blocks_produced'] ?? 0;
+                $blocksMissed    = $v['blocks_missed'] ?? 0;
+                $lastActiveBlock = $v['last_active_block'] ?? 0;
+                $jailUntilBlock  = $v['jail_until_block'] ?? null;
+                $metadata        = $v['metadata'] ?? null;
+                if (is_array($metadata)) {
+                    $metadata = json_encode($metadata, JSON_UNESCAPED_UNICODE);
+                }
+                
                 $stmt = $this->pdo->prepare("
-                    INSERT INTO validators (address, stake, status, last_block, rewards) 
-                    VALUES (?, ?, ?, ?, ?) 
-                    ON DUPLICATE KEY UPDATE 
-                    stake=VALUES(stake), status=VALUES(status), 
-                    last_block=VALUES(last_block), rewards=VALUES(rewards)
+                    INSERT INTO validators
+                        (address, public_key, stake, delegated_stake, commission_rate, status, blocks_produced, blocks_missed, last_active_block, jail_until_block, metadata)
+                    VALUES
+                        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE
+                        public_key = VALUES(public_key),
+                        stake = VALUES(stake),
+                        delegated_stake = VALUES(delegated_stake),
+                        commission_rate = VALUES(commission_rate),
+                        status = VALUES(status),
+                        blocks_produced = VALUES(blocks_produced),
+                        blocks_missed = VALUES(blocks_missed),
+                        last_active_block = VALUES(last_active_block),
+                        jail_until_block = VALUES(jail_until_block),
+                        metadata = VALUES(metadata)
                 ");
                 $stmt->execute([
-                    $validatorData['address'] ?? '',
-                    $validatorData['stake'] ?? 0,
-                    $validatorData['status'] ?? 'active',
-                    $validatorData['last_block'] ?? 0,
-                    $validatorData['rewards'] ?? 0
+                    $address,
+                    $publicKey,
+                    $stake,
+                    $delegatedStake,
+                    $commissionRate,
+                    $status,
+                    $blocksProduced,
+                    $blocksMissed,
+                    $lastActiveBlock,
+                    $jailUntilBlock,
+                    $metadata
                 ]);
                 $syncedValidators++;
             }
-            $this->log("Synced $syncedValidators validators");
+            $this->log("Synced $syncedValidators validators (mapped to schema)");
         }
     }
     

@@ -173,16 +173,172 @@ function performRepair($syncManager, $options = []) {
 }
 
 // Main execution
+// Enable detailed error output when running via web (for debugging 500) and via CLI if requested
+// Note: Keep verbose output minimal in production; disable after debugging.
 if (php_sapi_name() !== 'cli') {
-    echo "This script must be run from command line\n";
-    exit(1);
+    // Force JSON for HTTP responses
+    if (!headers_sent()) {
+        header('Content-Type: application/json; charset=utf-8');
+    }
+    ini_set('display_errors', '1');
+    ini_set('display_startup_errors', '1');
+    error_reporting(E_ALL);
+} else {
+    // For CLI: allow enabling verbose errors by env var QUICK_SYNC_DEBUG=1
+    if (getenv('QUICK_SYNC_DEBUG') === '1') {
+        ini_set('display_errors', '1');
+        ini_set('display_startup_errors', '1');
+        error_reporting(E_ALL);
+    }
 }
 
-$command = $argv[1] ?? 'help';
-$options = array_slice($argv, 2);
+// Detect execution mode and parse input
+if (php_sapi_name() === 'cli') {
+    $command = $argv[1] ?? 'help';
+    $options = array_slice($argv, 2);
+} else {
+    // HTTP mode: support ?cmd=...&token=... and JSON body
+    $input = [];
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        $raw = file_get_contents('php://input');
+        if ($raw) {
+            $json = json_decode($raw, true);
+            if (is_array($json)) {
+                $input = $json;
+            }
+        }
+    }
+    $cmdParam = $_GET['cmd'] ?? $_GET['command'] ?? ($input['cmd'] ?? $input['command'] ?? 'help');
+    $command = $cmdParam ?: 'help';
+    // Build options array from flags if any (not strictly needed in HTTP)
+    $options = [];
+}
 
 try {
+    // Basic environment diagnostics to help trace 500 errors
+    if (getenv('QUICK_SYNC_DEBUG') === '1' && php_sapi_name() === 'cli') {
+        echo "[diag] PHP version: " . PHP_VERSION . "\n";
+        echo "[diag] SAPI: " . php_sapi_name() . "\n";
+        echo "[diag] Working dir: " . getcwd() . "\n";
+        echo "[diag] Script: " . __FILE__ . "\n";
+    }
+
     $syncManager = new NetworkSyncManager(false);
+
+    // HTTP auth helper: verify admin users.api_key
+    $httpAuthCheck = function (): array {
+        // return [ok(bool), message(string)]
+        $token = $_GET['token'] ?? null;
+        if (!$token && isset($_SERVER['HTTP_AUTHORIZATION'])) {
+            if (preg_match('/Bearer\\s+(.*)$/i', $_SERVER['HTTP_AUTHORIZATION'], $m)) {
+                $token = trim($m[1]);
+            }
+        }
+        if (!$token) {
+            return [false, 'Missing token'];
+        }
+
+        // minimal DB bootstrap using .env (same approach as network_sync.php and sync-service)
+        $envPath = __DIR__ . '/config/.env';
+        $env = [];
+        if (file_exists($envPath)) {
+            $lines = file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            foreach ($lines as $line) {
+                if ($line === '' || $line[0] === '#') continue;
+                if (strpos($line, '=') !== false) {
+                    list($k, $v) = explode('=', $line, 2);
+                    $env[trim($k)] = trim($v);
+                }
+            }
+        }
+        $dbHost = $env['DB_HOST'] ?? ($_ENV['DB_HOST'] ?? 'localhost');
+        $dbPort = $env['DB_PORT'] ?? ($_ENV['DB_PORT'] ?? '3306');
+        $dbName = $env['DB_DATABASE'] ?? ($_ENV['DB_DATABASE'] ?? '');
+        $dbUser = $env['DB_USERNAME'] ?? ($_ENV['DB_USERNAME'] ?? '');
+        $dbPass = $env['DB_PASSWORD'] ?? ($_ENV['DB_PASSWORD'] ?? '');
+        $dsn = "mysql:host={$dbHost};port={$dbPort};dbname={$dbName};charset=utf8mb4";
+        try {
+            $pdo = new PDO($dsn, $dbUser, $dbPass, [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            ]);
+        } catch (Throwable $e) {
+            return [false, 'DB connect failed'];
+        }
+
+        try {
+            $stmt = $pdo->query("SELECT api_key FROM users WHERE role='admin' ORDER BY id ASC LIMIT 1");
+            $row = $stmt->fetch();
+            if (!$row || empty($row['api_key'])) {
+                return [false, 'Admin API key not found'];
+            }
+            if (!hash_equals($row['api_key'], $token)) {
+                return [false, 'Invalid token'];
+            }
+        } catch (Throwable $e) {
+            return [false, 'DB query failed'];
+        }
+
+        return [true, 'OK'];
+    };
+
+    // HTTP mode handling
+    if (php_sapi_name() !== 'cli') {
+        // Only allow selected commands via HTTP
+        if (!in_array($command, ['sync', 'status', 'check'], true)) {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'error' => 'Route not found', 'cmd' => $command], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+        // Auth check
+        [$ok, $msg] = $httpAuthCheck();
+        if (!$ok) {
+            http_response_code(401);
+            echo json_encode(['success' => false, 'error' => 'Unauthorized: ' . $msg], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+        // Concurrency guard
+        $lockFile = '/tmp/phpbc_sync.lock';
+        $fp = fopen($lockFile, 'c');
+        if ($fp === false) {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'error' => 'Cannot open lock file'], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+        $locked = flock($fp, LOCK_EX | LOCK_NB);
+        if (!$locked) {
+            http_response_code(429);
+            echo json_encode(['success' => false, 'error' => 'Sync already running'], JSON_UNESCAPED_UNICODE);
+            fclose($fp);
+            exit;
+        }
+
+        // Execute command and respond JSON
+        if ($command === 'sync') {
+            $ok = performSync($syncManager, $options);
+            $resp = ['success' => (bool)$ok, 'command' => 'sync'];
+            if (!$ok) {
+                http_response_code(500);
+            }
+            echo json_encode($resp, JSON_UNESCAPED_UNICODE);
+            flock($fp, LOCK_UN);
+            fclose($fp);
+            exit;
+        } elseif ($command === 'status') {
+            // Collect status
+            $status = $syncManager->getStatus();
+            echo json_encode(['success' => true, 'command' => 'status', 'status' => $status], JSON_UNESCAPED_UNICODE);
+            flock($fp, LOCK_UN);
+            fclose($fp);
+            exit;
+        } elseif ($command === 'check') {
+            $ok = checkConnectivity($syncManager);
+            echo json_encode(['success' => (bool)$ok, 'command' => 'check'], JSON_UNESCAPED_UNICODE);
+            flock($fp, LOCK_UN);
+            fclose($fp);
+            exit;
+        }
+    }
     
     switch ($command) {
         case 'sync':
@@ -221,14 +377,31 @@ try {
             showUsage();
             break;
     }
+
+    if (php_sapi_name() !== 'cli') {
+        // If HTTP reached here without exiting, send generic response
+        echo json_encode(['success' => true, 'message' => 'OK'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
     
-} catch (Exception $e) {
-    echo "💥 Fatal Error: " . $e->getMessage() . "\n";
+} catch (Throwable $e) {
+    // Catch Throwable to include TypeError/FatalError on PHP 7+
+    $msg = "💥 Fatal Error: " . $e->getMessage() . "\n";
+    $msg .= "File: " . $e->getFile() . ":" . $e->getLine() . "\n";
+    if (getenv('QUICK_SYNC_DEBUG') === '1') {
+        $msg .= "\nStack trace:\n" . $e->getTraceAsString() . "\n";
+    }
+    echo $msg;
+
     echo "\nThis usually indicates a configuration or database issue.\n";
     echo "Please check:\n";
     echo "- Database connection settings\n";
     echo "- File permissions\n";
     echo "- PHP requirements\n";
+
+    // Also log to PHP error_log for web runs
+    error_log("[quick_sync] " . str_replace("\n", " | ", $msg));
+
     exit(1);
 }
 ?>
