@@ -116,7 +116,7 @@ class NetworkSyncManager {
     
     public function syncAll() {
         $this->log("=== Starting Full Blockchain Synchronization ===");
-        $totalSteps = 7;
+        $totalSteps = 9; // + quorum check + mempool cleanup
         $currentStep = 0;
         
         try {
@@ -149,8 +149,18 @@ class NetworkSyncManager {
             $currentStep++;
             $this->updateProgress($currentStep, $totalSteps, "Syncing transactions...");
             $transactionsSynced = $this->syncTransactions($bestNode);
+
+            // Step 7: Quorum check of last hashes and penalize suspicious source
+            $currentStep++;
+            $this->updateProgress($currentStep, $totalSteps, "Validating hashes with peers (quorum check)...");
+            $this->quorumCheckAndPenalize($bestNode, 20, 3, 10);
             
-            // Step 7: Sync additional data (smart contracts, staking)
+            // Step 8: Mempool cleanup (TTL + confirmed removal)
+            $currentStep++;
+            $this->updateProgress($currentStep, $totalSteps, "Cleaning mempool (TTL and confirmed)...");
+            $this->cleanupMempool();
+
+            // Step 9: Sync additional data (smart contracts, staking)
             $currentStep++;
             $this->updateProgress($currentStep, $totalSteps, "Syncing smart contracts and staking...");
             $this->syncAdditionalData($bestNode);
@@ -177,9 +187,10 @@ class NetworkSyncManager {
     
     private function selectBestNode() {
         // 1) Попробовать получить активные узлы из таблицы nodes (источник после установки)
+        // Exclude nodes with low reputation (below 50) to avoid suspicious sources
         $nodeUrls = [];
         try {
-            $stmt = $this->pdo->prepare("SELECT ip_address, port, metadata FROM nodes WHERE status = 'active'");
+            $stmt = $this->pdo->prepare("SELECT ip_address, port, metadata FROM nodes WHERE status = 'active' AND reputation_score >= 50");
             $stmt->execute();
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -672,6 +683,7 @@ class NetworkSyncManager {
             if (empty($contracts)) {
                 $this->log("No smart contracts found on page $page");
                 break;
+            
             }
             
             $newContracts = 0;
@@ -794,6 +806,448 @@ class NetworkSyncManager {
             echo $logEntry;
         }
     }
+
+    // Quorum check of latest hashes across peers, penalize outliers
+    private function quorumCheckAndPenalize(string $sourceNodeUrl, int $depth = 20, int $peerSample = 3, int $penalty = 10): void {
+        try {
+            $this->log("Starting quorum check for source node: $sourceNodeUrl");
+            
+            // 1) Determine latest local height H
+            $stmt = $this->pdo->query("SELECT MAX(height) AS h FROM blocks");
+            $H = (int)$stmt->fetchColumn();
+            if ($H <= 0) {
+                $this->log("Quorum check skipped: no local blocks");
+                return;
+            }
+            
+            // Start from H backwards up to depth (but not below 0)
+            $start = max(0, $H - $depth + 1);
+            $this->log("Quorum check: validating blocks from height $start to $H");
+
+            // 2) Get local hashes for the window [start..H]
+            $stmt = $this->pdo->prepare("SELECT height, hash FROM blocks WHERE height BETWEEN ? AND ? ORDER BY height DESC");
+            $stmt->execute([$start, $H]);
+            $local = [];
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $local[(int)$row['height']] = $row['hash'];
+            }
+            if (empty($local)) {
+                $this->log("Quorum check skipped: no local hashes in range");
+                return;
+            }
+
+            // 3) Build peer list (excluding source node in normal networks)
+            $peers = $this->collectActivePeerUrls($excludeUrl = $sourceNodeUrl);
+            if (empty($peers)) {
+                $this->log("Quorum check: no peers available for cross-check - skipping validation");
+                $this->log("Note: This may happen in single-node networks or network discovery issues");
+                return;
+            }
+            
+            // Check if source node is included (happens in micro networks)
+            $sourceIncluded = false;
+            foreach ($peers as $peer) {
+                if (rtrim($peer, '/') === rtrim($sourceNodeUrl, '/')) {
+                    $sourceIncluded = true;
+                    break;
+                }
+            }
+            
+            if ($sourceIncluded) {
+                $this->log("Note: Source node included in validation due to micro network size");
+                $this->log("Warning: Self-validation provides limited security but maintains network operation");
+            }
+            
+            // For very small networks, we can still do some validation even with limited peers
+            if (count($peers) < 2) {
+                $this->log("Warning: Only " . count($peers) . " peer(s) available for quorum check");
+                $this->log("Small network detected - performing limited validation");
+                // In small networks, even one peer agreement can be valuable
+                $peerSample = min($peerSample, count($peers));
+            }
+            
+            // Limit sample size and randomize for fairness
+            shuffle($peers);
+            $peers = array_slice($peers, 0, $peerSample);
+            $this->log("Quorum check: querying " . count($peers) . " peer nodes");
+
+            // 4) For each peer, fetch hash at heights and compute agreement score
+            $agreement = 0;
+            $asked = 0;
+            $detailedResults = [];
+            
+            foreach ($peers as $peer) {
+                $asked++;
+                // Check multiple strategic heights to get better confidence
+                $heightsToCheck = [$H, max(0, $H-1), max(0, $H-2), max(0, $H-5), max(0, $H-10)];
+                $peerAgrees = false;
+                $peerDetails = ['peer' => $peer, 'checks' => []];
+                
+                foreach (array_unique($heightsToCheck) as $h) {
+                    if (!isset($local[$h])) continue; // Skip if we don't have this block locally
+                    
+                    $url = rtrim($peer, '/') . "/api/explorer/index.php?action=get_block&block_id=" . $h;
+                    $resp = $this->makeApiCall($url, 15);
+                    
+                    if ($resp && isset($resp['success']) && $resp['success'] && isset($resp['data']['hash'])) {
+                        $peerHash = $resp['data']['hash'];
+                        $localHash = $local[$h];
+                        $matches = hash_equals($localHash, $peerHash);
+                        
+                        $peerDetails['checks'][] = [
+                            'height' => $h,
+                            'local_hash' => substr($localHash, 0, 16) . '...',
+                            'peer_hash' => substr($peerHash, 0, 16) . '...',
+                            'matches' => $matches
+                        ];
+                        
+                        if ($matches) {
+                            $peerAgrees = true;
+                            break; // One match is enough to trust this peer
+                        }
+                    } else {
+                        $peerDetails['checks'][] = [
+                            'height' => $h,
+                            'error' => 'Failed to fetch or invalid response'
+                        ];
+                    }
+                }
+                
+                $detailedResults[] = $peerDetails;
+                if ($peerAgrees) {
+                    $agreement++;
+                    $this->log("Peer $peer: AGREES (found matching hash)");
+                } else {
+                    $this->log("Peer $peer: DISAGREES (no matching hashes found)");
+                }
+            }
+
+            // 5) If disagreement exceeds threshold, penalize the source node's reputation_score
+            if ($asked > 0) {
+                $ratio = $agreement / $asked;
+                $this->log(sprintf("Quorum check result: agreement %.0f%% (%d/%d peers agree)", $ratio*100, $agreement, $asked));
+                
+                // Adjust threshold based on network size
+                $threshold = 0.51; // Default threshold for larger networks
+                if ($asked == 1) {
+                    // With only 1 peer, we need 100% agreement to penalize
+                    $threshold = 1.0;
+                    $this->log("Single peer validation - requiring 100% agreement");
+                } elseif ($asked == 2) {
+                    // With 2 peers, we need both to agree to penalize
+                    $threshold = 1.0;
+                    $this->log("Two peer validation - requiring 100% agreement");
+                }
+                
+                if ($ratio < $threshold) {
+                    $this->log("Quorum check: SUSPICIOUS SOURCE detected! Applying reputation penalty of $penalty points");
+                    $penaltyApplied = $this->applyReputationPenalty($sourceNodeUrl, $penalty);
+                    
+                    if ($penaltyApplied) {
+                        $this->log("Reputation penalty successfully applied to $sourceNodeUrl");
+                    } else {
+                        $this->log("Failed to apply reputation penalty to $sourceNodeUrl - node not found in database");
+                    }
+                } else {
+                    $this->log("Quorum check: source node appears trustworthy");
+                }
+            }
+        } catch (\Throwable $e) {
+            $this->log("Quorum check failed: " . $e->getMessage());
+        }
+    }
+
+    private function collectActivePeerUrls(?string $excludeUrl = null): array {
+        $urls = [];
+        $excludeUrls = [];
+        
+        // First, collect all available nodes to determine network size
+        $allActiveNodes = [];
+        try {
+            $stmt = $this->pdo->prepare("SELECT ip_address, port, metadata FROM nodes WHERE status = 'active'");
+            $stmt->execute();
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            foreach ($rows as $row) {
+                $ip = trim($row['ip_address'] ?? '');
+                $port = (int)($row['port'] ?? 80);
+                $meta = $row['metadata'] ?? null;
+                $metaArr = [];
+                
+                if (is_string($meta) && $meta !== '') {
+                    $decoded = json_decode($meta, true);
+                    if (is_array($decoded)) $metaArr = $decoded;
+                } elseif (is_array($meta)) {
+                    $metaArr = $meta;
+                }
+                
+                $protocol = $metaArr['protocol'] ?? 'http';
+                $domain = $metaArr['domain'] ?? '';
+                $host = $domain !== '' ? $domain : $ip;
+                if ($host === '') continue;
+                
+                $defaultPort = ($protocol === 'https') ? 443 : 80;
+                $portPart = ($port > 0 && $port !== $defaultPort) ? (':' . $port) : '';
+                $url = sprintf('%s://%s%s', $protocol, rtrim($host, '/'), $portPart);
+                $allActiveNodes[] = $url;
+            }
+        } catch (\Throwable $e) {
+            $this->log("Warning: Failed to collect all active nodes: " . $e->getMessage());
+        }
+        
+        $totalNodes = count($allActiveNodes);
+        $this->log("Total active nodes in network: $totalNodes");
+        
+        // Smart exclusion logic based on network size
+        if ($totalNodes <= 2) {
+            // In very small networks (2 or fewer nodes), don't exclude anyone
+            // This allows some validation even in minimal setups
+            $this->log("Micro network detected ($totalNodes nodes) - including all nodes for validation");
+            $this->log("Note: Source node validation in micro networks provides limited security but better than none");
+            $urls = $allActiveNodes;
+        } else {
+            // In larger networks, apply normal exclusion rules
+            
+            // Add the source node URL to exclusion list
+            if ($excludeUrl) {
+                $excludeUrls[] = rtrim($excludeUrl, '/');
+                $this->log("Excluding source node from peer list: $excludeUrl");
+            }
+            
+            // Get current node configuration and add to exclusion list if network is large enough
+            $currentNodeDomain = null;
+            try {
+                $currentNodeDomain = $this->getCurrentNodeDomain();
+                if ($currentNodeDomain) {
+                    if ($totalNodes > 3) {
+                        // Only exclude current node if we have more than 3 nodes total
+                        $excludeUrls[] = rtrim($currentNodeDomain, '/');
+                        $this->log("Excluding current node from peer list: $currentNodeDomain");
+                    } else {
+                        $this->log("Small network detected ($totalNodes nodes) - keeping current node for validation: $currentNodeDomain");
+                    }
+                } else {
+                    $this->log("Could not determine current node domain - proceeding without self-exclusion");
+                }
+            } catch (\Throwable $e) {
+                $this->log("Warning: Could not determine current node domain: " . $e->getMessage());
+            }
+            
+            // Filter nodes based on exclusion list
+            foreach ($allActiveNodes as $url) {
+                $shouldExclude = false;
+                foreach ($excludeUrls as $excludeUrl) {
+                    if (rtrim($url, '/') === $excludeUrl) {
+                        $shouldExclude = true;
+                        break;
+                    }
+                }
+                
+                if (!$shouldExclude) {
+                    $urls[] = $url;
+                } else {
+                    $this->log("Excluding peer from list: $url");
+                }
+            }
+        }
+        
+        $this->log("Collected " . count($urls) . " active peer URLs for quorum check");
+        return array_values(array_unique($urls));
+    }
+    
+    private function getCurrentNodeDomain(): ?string {
+        try {
+            // 1) Try to get from config table node.domain
+            $stmt = $this->pdo->prepare("SELECT value FROM config WHERE key_name = 'node.domain' LIMIT 1");
+            $stmt->execute();
+            $domain = $stmt->fetchColumn();
+            
+            if ($domain) {
+                // Determine protocol (check if SSL/HTTPS is configured)
+                $stmt = $this->pdo->prepare("SELECT value FROM config WHERE key_name = 'node.ssl_enabled' LIMIT 1");
+                $stmt->execute();
+                $sslEnabled = $stmt->fetchColumn();
+                $protocol = ($sslEnabled === 'true' || $sslEnabled === '1') ? 'https' : 'http';
+                
+                return "$protocol://$domain";
+            }
+            
+            // 2) Try legacy config with id=1
+            $stmt = $this->pdo->prepare("SELECT settings FROM config WHERE id = 1 LIMIT 1");
+            $stmt->execute();
+            $settingsJson = $stmt->fetchColumn();
+            
+            if ($settingsJson) {
+                $settings = json_decode($settingsJson, true);
+                if (is_array($settings)) {
+                    // Check various possible field names
+                    $domainField = $settings['node_domain'] ?? $settings['domain'] ?? $settings['node_url'] ?? null;
+                    if ($domainField) {
+                        // If it's already a full URL, return as is
+                        if (strpos($domainField, 'http') === 0) {
+                            return $domainField;
+                        }
+                        // Otherwise add protocol
+                        $protocol = (!empty($settings['ssl_enabled'])) ? 'https' : 'http';
+                        return "$protocol://" . $domainField;
+                    }
+                }
+            }
+            
+            // 3) Try to get from environment or server variables
+            if (isset($_SERVER['HTTP_HOST'])) {
+                $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+                return "$protocol://" . $_SERVER['HTTP_HOST'];
+            }
+            
+            return null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    // Periodic mempool maintenance - can be called independently
+    public function runMempoolMaintenance(): array {
+        $this->log("=== Starting Mempool Maintenance ===");
+        
+        try {
+            // Get initial stats
+            $stmt = $this->pdo->query("SELECT COUNT(*) as total, status, COUNT(*) as count FROM mempool GROUP BY status");
+            $beforeStats = [];
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $beforeStats[$row['status']] = $row['count'];
+            }
+            
+            // Run cleanup
+            $this->cleanupMempool();
+            
+            // Get final stats
+            $stmt = $this->pdo->query("SELECT COUNT(*) as total, status, COUNT(*) as count FROM mempool GROUP BY status");
+            $afterStats = [];
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $afterStats[$row['status']] = $row['count'];
+            }
+            
+            $result = [
+                'status' => 'success',
+                'before' => $beforeStats,
+                'after' => $afterStats,
+                'maintenance_time' => date('Y-m-d H:i:s')
+            ];
+            
+            $this->log("Mempool maintenance completed: " . json_encode($result));
+            return $result;
+            
+        } catch (\Throwable $e) {
+            $this->log("Mempool maintenance failed: " . $e->getMessage());
+            return [
+                'status' => 'error',
+                'message' => $e->getMessage(),
+                'maintenance_time' => date('Y-m-d H:i:s')
+            ];
+        }
+    }
+
+    private function applyReputationPenalty(string $sourceNodeUrl, int $penalty): bool {
+        // Find node by domain/ip+port in nodes table and reduce reputation_score (min 0)
+        try {
+            $parts = parse_url($sourceNodeUrl);
+            if (!$parts || empty($parts['host'])) {
+                $this->log("Invalid URL format for reputation penalty: $sourceNodeUrl");
+                return false;
+            }
+            
+            $host = $parts['host'];
+            $port = $parts['port'] ?? (($parts['scheme'] ?? 'http') === 'https' ? 443 : 80);
+
+            // Try match by domain in metadata first, then by IP
+            $stmt = $this->pdo->prepare("
+                SELECT id, reputation_score, metadata, ip_address 
+                FROM nodes 
+                WHERE (ip_address = ? OR JSON_EXTRACT(metadata,'$.domain') = ?) 
+                  AND port = ? 
+                LIMIT 1
+            ");
+            $stmt->execute([$host, $host, $port]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$row) {
+                $this->log("Node not found in database for penalty: $sourceNodeUrl (host=$host, port=$port)");
+                return false;
+            }
+
+            $oldScore = (int)$row['reputation_score'];
+            $newScore = max(0, $oldScore - $penalty);
+            
+            $upd = $this->pdo->prepare("UPDATE nodes SET reputation_score = ?, updated_at = NOW() WHERE id = ?");
+            $upd->execute([$newScore, (int)$row['id']]);
+            
+            $this->log("Reputation penalty applied to {$row['ip_address']}:$port - score: $oldScore → $newScore (-$penalty)");
+            return true;
+            
+        } catch (\Throwable $e) {
+            $this->log("Failed to apply reputation penalty: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    // Remove stale mempool entries and those already confirmed
+    private function cleanupMempool(int $ttlHours = 24): void {
+        try {
+            $this->log("Starting mempool cleanup...");
+            
+            // 1) Remove entries that have expired (expires_at < now) or older than TTL and still pending/failed
+            $stmt = $this->pdo->prepare("
+                DELETE FROM mempool
+                WHERE (expires_at IS NOT NULL AND expires_at < NOW())
+                   OR (created_at < (NOW() - INTERVAL ? HOUR) AND status IN ('pending','failed'))
+            ");
+            $stmt->execute([$ttlHours]);
+            $removed1 = $stmt->rowCount();
+
+            // 2) Remove entries that are already confirmed in transactions
+            $stmt = $this->pdo->prepare("
+                DELETE m FROM mempool m
+                INNER JOIN transactions t ON t.hash = m.tx_hash
+                WHERE t.status = 'confirmed'
+            ");
+            $stmt->execute();
+            $removed2 = $stmt->rowCount();
+
+            // 3) Remove entries with duplicate nonce from same address (keep only latest)
+            $stmt = $this->pdo->prepare("
+                DELETE m1 FROM mempool m1
+                INNER JOIN mempool m2
+                WHERE m1.from_address = m2.from_address
+                  AND m1.nonce = m2.nonce
+                  AND m1.created_at < m2.created_at
+            ");
+            $stmt->execute();
+            $removed3 = $stmt->rowCount();
+
+            // 4) Mark hanging processing transactions as failed
+            $stmt = $this->pdo->prepare("
+                UPDATE mempool
+                SET status='failed'
+                WHERE status='processing' 
+                  AND (last_retry_at IS NOT NULL AND last_retry_at < (NOW() - INTERVAL 1 HOUR))
+            ");
+            $stmt->execute();
+            $marked = $stmt->rowCount();
+
+            // 5) Clean up very old failed transactions (older than 7 days)
+            $stmt = $this->pdo->prepare("
+                DELETE FROM mempool
+                WHERE status = 'failed' AND created_at < (NOW() - INTERVAL 7 DAY)
+            ");
+            $stmt->execute();
+            $removed4 = $stmt->rowCount();
+
+            $this->log("Mempool cleanup completed: expired/ttl=$removed1, confirmed=$removed2, duplicates=$removed3, old_failed=$removed4, marked_failed=$marked");
+        } catch (\Throwable $e) {
+            $this->log("Mempool cleanup failed: " . $e->getMessage());
+        }
+    }
     
     public function getStatus() {
         // Get database statistics
@@ -856,10 +1310,32 @@ if (php_sapi_name() === 'cli') {
                 echo "Check time: " . $status['sync_time'] . "\n";
                 break;
                 
+            case 'mempool':
+                echo "Running mempool maintenance...\n\n";
+                $result = $syncManager->runMempoolMaintenance();
+                
+                echo "=== Mempool Maintenance Result ===\n";
+                echo "Status: " . $result['status'] . "\n";
+                if ($result['status'] === 'success') {
+                    echo "\nBefore cleanup:\n";
+                    foreach ($result['before'] as $status => $count) {
+                        echo sprintf("  %-12s: %d\n", $status, $count);
+                    }
+                    echo "\nAfter cleanup:\n";
+                    foreach ($result['after'] as $status => $count) {
+                        echo sprintf("  %-12s: %d\n", $status, $count);
+                    }
+                } else {
+                    echo "Error: " . ($result['message'] ?? 'Unknown error') . "\n";
+                }
+                echo "Completed at: " . $result['maintenance_time'] . "\n";
+                break;
+                
             default:
-                echo "Usage: php network_sync.php [sync|status]\n";
-                echo "  sync   - Perform full blockchain synchronization\n";
-                echo "  status - Show current database status\n";
+                echo "Usage: php network_sync.php [sync|status|mempool]\n";
+                echo "  sync    - Perform full blockchain synchronization\n";
+                echo "  status  - Show current database status\n";
+                echo "  mempool - Run mempool maintenance and cleanup\n";
                 break;
         }
         
@@ -885,6 +1361,11 @@ if (isset($_GET['action'])) {
             case 'status':
                 $status = $syncManager->getStatus();
                 echo json_encode(['status' => 'success', 'data' => $status]);
+                break;
+                
+            case 'mempool_maintenance':
+                $result = $syncManager->runMempoolMaintenance();
+                echo json_encode($result);
                 break;
                 
             default:
