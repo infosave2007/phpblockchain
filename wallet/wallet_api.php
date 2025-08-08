@@ -1169,7 +1169,6 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
             'data' => [
                 'action' => 'transfer_tokens',
                 'memo' => $finalMemo, // This will be empty if message was encrypted
-                'encrypted' => ($encryptedData !== null), // True if message was encrypted
                 'transfer_type' => 'wallet_to_wallet',
                 'original_memo_length' => strlen($memo)
             ],
@@ -1180,6 +1179,7 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
         // Add encrypted data to the transaction data if available
         if ($encryptedData !== null) {
             $transferTx['data']['memo'] = $encryptedData; // Store the full encrypted message structure
+            $transferTx['data']['encrypted'] = true; // Mark explicitly only when encrypted
         }
         
         // 6. Update balances in database
@@ -1691,43 +1691,99 @@ function decryptTransactionMessage($walletManager, string $txHash, string $walle
         if ($transaction['from_address'] !== $walletAddress && $transaction['to_address'] !== $walletAddress) {
             throw new Exception('Access denied: wallet not involved in this transaction');
         }
-        
+
+        // Memo can be string (legacy) or structured array with encrypted_data (new)
         $memo = $transaction['memo'] ?? '';
-        
-        if (empty($memo)) {
+
+        if ($memo === '' || $memo === null) {
             return [
                 'success' => true,
                 'decrypted' => false,
                 'message' => 'No message in this transaction'
             ];
         }
-        
-        // Try to decrypt if encrypted
-        if (str_starts_with($memo, 'ENCRYPTED:')) {
+
+        // New format: structured encrypted memo as array/object
+        if (is_array($memo) && isset($memo['encrypted_data'])) {
             // Get sender public key for verification
             $senderAddress = $transaction['from_address'];
             $senderWallet = $walletManager->getWalletByAddress($senderAddress);
             $senderPublicKey = $senderWallet['public_key'] ?? '';
-            
-            $decryptResult = decryptMessage($memo, $privateKey, $senderPublicKey);
-            
-            if ($decryptResult['success']) {
+
+            try {
+                // Prefer full verification if sender public key is available
+                if (!empty($senderPublicKey)) {
+                    $decrypted = \Blockchain\Core\Cryptography\MessageEncryption::decryptSecureMessage(
+                        $memo,
+                        $privateKey,
+                        $senderPublicKey
+                    );
+                    return [
+                        'success' => true,
+                        'decrypted' => true,
+                        'message' => $decrypted,
+                        'verified' => true
+                    ];
+                }
+
+                // Fallback: decrypt without signature verification
+                $decrypted = \Blockchain\Core\Cryptography\MessageEncryption::decryptSecureMessageNoVerify(
+                    $memo,
+                    $privateKey
+                );
                 return [
                     'success' => true,
                     'decrypted' => true,
-                    'message' => $decryptResult['message'],
-                    'verified' => $decryptResult['verified'] ?? false
+                    'message' => $decrypted,
+                    'verified' => false
                 ];
-            } else {
+            } catch (Exception $e) {
+                writeLog("Structured memo decryption failed: " . $e->getMessage(), 'ERROR');
+                return [
+                    'success' => false,
+                    'error' => 'Failed to decrypt structured message: ' . $e->getMessage()
+                ];
+            }
+        }
+
+        // Legacy format: JSON string or ENCRYPTED: prefix string
+        if (is_string($memo)) {
+            // If memo is JSON string, try decryptMessage helper which handles new format JSON
+            $maybeJson = trim($memo);
+            $isJsonLike = strlen($maybeJson) > 0 && ($maybeJson[0] === '{' || $maybeJson[0] === '[');
+
+            if ($isJsonLike || str_starts_with($maybeJson, 'ENCRYPTED:')) {
+                $senderAddress = $transaction['from_address'];
+                $senderWallet = $walletManager->getWalletByAddress($senderAddress);
+                $senderPublicKey = $senderWallet['public_key'] ?? '';
+
+                $decryptResult = decryptMessage($maybeJson, $privateKey, $senderPublicKey);
+                if ($decryptResult['success'] && ($decryptResult['decrypted'] ?? false)) {
+                    return [
+                        'success' => true,
+                        'decrypted' => true,
+                        'message' => $decryptResult['message'],
+                        'verified' => $decryptResult['verified'] ?? false
+                    ];
+                }
+
+                // If helper says not encrypted, treat it as plain memo (unlikely for strict server policy)
                 return $decryptResult;
             }
-        } else {
+
+            // Plain text memo (legacy, but our transfer API should not produce this for new transfers)
             return [
                 'success' => true,
                 'decrypted' => false,
                 'message' => $memo
             ];
         }
+
+        // Unknown memo format
+        return [
+            'success' => false,
+            'error' => 'Unsupported memo format'
+        ];
         
     } catch (Exception $e) {
         writeLog("Error decrypting transaction message: " . $e->getMessage(), 'ERROR');
