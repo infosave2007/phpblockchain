@@ -1945,12 +1945,48 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
             case 'eth_requestAccounts':
                 // Triggering connect is client-side; returning empty array is acceptable default
                 return [];
-            case 'wallet_addEthereumChain':
-                // Typically handled by wallet UIs; return true to acknowledge
-                return true;
-            case 'wallet_switchEthereumChain':
-                // Acknowledge; clients should reconnect to the configured RPC
-                return true;
+            case 'wallet_addEthereumChain': {
+                // Validate provided params and return canonical chain config for client UIs
+                $req = $params[0] ?? [];
+                $providedId = is_array($req) ? ($req['chainId'] ?? null) : null;
+                $info = method_exists($networkConfig, 'getNetworkInfo') ? $networkConfig->getNetworkInfo() : [];
+                $ourId = (int)($info['chain_id'] ?? 0);
+                $providedInt = null;
+                if (is_string($providedId) && str_starts_with($providedId, '0x')) {
+                    $providedInt = (int)hexdec($providedId);
+                } elseif ($providedId !== null) {
+                    $providedInt = (int)$providedId;
+                }
+                if ($providedInt !== null && $providedInt !== $ourId) {
+                    writeLog('wallet_addEthereumChain chainId mismatch: provided=' . json_encode($providedId) . ' expected=' . $ourId, 'WARNING');
+                    return rpcError(-32602, 'Invalid chainId for this RPC endpoint');
+                }
+                // Return our canonical dApp config (EIP-3085 shape)
+                return getDappConfig($networkConfig);
+            }
+            case 'wallet_switchEthereumChain': {
+                // Validate requested chain id; return null on success per spec guidance
+                $req = $params[0] ?? [];
+                $target = is_array($req) ? ($req['chainId'] ?? null) : null;
+                $info = method_exists($networkConfig, 'getNetworkInfo') ? $networkConfig->getNetworkInfo() : [];
+                $ourId = (int)($info['chain_id'] ?? 0);
+                $targetInt = null;
+                if (is_string($target) && str_starts_with($target, '0x')) {
+                    $targetInt = (int)hexdec($target);
+                } elseif ($target !== null) {
+                    $targetInt = (int)$target;
+                }
+                if ($targetInt === null) {
+                    writeLog('wallet_switchEthereumChain missing chainId', 'WARNING');
+                    return rpcError(-32602, 'chainId is required');
+                }
+                if ($targetInt !== $ourId) {
+                    writeLog('wallet_switchEthereumChain unknown chainId: ' . $targetInt . ' expected=' . $ourId, 'WARNING');
+                    // 4902 is commonly used for unknown chain, but we keep JSON-RPC style here
+                    return rpcError(-32602, 'Unknown chainId for this RPC endpoint');
+                }
+                return null; // success
+            }
 
             case 'net_version': {
                 $info = method_exists($networkConfig, 'getNetworkInfo') ? $networkConfig->getNetworkInfo() : [];
@@ -2135,10 +2171,16 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
             case 'eth_call': {
                 // params: [callObject, blockTag]
                 $call = $params[0] ?? [];
-                if (!is_array($call)) return '0x';
+                if (!is_array($call)) {
+                    writeLog('eth_call invalid params: not an object', 'WARNING');
+                    return rpcError(-32602, 'Invalid params');
+                }
                 $to = $call['to'] ?? '';
                 $norm = normalizeHexAddress($to);
-                if (!$norm) return '0x';
+                if (!$norm) {
+                    writeLog('eth_call missing/invalid to address', 'WARNING');
+                    return rpcError(-32602, 'Invalid to address');
+                }
                 $code = getContractCodeHex($pdo, $norm);
                 if (!$code || $code === '0x') return '0x';
 
@@ -2151,15 +2193,19 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                     $vm = new \Blockchain\Core\SmartContract\VirtualMachine($gasLimit);
                 } catch (\Throwable $e) {
                     writeLog('eth_call VM init failed: ' . $e->getMessage(), 'ERROR');
-                    return '0x';
+                    return rpcError(-32603, 'Internal error');
                 }
 
                 $from = normalizeHexAddress($call['from'] ?? '') ?: '0x0000000000000000000000000000000000000000';
                 $valueHex = $call['value'] ?? '0x0';
                 $value = 0;
                 if (is_string($valueHex) && str_starts_with($valueHex, '0x')) {
-                    // Note: may overflow on very large values; acceptable for minimal support
                     $value = (int)hexdec($valueHex);
+                }
+                $dataHex = $call['data'] ?? ($call['input'] ?? '0x');
+                $dataBin = '';
+                if (is_string($dataHex) && str_starts_with(strtolower($dataHex), '0x')) {
+                    $dataBin = @hex2bin(substr(strtolower($dataHex), 2)) ?: '';
                 }
 
                 $context = [
@@ -2168,7 +2214,7 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                     'gasPrice' => 1,
                     'blockNumber' => getCurrentBlockHeight($walletManager),
                     'timestamp' => time(),
-                    // Minimal BALANCE provider; returns 0 for any input
+                    'calldata' => $dataBin,
                     'getBalance' => function($addr) use ($walletManager) {
                         try { return 0; } catch (\Throwable $e) { return 0; }
                     }
@@ -2179,22 +2225,15 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                 try {
                     $result = $vm->execute($bytecode, $context);
                     if (!($result['success'] ?? false)) {
-                        // Return empty on failure to mimic revert with no data
+                        writeLog('eth_call execution failed: ' . ($result['error'] ?? 'unknown'), 'WARNING');
                         return '0x';
                     }
                     $out = $result['result'] ?? '';
-                    // Ensure hex string
                     if ($out === '' || $out === null) return '0x';
-                    // If already hex-like, normalize; otherwise hex-encode
-                    if (is_string($out)) {
-                        // Heuristic: treat as raw binary and encode
-                        $hex = bin2hex($out);
-                        return '0x' . $hex;
-                    }
-                    return '0x';
+                    return '0x' . bin2hex($out);
                 } catch (\Throwable $e) {
                     writeLog('eth_call execution error: ' . $e->getMessage(), 'ERROR');
-                    return '0x';
+                    return rpcError(-32603, 'Internal error');
                 }
             }
 
@@ -2261,9 +2300,32 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                 return '0x' . $hash;
             }
 
-            case 'eth_getLogs':
-                // No logs support yet
-                return [];
+            case 'eth_getLogs': {
+                // params: [filter]
+                $filter = $params[0] ?? [];
+                if (!is_array($filter)) {
+                    writeLog('eth_getLogs invalid params', 'WARNING');
+                    return rpcError(-32602, 'Invalid params');
+                }
+                $address = $filter['address'] ?? null;
+                $fromTag = $filter['fromBlock'] ?? '0x0';
+                $toTag = $filter['toBlock'] ?? 'latest';
+                $from = is_string($fromTag) && str_starts_with($fromTag, '0x') ? (int)hexdec($fromTag) : (int)$fromTag;
+                $to = ($toTag === 'latest') ? getCurrentBlockHeight($walletManager) : (is_string($toTag) && str_starts_with($toTag, '0x') ? (int)hexdec($toTag) : (int)$toTag);
+                try {
+                    $stateStorage = new \Blockchain\Core\Storage\StateStorage($pdo);
+                    if ($address && is_string($address)) {
+                        $addr = normalizeHexAddress($address);
+                        if (!$addr) return rpcError(-32602, 'Invalid address');
+                        return $stateStorage->getContractEvents($addr, $from, $to);
+                    }
+                    // If no address provided, return empty as we do not index global logs yet
+                    return [];
+                } catch (\Throwable $e) {
+                    writeLog('eth_getLogs error: ' . $e->getMessage(), 'ERROR');
+                    return rpcError(-32603, 'Internal error');
+                }
+            }
 
             case 'eth_getBlockTransactionCountByNumber': {
                 $tag = $params[0] ?? 'latest';
@@ -2425,12 +2487,20 @@ function getDappConfig($networkConfig): array
     $name = $net['name'] ?? ($token['name'] ?? 'Blockchain');
 
     // Note: rpcUrls will be the same endpoint; explorer is optional and can be configured separately
-    $rpcUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://')
-        . ($_SERVER['HTTP_HOST'] ?? 'localhost')
-        . rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/wallet/wallet_api.php'), '/')
-        . '/wallet_api.php';
+    $scheme = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'https://' : 'http://';
+    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $basePath = rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/wallet/wallet_api.php'), '/');
+    $rpcUrl = $scheme . $host . $basePath . '/wallet_api.php';
 
-    return [
+    // Explorer URL only if explorer frontend is present
+    $baseDir = dirname(__DIR__);
+    $explorerExists = is_file($baseDir . '/explorer/index.php');
+    $explorerUrls = $explorerExists ? [$scheme . $host . '/explorer/'] : [];
+
+    // Icon URL from assets (ordinary hosting) - set explicitly
+    $iconUrl = $scheme . $host . '/public/assets/network-icon.svg';
+
+    $config = [
         'chainId' => '0x' . dechex($chainId),
         'chainName' => $name,
         'nativeCurrency' => [
@@ -2439,11 +2509,19 @@ function getDappConfig($networkConfig): array
             'decimals' => $decimals,
         ],
         'rpcUrls' => [$rpcUrl],
-        'blockExplorerUrls' => [
-            (isset($_SERVER['HTTP_HOST']) ? ((isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://') . $_SERVER['HTTP_HOST'] . '/explorer/') : '')
-        ],
-        'iconUrls' => []
     ];
+
+    if (!empty($explorerUrls)) {
+        $config['blockExplorerUrls'] = $explorerUrls;
+    }
+    $config['iconUrls'] = [$iconUrl];
+
+    // Optional: ENS registry address if configured
+    if (!empty($net['ens_address'])) {
+        $config['ensAddress'] = $net['ens_address'];
+    }
+
+    return $config;
 }
 
 /**

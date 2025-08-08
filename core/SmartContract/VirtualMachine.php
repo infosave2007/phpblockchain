@@ -183,6 +183,36 @@ class VirtualMachine
     private function executeOperation(string $operation, string $code, array $context): void
     {
         switch ($operation) {
+            case 'CALLDATASIZE':
+                $cd = $context['calldata'] ?? '';
+                $this->push(strlen($cd));
+                break;
+
+            case 'CALLDATALOAD': {
+                $offset = $this->pop();
+                $cd = $context['calldata'] ?? '';
+                $slice = substr($cd, $offset, 32);
+                $slice = str_pad($slice, 32, "\x00", STR_PAD_RIGHT);
+                // Convert last 8 bytes to integer to avoid overflow
+                $last8 = substr($slice, -8);
+                $val = hexdec(bin2hex($last8));
+                $this->push((int)$val);
+                break;
+            }
+
+            case 'CALLDATACOPY': {
+                // Copy calldata to memory
+                // EVM order: destOffset, offset, length
+                $dest = $this->pop();
+                $offset = $this->pop();
+                $length = $this->pop();
+                $cd = $context['calldata'] ?? '';
+                $data = substr($cd, $offset, $length);
+                for ($i = 0; $i < $length; $i++) {
+                    $this->memory[$dest + $i] = $data[$i] ?? "\x00";
+                }
+                break;
+            }
             case 'STOP':
                 return;
                 

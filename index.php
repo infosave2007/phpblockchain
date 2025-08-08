@@ -226,9 +226,14 @@ function handleRequest(array $context): void
         // Execute request with health check
         $middleware = new HealthCheckMiddleware($healthMonitor);
         
-        $response = $middleware->handle(function() use ($route, $method, $app, $context) {
-            return routeRequest($route, $method, $app, $context);
-        });
+        // Handle static files directly without health check wrapper for better performance
+        if (strpos($route, '/public/') === 0) {
+            $response = routeRequest($route, $method, $app, $context);
+        } else {
+            $response = $middleware->handle(function() use ($route, $method, $app, $context) {
+                return routeRequest($route, $method, $app, $context);
+            });
+        }
         
         // Send response
         if (is_array($response)) {
@@ -263,6 +268,106 @@ function routeRequest(string $route, string $method, $app, array $context): mixe
 {
     $healthMonitor = $context['health_monitor'];
     
+    // Serve static files from /public when requested directly (shared hosting friendly)
+    if (strpos($route, '/public/') === 0) {
+        // For shared hosting, files might be in a subdirectory or the same directory
+        $possibleRoots = [
+            __DIR__ . '/public',           // Standard: project/public/
+            __DIR__ . '/../public',        // Parent dir: parent/public/
+            __DIR__,                       // Same dir: all files in httpdocs/
+        ];
+        
+        $publicRoot = null;
+        foreach ($possibleRoots as $root) {
+            if (is_dir($root)) {
+                $publicRoot = $root;
+                break;
+            }
+        }
+        
+        if (!$publicRoot) {
+            if (!headers_sent()) {
+                http_response_code(404);
+                header('Content-Type: application/json');
+            }
+            return ['success' => false, 'error' => 'Public directory not found'];
+        }
+        
+        $requested = $publicRoot . substr($route, strlen('/public'));
+        $fullPath = realpath($requested);
+        
+        // Security: ensure resolved path stays within public root
+        if ($fullPath === false || strpos($fullPath, realpath($publicRoot)) !== 0) {
+            if (!headers_sent()) {
+                http_response_code(403);
+                header('Content-Type: application/json');
+            }
+            return ['success' => false, 'error' => 'Forbidden'];
+        }
+        if (!is_file($fullPath)) {
+            error_log("File not found: $fullPath");
+            // Fallback: if a .png is requested but not found, try .svg with same basename
+            $extReq = strtolower(pathinfo($requested, PATHINFO_EXTENSION));
+            if ($extReq === 'png') {
+                $trySvg = preg_replace('/\.png$/i', '.svg', $requested);
+                if ($trySvg && is_file($trySvg)) {
+                    $fullPath = realpath($trySvg);
+                    error_log("PNG fallback to SVG: $fullPath");
+                }
+            }
+        }
+        if (!is_file($fullPath)) {
+            error_log("Final file check failed: $fullPath");
+            if (!headers_sent()) {
+                http_response_code(404);
+                header('Content-Type: application/json');
+            }
+            return ['success' => false, 'error' => 'File not found'];
+        }
+
+        error_log("Serving file: $fullPath");
+        // Basic content-type mapping
+        $ext = strtolower(pathinfo($fullPath, PATHINFO_EXTENSION));
+        $mime = 'application/octet-stream';
+        switch ($ext) {
+            case 'svg':
+                $mime = 'image/svg+xml';
+                break;
+            case 'png':
+                $mime = 'image/png';
+                break;
+            case 'jpg':
+            case 'jpeg':
+                $mime = 'image/jpeg';
+                break;
+            case 'gif':
+                $mime = 'image/gif';
+                break;
+            case 'ico':
+                $mime = 'image/x-icon';
+                break;
+            case 'css':
+                $mime = 'text/css';
+                break;
+            case 'js':
+                $mime = 'application/javascript';
+                break;
+            case 'json':
+                $mime = 'application/json';
+                break;
+            case 'txt':
+                $mime = 'text/plain';
+                break;
+        }
+
+        // Serve file contents
+        if (!headers_sent()) {
+            header('Content-Type: ' . $mime);
+            header('Cache-Control: public, max-age=86400'); // 1 day
+        }
+        return file_get_contents($fullPath);
+    }
+
     switch ($route) {
         // API routes with health check
         case '/api/health':
