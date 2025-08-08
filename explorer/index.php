@@ -26,6 +26,16 @@ function loadLanguage($lang) {
             'title' => 'Blockchain Explorer',
             'subtitle' => 'Explore blocks, transactions and addresses',
             'search_placeholder' => 'Enter block hash, transaction or address...',
+            'smart_contracts' => 'Smart Contracts',
+            'latest_contracts' => 'Latest Smart Contracts',
+            'contract_details' => 'Contract Details',
+            'creator' => 'Creator',
+            'deployed_at_block' => 'Deployed at Block',
+            'status' => 'Status',
+            'view' => 'View',
+            'address' => 'Address',
+            'abi' => 'ABI',
+            'bytecode' => 'Bytecode',
             'block_height' => 'Block Height',
             'transactions' => 'Transactions',
             'hash_rate' => 'Hash Rate',
@@ -81,6 +91,16 @@ function loadLanguage($lang) {
             'title' => 'Блокчейн Эксплорер',
             'subtitle' => 'Исследуйте блоки, транзакции и адреса в блокчейне',
             'search_placeholder' => 'Введите хеш блока, транзакции или адрес...',
+            'smart_contracts' => 'Смарт‑контракты',
+            'latest_contracts' => 'Последние смарт‑контракты',
+            'contract_details' => 'Детали контракта',
+            'creator' => 'Создатель',
+            'deployed_at_block' => 'Деплой в блоке',
+            'status' => 'Статус',
+            'view' => 'Открыть',
+            'address' => 'Адрес',
+            'abi' => 'ABI',
+            'bytecode' => 'Байт‑код',
             'block_height' => 'Высота блока',
             'transactions' => 'Транзакций',
             'hash_rate' => 'Хеш-рейт',
@@ -355,6 +375,41 @@ try {
                         </div>
                     </div>
                 </div>
+
+                <!-- Smart Contracts -->
+                <div class="row mt-4">
+                    <div class="col-12">
+                        <div class="content-section">
+                            <div class="section-header">
+                                <h3 class="section-title">
+                                    <div class="section-icon">
+                                        <i class="fas fa-file-code"></i>
+                                    </div>
+                                    <?php echo htmlspecialchars($t['latest_contracts'] ?? 'Latest Smart Contracts'); ?>
+                                </h3>
+                                <div class="d-flex gap-2">
+                                    <button class="btn btn-outline-primary btn-sm" onclick="refreshContracts()">
+                                        <i class="fas fa-sync-alt"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="latestContracts">
+                                <!-- Contracts will be loaded here -->
+                            </div>
+                            
+                            <!-- Pagination for Contracts -->
+                            <div class="pagination-container" id="contractsPagination">
+                                <button class="pagination-btn" id="prevContractsBtn" onclick="loadContracts('prev')" disabled>
+                                    <i class="fas fa-chevron-left me-1"></i> <?php echo htmlspecialchars($t['back']); ?>
+                                </button>
+                                <span class="pagination-info mx-3" id="contractsPageInfo"><?php echo htmlspecialchars($t['page']); ?> 1</span>
+                                <button class="pagination-btn" id="nextContractsBtn" onclick="loadContracts('next')">
+                                    <?php echo htmlspecialchars($t['next']); ?> <i class="fas fa-chevron-right ms-1"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -394,6 +449,29 @@ try {
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body" id="blockModalBody">
+                    <!-- Content will be loaded here -->
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                        <?php echo htmlspecialchars($t['close'] ?? 'Close'); ?>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Contract Details Modal -->
+    <div class="modal fade" id="contractDetailsModal" tabindex="-1">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="fas fa-file-code me-2"></i>
+                        <span id="contractModalTitle"><?php echo htmlspecialchars($t['contract_details'] ?? 'Contract Details'); ?></span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="contractModalBody">
                     <!-- Content will be loaded here -->
                 </div>
                 <div class="modal-footer">

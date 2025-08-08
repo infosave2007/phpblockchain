@@ -4,6 +4,7 @@ class BlockchainExplorer {
         this.apiEndpoint = '../api/explorer';
         this.currentBlockPage = 1;
         this.currentTxPage = 1;
+    this.currentContractPage = 1;
         this.pageSize = 5; // Reduced for better UX
         this.totalBlocks = 0;
         this.totalTransactions = 0;
@@ -21,6 +22,7 @@ class BlockchainExplorer {
         await this.loadNetworkStats();
         await this.loadLatestBlocks();
         await this.loadLatestTransactions();
+    await this.loadLatestContracts();
         
         // Auto-refresh every 30 seconds
         setInterval(() => {
@@ -88,6 +90,7 @@ class BlockchainExplorer {
         this.loadNetworkStats();
         this.loadLatestBlocks();
         this.loadLatestTransactions();
+    this.loadLatestContracts();
     }
 
     bindEvents() {
@@ -128,6 +131,32 @@ class BlockchainExplorer {
         
         await this.loadLatestTransactions();
         this.updateTransactionsPagination();
+    }
+
+    async loadContracts(direction = 'current') {
+        if (direction === 'prev' && this.currentContractPage > 1) {
+            this.currentContractPage--;
+        } else if (direction === 'next') {
+            this.currentContractPage++;
+        }
+        await this.loadLatestContracts();
+        this.updateContractsPagination();
+    }
+
+    updateContractsPagination() {
+        const prevBtn = document.getElementById('prevContractsBtn');
+        const nextBtn = document.getElementById('nextContractsBtn');
+        const pageInfo = document.getElementById('contractsPageInfo');
+
+        if (!prevBtn || !nextBtn || !pageInfo) return;
+
+        prevBtn.disabled = this.currentContractPage <= 1;
+        const pageText = (typeof t !== 'undefined' && t.page) ? t.page : 'Page';
+        pageInfo.textContent = `${pageText} ${this.currentContractPage}`;
+
+        const container = document.getElementById('latestContracts');
+        const hasItems = container && container.children.length > 0;
+        nextBtn.disabled = !hasItems;
     }
 
     updateBlocksPagination() {
@@ -173,6 +202,12 @@ class BlockchainExplorer {
     async refreshTransactions() {
         this.showLoading(true);
         await this.loadLatestTransactions();
+        this.showLoading(false);
+    }
+
+    async refreshContracts() {
+        this.showLoading(true);
+        await this.loadLatestContracts();
         this.showLoading(false);
     }
 
@@ -279,6 +314,151 @@ class BlockchainExplorer {
         } catch (error) {
             console.error('Failed to load transactions:', error);
             this.showErrorInContainer('latestTransactions', this.getTranslation('error_loading_transactions', 'Error loading transactions'));
+        }
+    }
+
+    async loadLatestContracts() {
+        try {
+            const offset = (this.currentContractPage - 1) * this.pageSize;
+            // Explorer API is PHP router under ../api/explorer/index.php?action=get_smart_contracts
+            const response = await fetch(`${this.apiEndpoint}/index.php?action=get_smart_contracts&page=${this.currentContractPage - 1}&limit=${this.pageSize}&network=${this.currentNetwork}`);
+            const data = await response.json();
+            const contracts = data.data || [];
+
+            const container = document.getElementById('latestContracts');
+            if (!container) return;
+            container.innerHTML = '';
+
+            if (contracts.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">
+                            <i class="fas fa-file-code"></i>
+                        </div>
+                        <p>${this.getTranslation('no_contracts_found', 'No smart contracts found')}</p>
+                    </div>
+                `;
+            } else {
+                contracts.forEach(c => container.appendChild(this.createContractCard(c)));
+            }
+
+            // Control pagination with API has_more
+            const prevBtn = document.getElementById('prevContractsBtn');
+            const nextBtn = document.getElementById('nextContractsBtn');
+            const pageInfo = document.getElementById('contractsPageInfo');
+            if (prevBtn) prevBtn.disabled = this.currentContractPage <= 1;
+            if (nextBtn) nextBtn.disabled = !(data.pagination && data.pagination.has_more);
+            if (pageInfo) {
+                const pageText = (typeof t !== 'undefined' && t.page) ? t.page : 'Page';
+                pageInfo.textContent = `${pageText} ${this.currentContractPage}`;
+            }
+        } catch (error) {
+            console.error('Failed to load contracts:', error);
+            this.showErrorInContainer('latestContracts', this.getTranslation('error_loading_contracts', 'Error loading contracts'));
+        }
+    }
+
+    createContractCard(contract) {
+        const card = document.createElement('div');
+        card.className = 'data-card';
+
+        const name = contract.name || 'Contract';
+        const address = contract.address || '';
+        const creator = contract.creator || '';
+        const status = contract.status || 'active';
+        const depBlock = contract.deployment_block || 0;
+
+        const detailsText = this.getTranslation('details', 'Details');
+        const creatorText = this.getTranslation('creator', 'Creator');
+        const statusText = this.getTranslation('status', 'Status');
+        const deployedAtText = this.getTranslation('deployed_at_block', 'Deployed at Block');
+        const addressText = this.getTranslation('address', 'Address');
+
+        card.innerHTML = `
+            <div class="d-flex justify-content-between align-items-start mb-3">
+                <div>
+                    <div class="d-flex align-items-center mb-2">
+                        <div class="stat-icon" style="width: 30px; height: 30px; font-size: 0.9rem; margin-right: 0.75rem;">
+                            <i class="fas fa-file-code"></i>
+                        </div>
+                        <h6 class="mb-0 fw-bold">${name}</h6>
+                    </div>
+                    <div class="d-flex flex-column text-muted small">
+                        <span><strong>${addressText}:</strong> ${this.truncateHash(address, 20)}</span>
+                        <span><strong>${creatorText}:</strong> ${this.truncateHash(creator, 20)}</span>
+                    </div>
+                </div>
+                <div class="text-end">
+                    <span class="status-badge ${status === 'active' ? 'status-confirmed' : 'status-pending'}">${status}</span>
+                </div>
+            </div>
+            <div class="d-flex justify-content-between align-items-center">
+                <small class="text-muted">
+                    <i class="fas fa-cube me-1"></i>
+                    ${deployedAtText}: #${depBlock}
+                </small>
+                <button class="btn btn-outline-primary btn-sm" onclick="explorer.viewContract('${address}')">
+                    <i class="fas fa-eye me-1"></i>${detailsText}
+                </button>
+            </div>
+        `;
+
+        return card;
+    }
+
+    async viewContract(address) {
+        try {
+            // Use dedicated endpoint for single contract
+            const response = await fetch(`${this.apiEndpoint}/index.php?action=get_smart_contract&address=${encodeURIComponent(address)}&network=${this.currentNetwork}`);
+            const data = await response.json();
+            let contract = data && data.success ? (data.data || null) : null;
+            if (!contract) {
+                // Fallback: try getCode via wallet API
+                contract = { address, name: 'Smart Contract', bytecode: '(code not available via explorer)' };
+            }
+
+            const body = document.getElementById('contractModalBody');
+            const title = document.getElementById('contractModalTitle');
+            if (!body || !title) return;
+
+            title.textContent = `${this.getTranslation('contract_details','Contract Details')}: ${this.truncateHash(address, 20)}`;
+
+            const abiPretty = contract.abi ? (typeof contract.abi === 'string' ? contract.abi : JSON.stringify(contract.abi, null, 2)) : '[]';
+            const bytecode = contract.bytecode ? (contract.bytecode.length > 120 ? `${contract.bytecode.slice(0,120)}...` : contract.bytecode) : '';
+
+            body.innerHTML = `
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <div class="data-card">
+                            <h6 class="mb-2">${this.getTranslation('address','Address')}</h6>
+                            <div class="hash-display small">${address}</div>
+                        </div>
+                        <div class="data-card mt-3">
+                            <h6 class="mb-2">${this.getTranslation('creator','Creator')}</h6>
+                            <div class="hash-display small">${contract.creator || '—'}</div>
+                        </div>
+                        <div class="data-card mt-3">
+                            <h6 class="mb-2">${this.getTranslation('status','Status')}</h6>
+                            <div class="hash-display small text-capitalize">${contract.status || 'active'}</div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="data-card">
+                            <h6 class="mb-2">${this.getTranslation('abi','ABI')}</h6>
+                            <pre class="small" style="max-height: 260px; overflow:auto;">${abiPretty}</pre>
+                        </div>
+                        <div class="data-card mt-3">
+                            <h6 class="mb-2">${this.getTranslation('bytecode','Bytecode')}</h6>
+                            <pre class="small" style="max-height: 160px; overflow:auto;">${bytecode}</pre>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            const modal = new bootstrap.Modal(document.getElementById('contractDetailsModal'));
+            modal.show();
+        } catch (e) {
+            console.error('Failed to view contract:', e);
         }
     }
 

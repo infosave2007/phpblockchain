@@ -117,6 +117,14 @@ try {
                 $limit = min((int)($params['limit'] ?? 100), 1000); // Max 1000 contracts for sync
                 echo json_encode(getSmartContracts($pdo, $network, $page, $limit));
                 exit;
+            
+            case 'get_smart_contract':
+                $address = $params['address'] ?? '';
+                if (empty($address)) {
+                    throw new Exception('Contract address required');
+                }
+                echo json_encode(getSmartContractByAddress($pdo, $address));
+                exit;
                 
             case 'get_staking_records':
                 $page = (int)($params['page'] ?? 0);
@@ -1962,6 +1970,57 @@ function getSmartContracts(PDO $pdo, string $network, int $page = 0, int $limit 
             'success' => false,
             'error' => $e->getMessage(),
             'data' => []
+        ];
+    }
+}
+
+/**
+ * Get a single smart contract by address
+ */
+function getSmartContractByAddress(PDO $pdo, string $address): array {
+    try {
+        // Check if smart_contracts table exists
+        $stmt = $pdo->query("SHOW TABLES LIKE 'smart_contracts'");
+        if ($stmt->rowCount() === 0) {
+            return [
+                'success' => false,
+                'error' => 'Smart contracts table not found'
+            ];
+        }
+
+        $stmt = $pdo->prepare("SELECT address, creator, name, version, bytecode, abi, source_code, deployment_tx, deployment_block, gas_used, status, storage, metadata FROM smart_contracts WHERE address = ? LIMIT 1");
+        $stmt->execute([$address]);
+        $contract = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$contract) {
+            return [
+                'success' => false,
+                'error' => 'Contract not found'
+            ];
+        }
+
+        // Parse JSON fields
+        if (isset($contract['abi']) && is_string($contract['abi'])) {
+            $decoded = json_decode($contract['abi'], true);
+            if ($decoded !== null) { $contract['abi'] = $decoded; }
+        }
+        if (isset($contract['storage']) && is_string($contract['storage'])) {
+            $decoded = json_decode($contract['storage'], true);
+            if ($decoded !== null) { $contract['storage'] = $decoded; }
+        }
+        if (isset($contract['metadata']) && is_string($contract['metadata'])) {
+            $decoded = json_decode($contract['metadata'], true);
+            if ($decoded !== null) { $contract['metadata'] = $decoded; }
+        }
+
+        return [
+            'success' => true,
+            'data' => $contract
+        ];
+    } catch (Exception $e) {
+        return [
+            'success' => false,
+            'error' => $e->getMessage()
         ];
     }
 }
