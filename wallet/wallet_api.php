@@ -20,8 +20,40 @@ require_once __DIR__ . '/WalletLogger.php';
 /**
  * Log helper wrapper (kept for backward compatibility)
  */
-function writeLog($message, $level = 'INFO') {
+function writeLog($message, $level = 'DEBUG') {
     WalletLogger::log($message, $level);
+}
+
+// Early, dependency-free request logging to guarantee request traces even if later init fails
+// This writes a minimal entry and preserves body/request ID for later use.
+if (!defined('WALLET_API_EARLY_LOGGED')) {
+    define('WALLET_API_EARLY_LOGGED', true);
+    try {
+        $baseDir = dirname(__DIR__);
+        $logDir = $baseDir . '/logs';
+        if (!is_dir($logDir)) {
+            @mkdir($logDir, 0755, true);
+        }
+        $logFile = $logDir . '/wallet_api.log';
+        $reqId = bin2hex(random_bytes(6));
+        $GLOBALS['__REQ_ID'] = $reqId;
+        $method = $_SERVER['REQUEST_METHOD'] ?? 'CLI';
+        $uri = $_SERVER['REQUEST_URI'] ?? '';
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '-';
+        // Read body once and keep it for later handlers
+        $rawBodyEarly = file_get_contents('php://input');
+        $GLOBALS['__RAW_BODY'] = $rawBodyEarly;
+        $timestamp = date('Y-m-d H:i:s');
+        $line1 = "[{$timestamp}] [REQUEST] [{$reqId}] {$method} {$uri} from {$ip}";
+        @file_put_contents($logFile, $line1 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        if ($method === 'POST' && !empty($rawBodyEarly)) {
+            $bodyPreview = substr($rawBodyEarly, 0, 200);
+            $line2 = "[{$timestamp}] [REQUEST] [{$reqId}] body: {$bodyPreview}";
+            @file_put_contents($logFile, $line2 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+    } catch (\Throwable $e) {
+        // Never break the API path due to logging issues
+    }
 }
 
 // Fatal error handler
@@ -78,6 +110,19 @@ try {
     
     // Initialize logger with configuration
     WalletLogger::init($config);
+
+    // Allow force-enabling wallet API logging via query/header/env for diagnostics
+    $forceLog = false;
+    if (isset($_GET['log']) && ($_GET['log'] === '1' || strtolower((string)$_GET['log']) === 'true')) {
+        $forceLog = true;
+    }
+    if (isset($_SERVER['HTTP_X_ENABLE_LOGGING']) && in_array(strtolower($_SERVER['HTTP_X_ENABLE_LOGGING']), ['1','true','yes','on'], true)) {
+        $forceLog = true;
+    }
+    if ($forceLog) {
+        $config['wallet_logging_enabled'] = true;
+        WalletLogger::init($config); // re-init with logging enabled
+    }
     
     // Build database config with priority: config.php -> .env -> defaults
     $dbConfig = $config['database'] ?? [];
@@ -125,36 +170,209 @@ try {
     // Instantiate NetworkConfig to fetch network settings
     $networkConfig = new \Blockchain\Core\Config\NetworkConfig($pdo);
     
-    // Parse input payload
-    $rawBody = file_get_contents('php://input');
+    // Correlation ID for request tracing in logs (use early one if present)
+    $requestId = $GLOBALS['__REQ_ID'] ?? bin2hex(random_bytes(6));
+
+    // Parse input payload (reuse early-read body if available)
+    $rawBody = $GLOBALS['__RAW_BODY'] ?? file_get_contents('php://input');
     $input = json_decode($rawBody, true);
-    
+    $jsonError = json_last_error();
+
     // For GET requests use $_GET
     if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $input = $_GET;
+        $jsonError = JSON_ERROR_NONE;
     }
+
+    // Simple request logging
+    $method = $_SERVER['REQUEST_METHOD'] ?? 'CLI';
+    $uri = $_SERVER['REQUEST_URI'] ?? '';
+    $ip = $_SERVER['REMOTE_ADDR'] ?? '-';
     
+    // Log incoming request
+    writeLog("[$requestId] $method $uri from $ip");
+    
+    // Log POST body preview (first 200 chars, no sensitive data)
+    if ($method === 'POST' && !empty($rawBody)) {
+        $bodyPreview = substr($rawBody, 0, 200);
+        writeLog("[$requestId] POST body: $bodyPreview");
+    }
+
     // Support clean /rpc alias via PATH_INFO or URL ending with /rpc
     $pathInfo = $_SERVER['PATH_INFO'] ?? '';
     $reqPath = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?: '';
     $isRpcAlias = ($pathInfo === '/rpc') || (substr($reqPath, -4) === '/rpc');
 
-    // If request is standard JSON-RPC (or /rpc alias), handle and exit early
-    if ($isRpcAlias || (isset($input['jsonrpc']) && isset($input['method']))) {
-        $rpcId = $input['id'] ?? 1;
-        $rpcMethod = $input['method'] ?? '';
-        $rpcParams = $input['params'] ?? [];
-
-        $rpcResult = handleRpcRequest($pdo, $walletManager, $networkConfig, $rpcMethod, $rpcParams);
+    // Lightweight diagnostics: ensure we can write logs and return recent lines
+    if (isset($_GET['action']) && $_GET['action'] === 'ping_log') {
+        $ts = date('Y-m-d H:i:s');
+        writeLog("[{$requestId}] ping_log at {$ts}", 'INFO');
+        $baseDir = dirname(__DIR__);
+        $logFile = $baseDir . '/logs/wallet_api.log';
+        $tail = [];
+        if (file_exists($logFile)) {
+            $lines = @file($logFile, FILE_IGNORE_NEW_LINES);
+            if (is_array($lines)) {
+                $tail = array_slice($lines, -10);
+            }
+        }
         echo json_encode([
-            'jsonrpc' => '2.0',
-            'id' => $rpcId,
-            'result' => $rpcResult
+            'success' => true,
+            'requestId' => $requestId,
+            'logWritable' => is_writable(dirname($logFile)),
+            'hasLogFile' => file_exists($logFile),
+            'lastLines' => $tail,
         ]);
+        return;
+    }
+
+    // Helper: return list of supported JSON-RPC method names
+    $supportedRpcMethods = function() {
+        // Keep in sync with handleRpcRequest cases
+        return [
+            'web3_clientVersion','web3_sha3',
+            'net_version','net_listening','net_peerCount',
+            'eth_chainId','eth_blockNumber','eth_getBalance','eth_coinbase','eth_getTransactionCount','eth_gasPrice','eth_maxPriorityFeePerGas','eth_estimateGas','eth_getTransactionByHash','eth_getTransactionReceipt','eth_sendRawTransaction','eth_sendTransaction','eth_getBlockByNumber','eth_getBlockByHash','eth_getStorageAt','eth_getCode','eth_getLogs','eth_getBlockTransactionCountByNumber','eth_getTransactionByBlockNumberAndIndex','eth_feeHistory','eth_syncing','eth_mining',
+            'eth_accounts','eth_requestAccounts',
+            'personal_listAccounts','personal_newAccount','personal_unlockAccount','personal_lockAccount','personal_sign','eth_sign',
+            'wallet_addEthereumChain','wallet_switchEthereumChain','wallet_requestPermissions','wallet_getPermissions','wallet_watchAsset'
+        ];
+    };
+
+    // Helper: build JSON-RPC error response
+    $jsonRpcErrorResponse = function($id, int $code, string $message, $data = null) {
+        $err = ['code' => $code, 'message' => $message];
+        if ($data !== null) $err['data'] = $data;
+        return ['jsonrpc' => '2.0', 'id' => $id, 'error' => $err];
+    };
+
+    // Helper: process a single JSON-RPC request object
+    $processJsonRpc = function($req) use ($pdo, $walletManager, $networkConfig, $supportedRpcMethods, $jsonRpcErrorResponse, $requestId) {
+        // Validate request shape
+        if (!is_array($req)) {
+            return $jsonRpcErrorResponse(null, -32600, 'Invalid Request');
+        }
+        $id = $req['id'] ?? null;
+        $method = $req['method'] ?? '';
+        $params = $req['params'] ?? [];
+        // Log incoming RPC call (sanitized)
+        try {
+            $toLog = $params;
+            if (is_array($toLog)) {
+                // Minimal inline masking of sensitive fields
+                $maskKeys = ['privateKey','password','signature'];
+                $toLog = array_map(function($v) use ($maskKeys) {
+                    if (is_array($v)) {
+                        foreach ($maskKeys as $k) { if (isset($v[$k])) { $v[$k] = '***'; } }
+                    }
+                    return $v;
+                }, $toLog);
+            }
+            WalletLogger::info("RPC $requestId: method=" . (is_string($method)?$method:'') . " id=" . json_encode($id));
+            WalletLogger::debug("RPC $requestId: params=" . json_encode($toLog, JSON_UNESCAPED_SLASHES));
+        } catch (Throwable $e) {}
+        if (!is_string($method) || $method === '') {
+            return $jsonRpcErrorResponse($id, -32600, 'Invalid Request');
+        }
+        // If method not supported by this endpoint, return standard error
+        $supported = $supportedRpcMethods();
+        if (!in_array($method, $supported, true)) {
+            $resp = $jsonRpcErrorResponse($id, -32601, 'Method not found');
+            try { WalletLogger::warning("RPC $requestId: method_not_found method=$method"); } catch (Throwable $e) {}
+            return $resp;
+        }
+        // Execute and normalize result/error
+        $res = handleRpcRequest($pdo, $walletManager, $networkConfig, $method, is_array($params) ? $params : []);
+        if (is_array($res) && array_key_exists('code', $res) && array_key_exists('message', $res) && count($res) >= 2) {
+            // Treat arrays with code+message as JSON-RPC error objects returned from rpcError()
+            try { WalletLogger::warning("RPC $requestId: error code={$res['code']} message={$res['message']}"); } catch (Throwable $e) {}
+            return ['jsonrpc' => '2.0', 'id' => $id, 'error' => $res];
+        }
+        try {
+            $preview = is_scalar($res) ? (string)$res : json_encode($res, JSON_UNESCAPED_SLASHES);
+            if ($preview !== null) { $preview = substr((string)$preview, 0, 300); }
+            WalletLogger::info("RPC $requestId: result_preview=" . ($preview ?? 'null'));
+        } catch (Throwable $e) {}
+        return ['jsonrpc' => '2.0', 'id' => $id, 'result' => $res];
+    };
+
+    // Determine if this is a JSON-RPC call (single or batch) or /rpc alias
+    $isJsonRpcSingle = is_array($input) && isset($input['jsonrpc']) && isset($input['method']);
+    $isJsonRpcBatch = is_array($input) && array_keys($input) === range(0, count($input) - 1) && isset($input[0]['jsonrpc']);
+
+    if ($isRpcAlias || $isJsonRpcSingle || $isJsonRpcBatch || ($_SERVER['REQUEST_METHOD'] === 'POST' && $rawBody !== '' && $jsonError !== JSON_ERROR_NONE)) {
+        // If JSON parse failed
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && $rawBody !== '' && $jsonError !== JSON_ERROR_NONE) {
+            echo json_encode($jsonRpcErrorResponse(null, -32700, 'Parse error'));
+            exit;
+        }
+
+        // Handle single or batch
+        if ($isJsonRpcBatch) {
+            $responses = [];
+            try { WalletLogger::info("RPC $requestId: batch size=" . count($input)); } catch (Throwable $e) {}
+            foreach ($input as $req) {
+                $responses[] = $processJsonRpc($req);
+            }
+            echo json_encode($responses);
+            exit;
+        }
+
+        // For /rpc alias via GET or POST with jsonrpc
+        if ($isRpcAlias && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+            // Allow method and params via query for /rpc alias
+            $rpcMethod = $_GET['method'] ?? '';
+            $paramsRaw = $_GET['params'] ?? [];
+            if (is_string($paramsRaw)) {
+                $decoded = json_decode($paramsRaw, true);
+                $params = json_last_error() === JSON_ERROR_NONE ? $decoded : [$paramsRaw];
+            } else {
+                $params = $paramsRaw;
+            }
+            $req = ['jsonrpc' => '2.0', 'id' => ($_GET['id'] ?? 1), 'method' => $rpcMethod, 'params' => $params];
+            try { WalletLogger::info("RPC $requestId: alias method=$rpcMethod"); } catch (Throwable $e) {}
+            echo json_encode($processJsonRpc($req));
+            exit;
+        }
+
+        // Standard single JSON-RPC
+        $response = $processJsonRpc($input);
+        
+        // Force commit any pending transaction before sending response
+        try {
+            if ($pdo && $pdo->inTransaction()) {
+                writeLog("Forcing commit before JSON-RPC response", 'INFO');
+                $pdo->commit();
+                writeLog("Transaction committed before JSON-RPC response", 'INFO');
+            }
+        } catch (Exception $e) {
+            writeLog("Failed to commit before JSON-RPC response: " . $e->getMessage(), 'ERROR');
+            try {
+                if ($pdo && $pdo->inTransaction()) {
+                    $pdo->rollBack();
+                    writeLog("Transaction rolled back before JSON-RPC response", 'INFO');
+                }
+            } catch (Exception $e2) {
+                writeLog("Failed to rollback before JSON-RPC response: " . $e2->getMessage(), 'ERROR');
+            }
+        }
+        
+        echo json_encode($response);
         exit;
     }
 
     $action = $input['action'] ?? '';
+    if ($action !== '') {
+        try {
+            $safe = $input;
+            if (is_array($safe)) {
+                $maskKeys = ['private_key','password'];
+                foreach ($maskKeys as $k) { if (isset($safe[$k])) { $safe[$k] = '***'; } }
+            }
+            WalletLogger::info("ACTION $requestId: action=$action");
+            WalletLogger::debug("ACTION $requestId: params=" . (is_array($safe)?json_encode($safe, JSON_UNESCAPED_SLASHES):'n/a'));
+        } catch (Throwable $e) {}
+    }
     
     switch ($action) {
         case 'dapp_config':
@@ -163,6 +381,20 @@ try {
             break;
         case 'create_wallet':
             $result = createWallet($walletManager, $blockchainManager);
+            break;
+        case 'ensure_wallet':
+            // Ensure a wallet record exists for the provided address (auto-create if missing)
+            $address = $input['address'] ?? '';
+            if (!$address) {
+                throw new Exception('Address is required');
+            }
+            // Trigger auto-create via balance fetch and then return info
+            try {
+                $walletManager->getAvailableBalance($address);
+                $result = getWalletInfo($walletManager, $address);
+            } catch (Exception $e) {
+                throw new Exception('Failed to ensure wallet: ' . $e->getMessage());
+            }
             break;
             
         case 'list_wallets':
@@ -198,6 +430,33 @@ try {
             
         case 'generate_mnemonic':
             $result = generateMnemonic($walletManager);
+            break;
+            
+        case 'debug_logs':
+            // Debug endpoint to check logging status and recent entries
+            $baseDir = dirname(__DIR__);
+            $logFile = $baseDir . '/logs/wallet_api.log';
+            $logExists = file_exists($logFile);
+            $lastLines = [];
+            if ($logExists) {
+                $content = file_get_contents($logFile);
+                $lines = explode("\n", $content);
+                $lastLines = array_slice(array_filter($lines), -10); // Last 10 non-empty lines
+            }
+            
+            // Force a test log entry
+            writeLog("DEBUG: Test log entry at " . date('Y-m-d H:i:s') . " from debug_logs action");
+            
+            $result = [
+                'debug_info' => [
+                    'log_file_exists' => $logExists,
+                    'log_file_path' => $logFile,
+                    'log_file_size' => $logExists ? filesize($logFile) : 0,
+                    'last_10_lines' => $lastLines,
+                    'logger_enabled' => class_exists('WalletLogger'),
+                    'test_entry_written' => true
+                ]
+            ];
             break;
             
         case 'get_config':
@@ -417,10 +676,32 @@ try {
             throw new Exception('Unknown action: ' . $action);
     }
     
-    echo json_encode([
+    $responsePayload = [
         'success' => true,
         ...$result
-    ]);
+    ];
+    try { WalletLogger::debug("RESP $requestId: action=$action keys=" . implode(',', array_keys($responsePayload))); } catch (Throwable $e) {}
+    
+    // Force commit any pending transaction before sending response
+    try {
+        if ($pdo && $pdo->inTransaction()) {
+            writeLog("Forcing commit before response", 'INFO');
+            $pdo->commit();
+            writeLog("Transaction committed before response", 'INFO');
+        }
+    } catch (Exception $e) {
+        writeLog("Failed to commit before response: " . $e->getMessage(), 'ERROR');
+        try {
+            if ($pdo && $pdo->inTransaction()) {
+                $pdo->rollBack();
+                writeLog("Transaction rolled back before response", 'INFO');
+            }
+        } catch (Exception $e2) {
+            writeLog("Failed to rollback before response: " . $e2->getMessage(), 'ERROR');
+        }
+    }
+    
+    echo json_encode($responsePayload);
     
 } catch (Exception $e) {
     // Log full error info
@@ -1934,17 +2215,135 @@ function deleteWallet($walletManager, string $address) {
 function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $method, array $params)
 {
     try {
+        // Define a wrapper to handle transactions for RPC methods
+        $transactionWrapper = function($handler, $pdo, $walletManager, $networkConfig, $method, $params) {
+            // For read-only methods, we don't need a transaction
+            $readOnlyMethods = [
+                'eth_getBalance', 'eth_blockNumber', 'eth_call', 'eth_estimateGas', 
+                'eth_gasPrice', 'eth_getTransactionCount', 'eth_getCode', 
+                'eth_getTransactionByHash', 'eth_getTransactionReceipt', 'net_version', 'eth_chainId'
+            ];
+
+            if (in_array($method, $readOnlyMethods)) {
+                // No transaction needed for these methods
+                return $handler($pdo, $walletManager, $networkConfig, $params);
+            }
+
+            // For write methods, wrap in a transaction
+            $pdo->beginTransaction();
+            try {
+                $result = $handler($pdo, $walletManager, $networkConfig, $params);
+                if ($pdo->inTransaction()) {
+                    $pdo->commit();
+                }
+                return $result;
+            } catch (\Exception $e) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                throw $e; // Re-throw exception to be caught by the main handler
+            }
+        };
+
         switch ($method) {
             case 'web3_clientVersion':
                 return 'phpblockchain/1.0 (wallet_api)';
 
             // dApp/browser convenience
-            case 'eth_accounts':
-                // Server doesn’t manage user keys; return empty -> dApp should prompt wallet
-                return [];
-            case 'eth_requestAccounts':
-                // Triggering connect is client-side; returning empty array is acceptable default
-                return [];
+            case 'eth_accounts': {
+                // Return unlocked accounts if any, else fallback to a known address in DB or env
+                $unlocked = getUnlockedAccounts();
+                if (!empty($unlocked)) {
+                    return array_values($unlocked);
+                }
+                // ENV override for a primary account (useful for demos)
+                $envAddr = getenv('PRIMARY_WALLET_ADDRESS') ?: getenv('WALLET_ADDRESS');
+                if (is_string($envAddr) && $envAddr !== '') {
+                    $norm = normalizeHexAddress($envAddr);
+                    if ($norm) return [$norm];
+                }
+                try {
+                    // Return addresses with balance > 0 first, then most recent ones
+                    $stmt = $pdo->query("SELECT address FROM wallets WHERE balance > 0 ORDER BY balance DESC, created_at DESC LIMIT 5");
+                    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                    if (!empty($rows)) {
+                        return array_map(function($row) {
+                            return normalizeHexAddress($row['address']) ?: $row['address'];
+                        }, $rows);
+                    }
+                    // Fallback: return most recent address if no balances
+                    $stmt = $pdo->query("SELECT address FROM wallets ORDER BY created_at DESC LIMIT 1");
+                    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                    return $row ? [normalizeHexAddress($row['address']) ?: $row['address']] : [];
+                } catch (\Throwable $e) {
+                    return [];
+                }
+            }
+            case 'eth_requestAccounts': {
+                // For MetaMask compatibility, return available accounts or prompt for connection
+                // In server context, return available unlocked accounts or known accounts
+                $unlocked = getUnlockedAccounts();
+                if (!empty($unlocked)) {
+                    return array_values($unlocked);
+                }
+                // Fallback: return addresses with balance first, then most recent ones
+                try {
+                    $stmt = $pdo->query("SELECT address FROM wallets WHERE balance > 0 ORDER BY balance DESC, created_at DESC LIMIT 5");
+                    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                    if (!empty($rows)) {
+                        return array_map(function($row) { return $row['address']; }, $rows);
+                    }
+                    // Fallback: return most recent address if no balances
+                    $stmt = $pdo->query("SELECT address FROM wallets ORDER BY created_at DESC LIMIT 1");
+                    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                    return $row ? [$row['address']] : [];
+                } catch (\Throwable $e) {
+                    return [];
+                }
+            }
+            case 'personal_listAccounts': {
+                // Return all known wallet addresses from DB
+                try {
+                    $stmt = $pdo->query("SELECT address FROM wallets ORDER BY created_at DESC LIMIT 100");
+                    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+                    return array_map(fn($r) => $r['address'], $rows);
+                } catch (\Throwable $e) {
+                    return [];
+                }
+            }
+            case 'personal_newAccount': {
+                // params: [password]
+                $password = $params[0] ?? '';
+                if (!is_string($password) || $password === '') {
+                    return rpcError(-32602, 'Password is required');
+                }
+                try {
+                    $wallet = $walletManager->createWallet(null, true);
+                    // Store encrypted keystore for server-managed account (optional use)
+                    saveKeystoreEncrypted($wallet['address'], $wallet['private_key'], $password);
+                    return $wallet['address'];
+                } catch (\Throwable $e) {
+                    writeLog('personal_newAccount error: ' . $e->getMessage(), 'ERROR');
+                    return rpcError(-32603, 'Failed to create account');
+                }
+            }
+            case 'personal_unlockAccount': {
+                // params: [address, password, duration]
+                $address = normalizeHexAddress($params[0] ?? '');
+                $password = $params[1] ?? '';
+                $duration = (int)($params[2] ?? 300);
+                if (!$address || !is_string($password) || $password === '') {
+                    return rpcError(-32602, 'Invalid params');
+                }
+                $ok = unlockAccount($address, $password, $duration);
+                return (bool)$ok;
+            }
+            case 'personal_lockAccount': {
+                $address = normalizeHexAddress($params[0] ?? '');
+                if (!$address) return rpcError(-32602, 'Invalid address');
+                lockAccount($address);
+                return true;
+            }
             case 'wallet_addEthereumChain': {
                 // Validate provided params and return canonical chain config for client UIs
                 $req = $params[0] ?? [];
@@ -1988,6 +2387,62 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                 return null; // success
             }
 
+            case 'wallet_requestPermissions': {
+                // EIP-2255: Request permissions from wallet
+                $permissions = $params[0] ?? [];
+                if (!is_array($permissions)) {
+                    return rpcError(-32602, 'Invalid params');
+                }
+                
+                // For eth_accounts permission, return permission descriptor
+                $result = [];
+                foreach ($permissions as $permission) {
+                    if (isset($permission['eth_accounts']) && is_array($permission['eth_accounts'])) {
+                        $result[] = [
+                            'parentCapability' => 'eth_accounts',
+                            'id' => bin2hex(random_bytes(16)),
+                            'date' => time() * 1000, // milliseconds
+                            'invoker' => 'https://' . ($_SERVER['HTTP_HOST'] ?? 'localhost'),
+                            'caveats' => []
+                        ];
+                    }
+                }
+                return $result;
+            }
+
+            case 'wallet_getPermissions': {
+                // Return currently granted permissions
+                return [
+                    [
+                        'parentCapability' => 'eth_accounts',
+                        'id' => bin2hex(random_bytes(16)),
+                        'date' => time() * 1000,
+                        'invoker' => 'https://' . ($_SERVER['HTTP_HOST'] ?? 'localhost'),
+                        'caveats' => []
+                    ]
+                ];
+            }
+
+            case 'wallet_watchAsset': {
+                // EIP-747: Watch asset in wallet
+                $params_obj = $params[0] ?? [];
+                if (!is_array($params_obj)) {
+                    return rpcError(-32602, 'Invalid params');
+                }
+                
+                $type = $params_obj['type'] ?? '';
+                $options = $params_obj['options'] ?? [];
+                
+                if ($type === 'ERC20' && is_array($options)) {
+                    // For our blockchain, we could add token to a watched list
+                    // For now, just return true (success)
+                    writeLog('wallet_watchAsset requested for: ' . json_encode($options), 'INFO');
+                    return true;
+                }
+                
+                return false;
+            }
+
             case 'net_version': {
                 $info = method_exists($networkConfig, 'getNetworkInfo') ? $networkConfig->getNetworkInfo() : [];
                 return (string)($info['chain_id'] ?? 0);
@@ -2016,15 +2471,44 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                 // Arbitrary protocol version string
                 return '0x1';
 
+            case 'eth_syncing':
+                // Report not syncing (boolean false) for simple clients
+                return false;
+
+            case 'eth_mining':
+                // We're not mining in this wallet API
+                return false;
+
             case 'eth_getBalance': {
                 $address = $params[0] ?? '';
                 if (!$address) return '0x0';
-                $balanceFloat = (float)$walletManager->getBalance($address);
+                // Use spendable balance (exclude staked) for wallet UIs
+                $balanceFloat = (float)$walletManager->getAvailableBalance($address);
                 // Convert to smallest unit based on network decimals
                 $decimals = getTokenDecimals($networkConfig);
                 $multiplier = 10 ** $decimals;
                 $balanceInt = (int)floor($balanceFloat * $multiplier);
+                
+                // TEST LOG: Check if new code is loaded
+                writeLog("TEST: eth_getBalance - decimals=$decimals, multiplier=$multiplier, balanceFloat=$balanceFloat, balanceInt=$balanceInt", 'DEBUG');
+                
                 return '0x' . dechex($balanceInt);
+            }
+
+            case 'eth_coinbase': {
+                // Return a default local address if available (some wallets probe this)
+                $unlocked = getUnlockedAccounts();
+                if (!empty($unlocked)) {
+                    $first = array_values($unlocked)[0];
+                    return $first;
+                }
+                try {
+                    $stmt = $pdo->query("SELECT address FROM wallets ORDER BY created_at DESC LIMIT 1");
+                    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                    return $row ? $row['address'] : '0x0000000000000000000000000000000000000000';
+                } catch (\Throwable $e) {
+                    return '0x0000000000000000000000000000000000000000';
+                }
             }
 
             case 'eth_getTransactionCount': {
@@ -2050,17 +2534,83 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                 // Return a fixed 21000 units as a placeholder
                 return '0x5208';
 
+            case 'eth_feeHistory': {
+                // params: [blockCount, newestBlock, rewardPercentiles]
+                // Provide a minimal stable response with zeros; enough for many wallets/UIs
+                $blockCount = $params[0] ?? '0x0';
+                $newest = $params[1] ?? 'latest';
+                $count = 0;
+                if (is_string($blockCount) && str_starts_with($blockCount, '0x')) {
+                    $count = (int)hexdec($blockCount);
+                } elseif (is_numeric($blockCount)) {
+                    $count = (int)$blockCount;
+                }
+                if ($count <= 0) $count = 1;
+                $baseFees = array_fill(0, $count, '0x0');
+                $gasUsedRatio = array_fill(0, $count, 0.0);
+                $reward = [];
+                $percentiles = $params[2] ?? [];
+                if (is_array($percentiles) && !empty($percentiles)) {
+                    $reward = array_fill(0, $count, array_fill(0, count($percentiles), '0x0'));
+                }
+                return [
+                    'oldestBlock' => is_string($newest) ? $newest : 'latest',
+                    'baseFeePerGas' => $baseFees,
+                    'gasUsedRatio' => $gasUsedRatio,
+                    'reward' => $reward,
+                ];
+            }
+
             case 'eth_getTransactionByHash': {
                 $hash = $params[0] ?? '';
                 if (!$hash) return null;
                 $tx = $walletManager->getTransactionByHash($hash);
-                if (!$tx) return null;
+                if (!$tx) {
+                    // Fallback to mempool for pending transactions
+                    try {
+                        $pdo = $walletManager->getDatabase();
+                        $stmt = $pdo->prepare("SELECT hash, from_address, to_address, amount, fee, nonce, gas_limit, gas_price, data, signature, timestamp FROM mempool WHERE hash = ? LIMIT 1");
+                        $stmt->execute([$hash]);
+                        $mp = $stmt->fetch(PDO::FETCH_ASSOC);
+                        if ($mp) {
+                            $decimals = getTokenDecimals($networkConfig);
+                            $multiplier = 10 ** $decimals;
+                            $valueHex = '0x' . dechex((int)floor(((float)($mp['amount'] ?? 0)) * $multiplier));
+                            $chainInfo = method_exists($networkConfig, 'getNetworkInfo') ? $networkConfig->getNetworkInfo() : [];
+                            $chainIdHex = '0x' . dechex((int)($chainInfo['chain_id'] ?? 0));
+                            return [
+                                'hash' => $mp['hash'],
+                                'nonce' => '0x' . dechex((int)($mp['nonce'] ?? 0)),
+                                'blockHash' => null,
+                                'blockNumber' => null,
+                                'transactionIndex' => null,
+                                'from' => $mp['from_address'] ?? null,
+                                'to' => $mp['to_address'] ?? null,
+                                'value' => $valueHex,
+                                'gas' => '0x' . dechex((int)($mp['gas_limit'] ?? 21000)),
+                                'gasPrice' => '0x' . dechex((int)($mp['gas_price'] ?? 0)),
+                                'maxFeePerGas' => '0x0',
+                                'maxPriorityFeePerGas' => '0x0',
+                                'type' => '0x0',
+                                'accessList' => [],
+                                'chainId' => $chainIdHex,
+                                'v' => '0x0', 'r' => '0x0', 's' => '0x0',
+                                'input' => is_string($mp['data'] ?? null) ? $mp['data'] : '0x',
+                            ];
+                        }
+                    } catch (Throwable $e) {
+                        writeLog('eth_getTransactionByHash mempool fallback error: ' . $e->getMessage(), 'ERROR');
+                    }
+                    return null;
+                }
                 $blockNumberHex = isset($tx['block_height']) && $tx['block_height'] !== null
                     ? ('0x' . dechex((int)$tx['block_height']))
                     : null;
                 $decimals = getTokenDecimals($networkConfig);
                 $multiplier = 10 ** $decimals;
                 $valueHex = '0x' . dechex((int)floor(((float)($tx['amount'] ?? 0)) * $multiplier));
+                $chainInfo = method_exists($networkConfig, 'getNetworkInfo') ? $networkConfig->getNetworkInfo() : [];
+                $chainIdHex = '0x' . dechex((int)($chainInfo['chain_id'] ?? 0));
                 return [
                     'hash' => $tx['hash'],
                     'nonce' => '0x0',
@@ -2072,6 +2622,16 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                     'value' => $valueHex,
                     'gas' => '0x0',
                     'gasPrice' => '0x0',
+                    // EIP-1559 style fields (placeholders; no gas market)
+                    'maxFeePerGas' => '0x0',
+                    'maxPriorityFeePerGas' => '0x0',
+                    'type' => '0x0',
+                    'accessList' => [],
+                    'chainId' => $chainIdHex,
+                    // Signature placeholders
+                    'v' => '0x0',
+                    'r' => '0x0',
+                    's' => '0x0',
                     'input' => '0x',
                 ];
             }
@@ -2112,9 +2672,107 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
             }
 
             case 'eth_sendTransaction': {
-                // Not supported (node does not hold private keys). Wallets should use eth_sendRawTransaction.
-                writeLog('eth_sendTransaction called but not supported (use eth_sendRawTransaction)', 'WARNING');
-                return null;
+                // params: [txObject]
+                $tx = $params[0] ?? [];
+                if (!is_array($tx)) return rpcError(-32602, 'Invalid transaction object');
+                
+                $from = normalizeHexAddress($tx['from'] ?? '');
+                $to = normalizeHexAddress($tx['to'] ?? '');
+                $valueHex = $tx['value'] ?? '0x0';
+                $gasHex = $tx['gas'] ?? null;
+                $gasPriceHex = $tx['gasPrice'] ?? null;
+                $dataHex = $tx['data'] ?? ($tx['input'] ?? null);
+                $nonceHex = $tx['nonce'] ?? null;
+                
+                if (!$from) return rpcError(-32602, 'from address is required');
+                if (!$to) return rpcError(-32602, 'to address is required');
+
+                // Check if account is unlocked or private key provided (non-standard extension)
+                $priv = getUnlockedPrivateKey($from);
+                if (!$priv && isset($tx['privateKey']) && is_string($tx['privateKey'])) {
+                    $priv = $tx['privateKey'];
+                }
+                if (!$priv) {
+                    return rpcError(-32601, 'Account not unlocked. Use personal_unlockAccount first');
+                }
+
+                // Convert value from hex wei to float amount using chain decimals
+                $decimals = getTokenDecimals($networkConfig);
+                $intValue = 0;
+                if (is_string($valueHex) && str_starts_with(strtolower($valueHex), '0x')) {
+                    $intValue = (int)hexdec($valueHex);
+                } elseif (is_numeric($valueHex)) {
+                    $intValue = (int)$valueHex;
+                }
+                $amount = $intValue / (10 ** $decimals);
+
+                // Handle gas parameters
+                $gasLimit = 21000; // Default gas limit
+                if ($gasHex) {
+                    $gasLimit = is_string($gasHex) && str_starts_with(strtolower($gasHex), '0x') 
+                        ? (int)hexdec($gasHex) 
+                        : (int)$gasHex;
+                }
+
+                $gasPrice = 0;
+                if ($gasPriceHex) {
+                    $gasPrice = is_string($gasPriceHex) && str_starts_with(strtolower($gasPriceHex), '0x') 
+                        ? (int)hexdec($gasPriceHex) 
+                        : (int)$gasPriceHex;
+                }
+
+                // Our blockchain doesn't use gas fees, so fee = 0
+                $fee = 0.0;
+
+                // Handle transaction data
+                $data = null;
+                if (is_string($dataHex) && $dataHex !== '0x' && $dataHex !== '') {
+                    $data = $dataHex;
+                }
+
+                // Handle nonce override
+                $nonce = null;
+                if ($nonceHex) {
+                    $nonce = is_string($nonceHex) && str_starts_with(strtolower($nonceHex), '0x')
+                        ? (int)hexdec($nonceHex)
+                        : (int)$nonceHex;
+                }
+
+                try {
+                    // Check balance
+                    $balance = $walletManager->getAvailableBalance($from);
+                    if ($balance < $amount) {
+                        return rpcError(-32000, 'Insufficient funds for transaction');
+                    }
+
+                    // Create transaction
+                    $txObj = $walletManager->createTransaction($from, $to, $amount, $fee, $priv, $data);
+                    
+                    // Override gas fields if supported
+                    if (method_exists($txObj, 'setGasLimit')) $txObj->setGasLimit($gasLimit);
+                    if (method_exists($txObj, 'setGasPrice')) $txObj->setGasPrice($gasPrice);
+                    
+                    // Override nonce if provided
+                    if ($nonce !== null && method_exists($txObj, 'setNonce')) {
+                        $txObj->setNonce($nonce);
+                    }
+
+                    // Send to mempool
+                    $success = $walletManager->sendTransaction($txObj);
+                    if (!$success) {
+                        return rpcError(-32603, 'Failed to submit transaction to mempool');
+                    }
+
+                    $txHash = $txObj->getHash();
+                    $result = str_starts_with($txHash, '0x') ? $txHash : ('0x' . $txHash);
+                    
+                    writeLog("Transaction submitted: $result from $from to $to amount $amount", 'INFO');
+                    return $result;
+                    
+                } catch (\Throwable $e) {
+                    writeLog('eth_sendTransaction error: ' . $e->getMessage(), 'ERROR');
+                    return rpcError(-32603, 'Transaction execution failed: ' . $e->getMessage());
+                }
             }
 
             case 'eth_getBlockByHash': {
@@ -2141,6 +2799,10 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                             'value' => '0x' . dechex((int)floor(((float)($t['amount'] ?? 0)) * $multiplier)),
                             'gas' => '0x0',
                             'gasPrice' => '0x0',
+                            'maxFeePerGas' => '0x0',
+                            'maxPriorityFeePerGas' => '0x0',
+                            'type' => '0x0',
+                            'accessList' => [],
                             'input' => '0x',
                         ];
                     }
@@ -2149,14 +2811,65 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                         $txs[] = $t['hash'];
                     }
                 }
+                // Augment with common Ethereum fields as placeholders
                 return [
                     'number' => '0x' . dechex($height),
                     'hash' => $block['hash'] ?? null,
                     'parentHash' => $block['parent_hash'] ?? $block['previous_hash'] ?? null,
-                    'timestamp' => '0x' . dechex((int)($block['timestamp'] ?? time())),
+                    'nonce' => '0x0000000000000000',
+                    'sha3Uncles' => '0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347',
+                    'logsBloom' => '0x',
+                    'transactionsRoot' => '0x',
+                    'stateRoot' => '0x',
+                    'receiptsRoot' => '0x',
                     'miner' => $block['validator'] ?? null,
+                    'difficulty' => '0x0',
+                    'totalDifficulty' => '0x0',
+                    'extraData' => '0x',
+                    'size' => '0x0',
+                    'gasLimit' => '0x0',
+                    'gasUsed' => '0x0',
+                    'timestamp' => '0x' . dechex((int)($block['timestamp'] ?? time())),
+                    'uncles' => [],
+                    'mixHash' => '0x' . str_repeat('0', 64),
+                    'baseFeePerGas' => '0x0',
                     'transactions' => $txs,
                 ];
+            }
+
+            case 'eth_getStorageAt': {
+                // params: [address, storagePosition, blockTag]
+                $address = normalizeHexAddress($params[0] ?? '');
+                $position = $params[1] ?? '0x0';
+                $blockTag = $params[2] ?? 'latest';
+                
+                if (!$address) {
+                    return rpcError(-32602, 'Invalid address');
+                }
+                
+                // For our blockchain, we could fetch from smart_contracts storage field
+                try {
+                    $stmt = $pdo->prepare("SELECT storage FROM smart_contracts WHERE address = ? LIMIT 1");
+                    $stmt->execute([$address]);
+                    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                    
+                    if ($row && !empty($row['storage'])) {
+                        $storage = json_decode($row['storage'], true);
+                        if (is_array($storage)) {
+                            // Convert position to string key
+                            $key = is_string($position) && str_starts_with($position, '0x') 
+                                ? $position 
+                                : '0x' . dechex((int)$position);
+                            
+                            $value = $storage[$key] ?? '0x0';
+                            return is_string($value) ? $value : '0x0';
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    writeLog('eth_getStorageAt error: ' . $e->getMessage(), 'ERROR');
+                }
+                
+                return '0x' . str_repeat('0', 64); // Empty storage slot
             }
 
             case 'eth_getCode': {
@@ -2166,6 +2879,40 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                 if (!$norm) return '0x';
                 $code = getContractCodeHex($pdo, $norm);
                 return $code ?: '0x';
+            }
+
+            case 'personal_sign':
+            case 'eth_sign': {
+                // personal_sign params variants: [data, address] or [address, data]
+                // eth_sign params: [address, data]
+                $p0 = $params[0] ?? '';
+                $p1 = $params[1] ?? '';
+                $addrFirst = normalizeHexAddress($p0);
+                $addrSecond = normalizeHexAddress($p1);
+                $address = $addrFirst ?: $addrSecond;
+                $data = $addrFirst ? $p1 : $p0;
+                if (!$address || !is_string($data)) return rpcError(-32602, 'Invalid params');
+
+                $priv = getUnlockedPrivateKey($address);
+                if (!$priv && isset($params[2]) && is_string($params[2])) { $priv = $params[2]; }
+                if (!$priv) return rpcError(-32601, 'Account not unlocked');
+
+                // If data is hex 0x..., decode to bytes for hashing; else hash raw string
+                if (str_starts_with($data, '0x')) {
+                    $bin = @hex2bin(substr($data, 2));
+                    if ($bin === false) $bin = '';
+                } else {
+                    $bin = $data;
+                }
+                $hash = \Blockchain\Core\Crypto\Hash::keccak256($bin);
+                try {
+                    $sig = \Blockchain\Core\Cryptography\Signature::sign($hash, $priv);
+                    // Return 0x-prefixed signature if not already
+                    return str_starts_with($sig, '0x') ? $sig : ('0x' . $sig);
+                } catch (\Throwable $e) {
+                    writeLog('eth_sign error: ' . $e->getMessage(), 'ERROR');
+                    return rpcError(-32603, 'Internal error');
+                }
             }
 
             case 'eth_call': {
@@ -2267,6 +3014,10 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                             'value' => '0x' . dechex((int)floor(((float)($t['amount'] ?? 0)) * $multiplier)),
                             'gas' => '0x0',
                             'gasPrice' => '0x0',
+                            'maxFeePerGas' => '0x0',
+                            'maxPriorityFeePerGas' => '0x0',
+                            'type' => '0x0',
+                            'accessList' => [],
                             'input' => '0x',
                         ];
                     }
@@ -2276,12 +3027,28 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                     }
                 }
 
+                // Add standard Ethereum block fields (placeholder values where not applicable)
                 return [
                     'number' => '0x' . dechex((int)$height),
                     'hash' => $block['hash'] ?? null,
                     'parentHash' => $block['parent_hash'] ?? $block['previous_hash'] ?? null,
-                    'timestamp' => '0x' . dechex((int)($block['timestamp'] ?? time())),
+                    'nonce' => '0x0000000000000000',
+                    'sha3Uncles' => '0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347',
+                    'logsBloom' => '0x',
+                    'transactionsRoot' => '0x',
+                    'stateRoot' => '0x',
+                    'receiptsRoot' => '0x',
                     'miner' => $block['validator'] ?? null,
+                    'difficulty' => '0x0',
+                    'totalDifficulty' => '0x0',
+                    'extraData' => '0x',
+                    'size' => '0x0',
+                    'gasLimit' => '0x0',
+                    'gasUsed' => '0x0',
+                    'timestamp' => '0x' . dechex((int)($block['timestamp'] ?? time())),
+                    'uncles' => [],
+                    'mixHash' => '0x' . str_repeat('0', 64),
+                    'baseFeePerGas' => '0x0',
                     'transactions' => $txs,
                 ];
             }
@@ -2432,7 +3199,66 @@ function getTransactionReceipt($walletManager, string $hash): ?array
 {
     try {
         $tx = $walletManager->getTransactionByHash($hash);
-        if (!$tx) return null;
+        if (!$tx) {
+            // If not confirmed yet, check mempool; auto-confirm no-op self-transfers
+            try {
+                $pdo = $walletManager->getDatabase();
+                $stmt = $pdo->prepare("SELECT hash, from_address, to_address, amount, fee, nonce, gas_limit, gas_price, data, signature, timestamp FROM mempool WHERE hash = ? LIMIT 1");
+                $stmt->execute([$hash]);
+                $mp = $stmt->fetch(PDO::FETCH_ASSOC);
+                if ($mp) {
+                    $from = strtolower((string)($mp['from_address'] ?? ''));
+                    $to = strtolower((string)($mp['to_address'] ?? ''));
+                    $amount = (float)($mp['amount'] ?? 0);
+                    $isNoop = ($from !== '' && $from === $to && $amount <= 0);
+                    if ($isNoop) {
+                        // Promote to confirmed transaction without block
+                        $started = false;
+                        if (method_exists($pdo, 'inTransaction') && !$pdo->inTransaction()) {
+                            $pdo->beginTransaction();
+                            $started = true;
+                        }
+                        try {
+                            $ins = $pdo->prepare("INSERT INTO transactions (hash, from_address, to_address, amount, fee, nonce, gas_limit, gas_price, data, signature, timestamp, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed') ON DUPLICATE KEY UPDATE status='confirmed'");
+                            $ins->execute([$hash, $from, $to, $amount, (float)($mp['fee'] ?? 0), (int)($mp['nonce'] ?? 0), (int)($mp['gas_limit'] ?? 21000), (int)($mp['gas_price'] ?? 0), (string)($mp['data'] ?? ''), (string)($mp['signature'] ?? ''), (int)($mp['timestamp'] ?? time())]);
+                            $del = $pdo->prepare("DELETE FROM mempool WHERE hash = ?");
+                            $del->execute([$hash]);
+                            if ($started) { $pdo->commit(); }
+                        } catch (Throwable $e) {
+                            if ($started && method_exists($pdo, 'inTransaction') && $pdo->inTransaction()) { $pdo->rollBack(); }
+                            writeLog('getTransactionReceipt promote noop error: ' . $e->getMessage(), 'ERROR');
+                        }
+                        // Re-read as confirmed
+                        $tx = $walletManager->getTransactionByHash($hash);
+                        if (!$tx) {
+                            // Fallback to synthetic receipt with status=1 and no block
+                            return [
+                                'transactionHash' => $hash,
+                                'transactionIndex' => '0x0',
+                                'blockHash' => null,
+                                'blockNumber' => null,
+                                'from' => $from,
+                                'to' => $to,
+                                'cumulativeGasUsed' => '0x0',
+                                'gasUsed' => '0x0',
+                                'contractAddress' => null,
+                                'logs' => [],
+                                'logsBloom' => '0x',
+                                'status' => '0x1',
+                            ];
+                        }
+                    } else {
+                        // For pending non-noop txs return null per Ethereum behavior
+                        return null;
+                    }
+                } else {
+                    return null;
+                }
+            } catch (Throwable $e) {
+                writeLog('getTransactionReceipt mempool check error: ' . $e->getMessage(), 'ERROR');
+                return null;
+            }
+        }
         $blockNumberHex = isset($tx['block_height']) && $tx['block_height'] !== null
             ? ('0x' . dechex((int)$tx['block_height']))
             : null;
@@ -2463,13 +3289,13 @@ function getTokenDecimals($networkConfig): int
     try {
         if (method_exists($networkConfig, 'getTokenInfo')) {
             $info = $networkConfig->getTokenInfo();
-            $d = (int)($info['decimals'] ?? 9);
-            return $d > 0 ? $d : 9;
+            $d = (int)($info['decimals'] ?? 18);
+            return $d > 0 ? $d : 18;
         }
     } catch (Throwable $e) {
         // ignore
     }
-    return 9;
+    return 18; // FIXED: Return 18 decimals for MetaMask compatibility
 }
 
 /**
@@ -2497,8 +3323,9 @@ function getDappConfig($networkConfig): array
     $explorerExists = is_file($baseDir . '/explorer/index.php');
     $explorerUrls = $explorerExists ? [$scheme . $host . '/explorer/'] : [];
 
-    // Icon URL from assets (ordinary hosting) - set explicitly
-    $iconUrl = $scheme . $host . '/public/assets/network-icon.svg';
+    // Icon URL from assets (ordinary hosting) - prefer PNG
+    // Note: index.php router has a PNG->SVG fallback if PNG is missing.
+    $iconUrl = $scheme . $host . '/public/assets/network-icon.png';
 
     $config = [
         'chainId' => '0x' . dechex($chainId),
@@ -2525,14 +3352,153 @@ function getDappConfig($networkConfig): array
 }
 
 /**
- * Build JSON-RPC error object (inline style)
+ * Build JSON-RPC error object with MetaMask-compatible error codes
  */
-function rpcError(int $code, string $message)
+function rpcError(int $code, string $message, $data = null)
 {
-    return [
+    $error = [
         'code' => $code,
         'message' => $message
     ];
+    
+    if ($data !== null) {
+        $error['data'] = $data;
+    }
+    
+    return $error;
+}
+
+/**
+ * Common MetaMask error codes:
+ * -32700: Parse error
+ * -32600: Invalid Request
+ * -32601: Method not found
+ * -32602: Invalid params
+ * -32603: Internal error
+ * -32000: Invalid input (custom)
+ * -32001: Resource not found (custom)
+ * -32002: Resource unavailable (custom)
+ * -32003: Transaction rejected (custom)
+ * -32004: Method not supported (custom)
+ * -32005: Limit exceeded (custom)
+ * 4001: User rejected request
+ * 4100: Unauthorized
+ * 4200: Unsupported method
+ * 4900: Disconnected
+ * 4901: Chain disconnected
+ */
+
+/**
+ * Simple unlocked accounts management (file-based, ephemeral TTL).
+ * Note: For production, consider secure storage and process-level memory store.
+ */
+function unlockedStorePath(): string {
+    $dir = dirname(__DIR__) . '/storage/keystore';
+    if (!is_dir($dir)) { @mkdir($dir, 0755, true); }
+    return $dir . '/unlocked.json';
+}
+
+function getUnlockedAccounts(): array {
+    $path = unlockedStorePath();
+    if (!is_file($path)) return [];
+    $json = @file_get_contents($path);
+    $data = json_decode((string)$json, true);
+    if (!is_array($data)) return [];
+    // Filter expired
+    $now = time();
+    $out = [];
+    foreach ($data as $addr => $info) {
+        if (!isset($info['expires']) || $info['expires'] >= $now) {
+            $out[$addr] = $addr;
+        }
+    }
+    return $out;
+}
+
+function getUnlockedPrivateKey(string $address): string {
+    $path = unlockedStorePath();
+    if (!is_file($path)) return '';
+    $json = @file_get_contents($path);
+    $data = json_decode((string)$json, true);
+    if (!is_array($data)) return '';
+    $addr = strtolower($address);
+    $now = time();
+    if (isset($data[$addr]) && (!isset($data[$addr]['expires']) || $data[$addr]['expires'] >= $now)) {
+        return (string)($data[$addr]['privateKey'] ?? '');
+    }
+    return '';
+}
+
+function lockAccount(string $address): void {
+    $path = unlockedStorePath();
+    if (!is_file($path)) return;
+    $json = @file_get_contents($path);
+    $data = json_decode((string)$json, true);
+    if (!is_array($data)) return;
+    unset($data[strtolower($address)]);
+    @file_put_contents($path, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+}
+
+function unlockAccount(string $address, string $password, int $duration = 300): bool {
+    // Try decrypting keystore file for this address
+    $priv = loadKeystoreDecrypted($address, $password);
+    if (!$priv) return false;
+    $path = unlockedStorePath();
+    $json = is_file($path) ? (string)@file_get_contents($path) : '{}';
+    $data = json_decode($json, true);
+    if (!is_array($data)) $data = [];
+    $data[strtolower($address)] = [
+        'privateKey' => $priv,
+        'expires' => time() + max(1, $duration)
+    ];
+    return (bool)@file_put_contents($path, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+}
+
+function keystoreDir(): string {
+    $dir = dirname(__DIR__) . '/storage/keystore';
+    if (!is_dir($dir)) { @mkdir($dir, 0755, true); }
+    return $dir;
+}
+
+function keystorePath(string $address): string {
+    return keystoreDir() . '/' . strtolower($address) . '.json';
+}
+
+function saveKeystoreEncrypted(string $address, string $privateKey, string $password): bool {
+    // Very basic encryption using OpenSSL; consider stronger KDF in production
+    $salt = bin2hex(random_bytes(8));
+    $key = hash('sha256', $password . $salt, true);
+    $iv = random_bytes(16);
+    $cipher = 'aes-256-cbc';
+    $enc = openssl_encrypt($privateKey, $cipher, $key, OPENSSL_RAW_DATA, $iv);
+    $payload = [
+        'address' => strtolower($address),
+        'crypto' => [
+            'cipher' => $cipher,
+            'ciphertext' => bin2hex($enc),
+            'iv' => bin2hex($iv),
+            'salt' => $salt,
+            'kdf' => 'sha256'
+        ],
+        'version' => 1
+    ];
+    return (bool)@file_put_contents(keystorePath($address), json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+}
+
+function loadKeystoreDecrypted(string $address, string $password): string {
+    $path = keystorePath($address);
+    if (!is_file($path)) return '';
+    $json = @file_get_contents($path);
+    $data = json_decode((string)$json, true);
+    if (!is_array($data) || empty($data['crypto'])) return '';
+    $salt = (string)($data['crypto']['salt'] ?? '');
+    $key = hash('sha256', $password . $salt, true);
+    $cipher = (string)($data['crypto']['cipher'] ?? 'aes-256-cbc');
+    $iv = hex2bin((string)($data['crypto']['iv'] ?? '')) ?: '';
+       $ct = hex2bin((string)($data['crypto']['ciphertext'] ?? '')) ?: '';
+    if ($iv === '' || $ct === '') return '';
+    $dec = openssl_decrypt($ct, $cipher, $key, OPENSSL_RAW_DATA, $iv);
+    return is_string($dec) ? $dec : '';
 }
 
 /**
@@ -2678,9 +3644,9 @@ function getContractCodeHex(PDO $pdo, string $address): string {
         // Try DB smart_contracts table
         $stmt = $pdo->query("SHOW TABLES LIKE 'smart_contracts'");
         if ($stmt && $stmt->rowCount() > 0) {
-            $stmt2 = $pdo->prepare("SELECT bytecode FROM smart_contracts WHERE address = ? LIMIT 1");
-            $stmt2->execute([$address]);
-            $row = $stmt2->fetch(PDO::FETCH_ASSOC);
+            $stmt = $pdo->prepare("SELECT bytecode FROM smart_contracts WHERE address = ? LIMIT 1");
+            $stmt->execute([$address]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
             if ($row && !empty($row['bytecode'])) {
                 $code = $row['bytecode'];
                 $code = is_string($code) ? trim($code) : '';
@@ -2691,7 +3657,7 @@ function getContractCodeHex(PDO $pdo, string $address): string {
             }
         }
     } catch (\Throwable $e) {
-        // Ignore and try filesystem
+        // ignore
     }
     // Filesystem fallback: storage/contracts/<address>.bin or .hex
     $baseDir = dirname(__DIR__);

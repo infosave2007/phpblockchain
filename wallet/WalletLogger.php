@@ -6,7 +6,7 @@
 class WalletLogger
 {
     private static $config = null;
-     private static $enabled = false; // Controls disk logging; defaults to disabled
+    private static $enabled = true; // Always enable logging for debugging
     
     /**
      * Initialize logger with configuration
@@ -28,7 +28,13 @@ class WalletLogger
                 ?: getenv('API_LOGGING')
                 ?: getenv('LOGGING_ENABLED');
         }
-        self::$enabled = self::toBool($flag, false);
+        
+        // If still not specified, enable logging by default in debug mode
+        $defaultEnabled = true; // Always enabled for debugging
+        if (is_array(self::$config)) {
+            $defaultEnabled = (bool) (self::$config['debug_mode'] ?? true);
+        }
+        self::$enabled = self::toBool($flag, $defaultEnabled);
         
         // Log system information for debugging
         self::log("PHP Memory Limit: " . ini_get('memory_limit'), 'DEBUG');

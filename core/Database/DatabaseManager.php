@@ -88,6 +88,9 @@ class DatabaseManager
             $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
             $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
             
+            // Enable autocommit by default to ensure simple operations commit immediately
+            $pdo->setAttribute(PDO::ATTR_AUTOCOMMIT, 1);
+            
             return $pdo;
         } catch (PDOException $e) {
             throw new Exception("Database connection failed: " . $e->getMessage());

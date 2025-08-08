@@ -699,19 +699,18 @@ class WalletBlockchainManager
         
         $transactionStarted = false;
         try {
-            // Force-enable autocommit and start a new transaction
+            // Check database transaction state
             \WalletLogger::debug("Checking database transaction state");
             
             if ($this->database->inTransaction()) {
-                \WalletLogger::debug("Database already in transaction - committing existing transaction");
-                $this->database->commit();
+                \WalletLogger::debug("Database already in transaction - using existing transaction");
+                $transactionStarted = false;
+            } else {
+                // Start a new transaction only if not already in one
+                $this->database->beginTransaction();
+                $transactionStarted = true;
+                \WalletLogger::debug("New transaction started successfully");
             }
-            
-            // Enable autocommit and begin a new transaction
-            $this->database->setAttribute(\PDO::ATTR_AUTOCOMMIT, 1);
-            $this->database->beginTransaction();
-            $transactionStarted = true;
-            \WalletLogger::debug("New transaction started successfully");
             
             // Get block data safely - cast to Block class for getIndex/getMerkleRoot methods
             $concreteBlock = ($block instanceof \Blockchain\Core\Blockchain\Block) ? $block : null;
@@ -855,20 +854,16 @@ class WalletBlockchainManager
                     
                     \WalletLogger::debug("Processing wallet_create transaction for address: $walletAddress");
                     
-                    // Ensure wallet exists in wallets table
-                    $walletStmt = $this->database->prepare("
-                        INSERT INTO wallets (address, public_key, balance, created_at, updated_at)
-                        VALUES (?, ?, 0, NOW(), NOW())
-                        ON DUPLICATE KEY UPDATE 
-                            public_key = CASE 
-                                WHEN public_key = 'placeholder_public_key' THEN VALUES(public_key)
-                                ELSE public_key 
-                            END,
-                            updated_at = NOW()
-                    ");
-                    
-                    $walletResult = $walletStmt->execute([$walletAddress, $publicKey]);
-                    \WalletLogger::info("Wallet record created/updated in database for address: $walletAddress, result: " . json_encode($walletResult));
+                            // Ensure wallet exists in wallets table (UPDATE-first to avoid insert side-effects)
+                            $upd = $this->database->prepare("UPDATE wallets SET public_key = CASE WHEN public_key = 'placeholder_public_key' OR public_key = '' OR public_key IS NULL THEN ? ELSE public_key END, updated_at = NOW() WHERE address = ?");
+                            $upd->execute([$publicKey, $walletAddress]);
+                            if ($upd->rowCount() === 0) {
+                                $ins = $this->database->prepare("INSERT INTO wallets (address, public_key, balance, created_at, updated_at) VALUES (?, ?, 0, NOW(), NOW())");
+                                $walletResult = $ins->execute([$walletAddress, $publicKey]);
+                                \WalletLogger::info("Wallet record inserted in database for address: $walletAddress, result: " . json_encode($walletResult));
+                            } else {
+                                \WalletLogger::info("Wallet record updated in database for address: $walletAddress");
+                            }
                 }
             }
             

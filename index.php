@@ -361,11 +361,14 @@ function routeRequest(string $route, string $method, $app, array $context): mixe
         }
 
         // Serve file contents
+        $contents = file_get_contents($fullPath);
         if (!headers_sent()) {
             header('Content-Type: ' . $mime);
             header('Cache-Control: public, max-age=86400'); // 1 day
+            header('Content-Length: ' . strlen($contents));
+            header('Content-Disposition: inline; filename="' . basename($fullPath) . '"');
         }
-        return file_get_contents($fullPath);
+        return $contents;
     }
 
     switch ($route) {

@@ -74,10 +74,22 @@ class BlockStorage
             return false;
         }
         
+        // Initialize transaction flag BEFORE try block
+        $transactionStarted = false;
+        
         try {
             $this->writeLog("BlockStorage::saveToDatabaseStorage - Starting to save block " . $block->getHash(), 'DEBUG');
-            // Start transaction
-            $this->database->beginTransaction();
+            
+            // Check if we're already in a transaction
+            if ($this->database->inTransaction()) {
+                $this->writeLog("BlockStorage::saveToDatabaseStorage - Already in transaction, using existing transaction", 'DEBUG');
+                // Use existing transaction instead of forcing commit
+                $transactionStarted = false;
+            } else {
+                $this->writeLog("BlockStorage::saveToDatabaseStorage - Starting new transaction", 'DEBUG');
+                $this->database->beginTransaction();
+                $transactionStarted = true;
+            }
             
             // Get validator and signature using ValidatorManager
             $validatorAddress = '0x0000000000000000000000000000000000000000'; // fallback
@@ -104,19 +116,12 @@ class BlockStorage
                 }
             }
             
-            // Save block first
-            $stmt = $this->database->prepare("
-                INSERT INTO blocks (hash, parent_hash, height, timestamp, validator, signature, merkle_root, transactions_count, metadata) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE 
-                parent_hash = VALUES(parent_hash),
-                height = VALUES(height),
-                timestamp = VALUES(timestamp),
-                validator = VALUES(validator),
-                signature = VALUES(signature),
-                merkle_root = VALUES(merkle_root),
-                transactions_count = VALUES(transactions_count),
-                metadata = VALUES(metadata)
+            // Try UPDATE first for block
+            $upd = $this->database->prepare("
+                UPDATE blocks 
+                SET parent_hash = ?, height = ?, timestamp = ?, validator = ?, signature = ?, 
+                    merkle_root = ?, transactions_count = ?, metadata = ?
+                WHERE hash = ?
             ");
             
             $metadata = json_encode([
@@ -126,8 +131,7 @@ class BlockStorage
                 'validator_manager_used' => $this->validatorManager !== null
             ]);
             
-            $blockResult = $stmt->execute([
-                $block->getHash(),
+            $upd->execute([
                 $block->getPreviousHash(),
                 $block->getIndex(),
                 $block->getTimestamp(),
@@ -135,15 +139,32 @@ class BlockStorage
                 $blockSignature,
                 $block->getMerkleRoot(),
                 count($block->getTransactions()),
-                $metadata
+                $metadata,
+                $block->getHash()
             ]);
             
-            $this->writeLog("BlockStorage::saveToDatabaseStorage - Block execute result: " . json_encode($blockResult), 'DEBUG');
-            $this->writeLog("BlockStorage::saveToDatabaseStorage - Block affected rows: " . $stmt->rowCount(), 'DEBUG');
-            
-            if (!$blockResult) {
-                $this->writeLog("BlockStorage::saveToDatabaseStorage - Failed to execute block insert", 'ERROR');
-                throw new \Exception('Failed to save block');
+            if ($upd->rowCount() === 0) {
+                // No existing block found, INSERT new one
+                $ins = $this->database->prepare("
+                    INSERT INTO blocks (hash, parent_hash, height, timestamp, validator, signature, merkle_root, transactions_count, metadata) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ");
+                
+                $blockResult = $ins->execute([
+                    $block->getHash(),
+                    $block->getPreviousHash(),
+                    $block->getIndex(),
+                    $block->getTimestamp(),
+                    $validatorAddress,
+                    $blockSignature,
+                    $block->getMerkleRoot(),
+                    count($block->getTransactions()),
+                    $metadata
+                ]);
+                
+                $this->writeLog("BlockStorage::saveToDatabaseStorage - Block INSERT result: " . json_encode($blockResult), 'DEBUG');
+            } else {
+                $this->writeLog("BlockStorage::saveToDatabaseStorage - Block UPDATE affected rows: " . $upd->rowCount(), 'DEBUG');
             }
             
             // Process each transaction in the block
@@ -162,17 +183,29 @@ class BlockStorage
             
             $this->writeLog("BlockStorage::saveToDatabaseStorage - All transactions processed, committing...", 'DEBUG');
             
-            // Commit transaction
-            $this->database->commit();
+            // Only commit if we started the transaction
+            if ($transactionStarted) {
+                $this->database->commit();
+                $this->writeLog("BlockStorage::saveToDatabaseStorage - Transaction committed successfully", 'DEBUG');
+            } else {
+                $this->writeLog("BlockStorage::saveToDatabaseStorage - Using existing transaction, not committing", 'DEBUG');
+            }
+            
             $this->writeLog("BlockStorage::saveToDatabaseStorage - Block saved successfully: " . $block->getHash(), 'INFO');
             return true;
             
         } catch (\PDOException $e) {
-            $this->database->rollBack();
+            if (isset($transactionStarted) && $transactionStarted && $this->database->inTransaction()) {
+                $this->database->rollBack();
+                $this->writeLog("BlockStorage::saveToDatabaseStorage - Transaction rolled back due to PDO exception", 'DEBUG');
+            }
             $this->writeLog("BlockStorage::saveToDatabaseStorage - PDO Exception: " . $e->getMessage(), 'ERROR');
             return false;
         } catch (\Exception $e) {
-            $this->database->rollBack();
+            if (isset($transactionStarted) && $transactionStarted && $this->database->inTransaction()) {
+                $this->database->rollBack();
+                $this->writeLog("BlockStorage::saveToDatabaseStorage - Transaction rolled back due to exception", 'DEBUG');
+            }
             $this->writeLog("BlockStorage::saveToDatabaseStorage - Exception: " . $e->getMessage(), 'ERROR');
             throw $e;
         }
@@ -192,32 +225,47 @@ class BlockStorage
         }
         
         try {
-            // Save transaction to transactions table
+            // Save transaction to transactions table with UPDATE-first approach
             $this->writeLog("BlockStorage::processTransaction - Saving transaction to transactions table", 'DEBUG');
-            $stmt = $this->database->prepare("
-                INSERT INTO transactions (hash, block_hash, block_height, from_address, to_address, amount, fee, gas_limit, gas_used, gas_price, nonce, data, signature, status, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?)
-                ON DUPLICATE KEY UPDATE status = 'confirmed'
+            
+            $txHash = $transaction['hash'] ?? hash('sha256', json_encode($transaction));
+            
+            // Try UPDATE first
+            $upd = $this->database->prepare("
+                UPDATE transactions 
+                SET block_hash = ?, block_height = ?, status = 'confirmed'
+                WHERE hash = ?
             ");
+            $upd->execute([$block->getHash(), $block->getIndex(), $txHash]);
             
-            $txResult = $stmt->execute([
-                $transaction['hash'] ?? hash('sha256', json_encode($transaction)),
-                $block->getHash(),
-                $block->getIndex(),
-                $transaction['from'] ?? 'unknown',
-                $transaction['to'] ?? 'unknown',
-                $transaction['amount'] ?? 0,
-                $transaction['fee'] ?? 0,
-                21000, // default gas limit
-                0,     // gas used
-                0.00001, // default gas price
-                0,     // nonce
-                json_encode($transaction['metadata'] ?? []),
-                'system_signature',
-                $transaction['timestamp'] ?? $block->getTimestamp()
-            ]);
-            
-            $this->writeLog("BlockStorage::processTransaction - Transaction save result: " . json_encode($txResult), 'DEBUG');
+            if ($upd->rowCount() === 0) {
+                // No existing transaction found, INSERT new one
+                $ins = $this->database->prepare("
+                    INSERT INTO transactions (hash, block_hash, block_height, from_address, to_address, amount, fee, gas_limit, gas_used, gas_price, nonce, data, signature, status, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?)
+                ");
+                
+                $txResult = $ins->execute([
+                    $txHash,
+                    $block->getHash(),
+                    $block->getIndex(),
+                    $transaction['from'] ?? 'unknown',
+                    $transaction['to'] ?? 'unknown',
+                    $transaction['amount'] ?? 0,
+                    $transaction['fee'] ?? 0,
+                    21000, // default gas limit
+                    0,     // gas used
+                    0.00001, // default gas price
+                    0,     // nonce
+                    json_encode($transaction['metadata'] ?? []),
+                    'system_signature',
+                    $transaction['timestamp'] ?? $block->getTimestamp()
+                ]);
+                
+                $this->writeLog("BlockStorage::processTransaction - Transaction INSERT result: " . json_encode($txResult), 'DEBUG');
+            } else {
+                $this->writeLog("BlockStorage::processTransaction - Transaction UPDATE affected rows: " . $upd->rowCount(), 'DEBUG');
+            }
             
         } catch (\Exception $e) {
             $this->writeLog("BlockStorage::processTransaction - ERROR saving transaction: " . $e->getMessage(), 'ERROR');
@@ -403,15 +451,23 @@ class BlockStorage
         }
         
         $this->writeLog("BlockStorage::updateWalletBalance - Updating balance for $address by $amount", 'DEBUG');
-        
-        $stmt = $this->database->prepare("
-            INSERT INTO wallets (address, public_key, balance, created_at)
-            VALUES (?, 'placeholder_public_key', ?, NOW())
-            ON DUPLICATE KEY UPDATE balance = balance + VALUES(balance), updated_at = NOW()
-        ");
-        
-        $result = $stmt->execute([$address, $amount]);
-        $this->writeLog("BlockStorage::updateWalletBalance - Execute result: " . json_encode($result) . ", affected rows: " . $stmt->rowCount(), 'DEBUG');
+        try {
+            // Prefer UPDATE-first to avoid consuming auto_increment on existing rows
+            $upd = $this->database->prepare("UPDATE wallets SET balance = balance + ?, updated_at = NOW() WHERE address = ?");
+            $upd->execute([$amount, $address]);
+            $affected = $upd->rowCount();
+            if ($affected === 0) {
+                // Insert if row not found
+                $ins = $this->database->prepare("INSERT INTO wallets (address, public_key, balance, created_at, updated_at) VALUES (?, 'placeholder_public_key', ?, NOW(), NOW())");
+                $ok = $ins->execute([$address, $amount]);
+                $this->writeLog("BlockStorage::updateWalletBalance - Inserted new wallet row: result=" . json_encode($ok) . ", affected_rows=" . $ins->rowCount(), 'DEBUG');
+            } else {
+                $this->writeLog("BlockStorage::updateWalletBalance - Updated existing wallet row, affected_rows=$affected", 'DEBUG');
+            }
+        } catch (\Throwable $e) {
+            $this->writeLog("BlockStorage::updateWalletBalance - ERROR: " . $e->getMessage(), 'ERROR');
+            throw $e;
+        }
     }
     
     public function getBlock(int $index): ?BlockInterface

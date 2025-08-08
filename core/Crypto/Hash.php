@@ -2,6 +2,8 @@
 
 namespace Blockchain\Core\Crypto;
 
+use kornrunner\Keccak;
+
 /**
  * Cryptographic Hash utilities
  */
@@ -15,7 +17,8 @@ class Hash
      */
     public static function keccak256(string $data): string
     {
-        return hash('sha3-256', $data);
+    // Use Ethereum-compatible Keccak-256 (not NIST SHA3-256)
+    return Keccak::hash($data, 256);
     }
 
     /**

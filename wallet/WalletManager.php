@@ -291,6 +291,15 @@ class WalletManager
      */
     public function getAvailableBalance(string $address): float
     {
+        // Normalize address to lowercase to avoid duplicates due to case
+        $address = strtolower($address);
+
+        // Check if we're in a transaction but don't force commit
+        $inTransaction = $this->database->inTransaction();
+        if ($inTransaction) {
+            writeWalletLog("WalletManager::getAvailableBalance - Using existing transaction", 'DEBUG');
+        }
+
         $stmt = $this->database->prepare("
             SELECT balance FROM wallets WHERE address = ?
         ");
@@ -298,7 +307,14 @@ class WalletManager
         $stmt->execute([$address]);
         $result = $stmt->fetch();
         
-        return $result ? (float)$result['balance'] : 0.0;
+        if (!$result) {
+            // Auto-create wallet for MetaMask/external addresses with zero balance
+            writeWalletLog("WalletManager::getAvailableBalance - Auto-creating wallet for address $address", 'DEBUG');
+            $this->autoCreateWallet($address);
+            return 0.0;
+        }
+        
+        return (float)$result['balance'];
     }
     
     /**
@@ -336,6 +352,62 @@ class WalletManager
             return $tableStaked;
         } else {
             return $legacyStaked;
+        }
+    }
+    
+    /**
+     * Auto-create wallet for MetaMask addresses
+     */
+    private function autoCreateWallet(string $address): bool
+    {
+        try {
+            // Normalize and validate address format
+            $address = strtolower($address);
+            if (!preg_match('/^0x[a-f0-9]{40}$/', $address)) {
+                return false;
+            }
+            
+            // Use a placeholder public key for externally controlled addresses where we don't know the key yet
+            $placeholderPubKey = 'placeholder_public_key';
+            
+            writeWalletLog("WalletManager::autoCreateWallet - Starting wallet creation for $address", 'DEBUG');
+            
+            // Check if we're in a transaction
+            $inTransaction = $this->database->inTransaction();
+            if ($inTransaction) {
+                writeWalletLog("WalletManager::autoCreateWallet - Using existing transaction", 'DEBUG');
+            }
+            
+            // First try to UPDATE existing record with placeholder public_key
+            $upd = $this->database->prepare("
+                UPDATE wallets 
+                SET public_key = CASE 
+                        WHEN public_key IS NULL OR public_key = '' OR public_key = 'placeholder_public_key' THEN ?
+                        ELSE public_key
+                    END,
+                    updated_at = NOW()
+                WHERE address = ?
+            ");
+            $upd->execute([$placeholderPubKey, $address]);
+            
+            if ($upd->rowCount() === 0) {
+                // No existing record found, INSERT new one
+                $ins = $this->database->prepare("
+                    INSERT INTO wallets (address, public_key, balance, staked_balance, nonce, created_at, updated_at)
+                    VALUES (?, ?, 0.0, 0.0, 0, NOW(), NOW())
+                ");
+                $ok = $ins->execute([$address, $placeholderPubKey]);
+                writeWalletLog("WalletManager::autoCreateWallet - INSERT for $address result=" . json_encode($ok) . ", affected_rows=" . $ins->rowCount(), 'DEBUG');
+                return $ok;
+            } else {
+                writeWalletLog("WalletManager::autoCreateWallet - UPDATE for $address affected_rows=" . $upd->rowCount(), 'DEBUG');
+                return true;
+            }
+            
+        } catch (\Throwable $e) {
+            writeWalletLog("WalletManager::autoCreateWallet - Failed for {$address}: " . $e->getMessage(), 'ERROR');
+            writeWalletLog("WalletManager::autoCreateWallet - Stack trace: " . $e->getTraceAsString(), 'DEBUG');
+            return false;
         }
     }
     
@@ -489,6 +561,8 @@ class WalletManager
      */
     public function getWalletInfo(string $address): ?array
     {
+        // Normalize to lowercase for consistent lookups
+        $address = strtolower($address);
         $stmt = $this->database->prepare("
             SELECT 
                 address,
@@ -620,6 +694,41 @@ class WalletManager
                 throw new Exception("Invalid transaction");
             }
 
+            // If this is a no-op transfer (self-transfer with zero amount), confirm immediately
+            $from = strtolower($transaction->getFromAddress());
+            $to = strtolower($transaction->getToAddress());
+            $isNoop = ($from === $to) && ($transaction->getAmount() <= 0);
+            if ($isNoop) {
+                // Write directly into transactions as confirmed, skip mempool
+                $stmt = $this->database->prepare("
+                    INSERT INTO transactions (
+                        hash, from_address, to_address, amount, fee, 
+                        nonce, gas_limit, gas_price, data, signature, 
+                        timestamp, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ");
+
+                $ok = $stmt->execute([
+                    $transaction->getHash(),
+                    $from,
+                    $to,
+                    $transaction->getAmount(),
+                    $transaction->getFee(),
+                    $transaction->getNonce(),
+                    method_exists($transaction, 'getGasLimit') ? $transaction->getGasLimit() : 21000,
+                    method_exists($transaction, 'getGasPrice') ? $transaction->getGasPrice() : 0,
+                    $transaction->getData(),
+                    $transaction->getSignature(),
+                    $transaction->getTimestamp(),
+                    'confirmed'
+                ]);
+
+                // Best-effort nonce update (no explicit transaction to avoid nested conflicts)
+                try { $this->updateNonce($from, $transaction->getNonce()); } catch (\Throwable $e) {}
+
+                return $ok;
+            }
+
             // Add to mempool
             $stmt = $this->database->prepare("
                 INSERT INTO mempool (
@@ -631,8 +740,8 @@ class WalletManager
 
             return $stmt->execute([
                 $transaction->getHash(),
-                $transaction->getFromAddress(),
-                $transaction->getToAddress(),
+                $from,
+                $to,
                 $transaction->getAmount(),
                 $transaction->getFee(),
                 $transaction->getNonce(),
