@@ -1,18 +1,34 @@
 <?php
 /**
- * Wallet Logger - единая система логирования для кошелька
+ * Wallet Logger - unified logging system for the wallet API
  */
 
 class WalletLogger
 {
     private static $config = null;
+     private static $enabled = false; // Controls disk logging; defaults to disabled
     
     /**
-     * Инициализация логгера с конфигурацией
+     * Initialize logger with configuration
      */
     public static function init($config = null)
     {
         self::$config = $config;
+        // Infer logging toggle from config or environment; default is disabled to preserve disk space
+        $flag = null;
+        if (is_array(self::$config)) {
+            $flag = self::$config['wallet_logging_enabled']
+                ?? self::$config['logging_enabled']
+                ?? self::$config['api_logging_enabled']
+                ?? null;
+        }
+        if ($flag === null) {
+            $flag = getenv('WALLET_LOGGING')
+                ?: getenv('WALLET_LOGGING_ENABLED')
+                ?: getenv('API_LOGGING')
+                ?: getenv('LOGGING_ENABLED');
+        }
+        self::$enabled = self::toBool($flag, false);
         
         // Log system information for debugging
         self::log("PHP Memory Limit: " . ini_get('memory_limit'), 'DEBUG');
@@ -21,20 +37,24 @@ class WalletLogger
     }
     
     /**
-     * Функция для записи логов в файл wallet_api.log
+     * Write log entry to logs/wallet_api.log when logging is enabled
      */
     public static function log($message, $level = 'INFO')
     {
-        // Проверяем режим отладки
-        $debugMode = self::$config['debug_mode'] ?? true; // По умолчанию включена отладка
+        // Honor debug mode for DEBUG verbosity
+        $debugMode = self::$config['debug_mode'] ?? true; // Default: debug enabled for development
         if (!$debugMode && $level === 'DEBUG') {
-            return; // Не записываем DEBUG логи если отладка выключена
+            return; // Skip DEBUG logs if debug mode is off
+        }
+        // Skip all disk writes unless explicitly enabled
+        if (!self::$enabled) {
+            return;
         }
         
         $baseDir = dirname(__DIR__);
         $logDir = $baseDir . '/logs';
         
-        // Создаем папку logs если её нет
+        // Create logs directory if it does not exist
         if (!is_dir($logDir)) {
             mkdir($logDir, 0755, true);
         }
@@ -47,7 +67,7 @@ class WalletLogger
     }
     
     /**
-     * Логирование ошибок
+     * Error logging helper
      */
     public static function error($message)
     {
@@ -55,7 +75,7 @@ class WalletLogger
     }
     
     /**
-     * Логирование предупреждений
+     * Warning logging helper
      */
     public static function warning($message)
     {
@@ -63,7 +83,7 @@ class WalletLogger
     }
     
     /**
-     * Логирование информации
+     * Info logging helper
      */
     public static function info($message)
     {
@@ -71,10 +91,22 @@ class WalletLogger
     }
     
     /**
-     * Логирование отладочной информации
+     * Debug logging helper
      */
     public static function debug($message)
     {
         self::log($message, 'DEBUG');
+    }
+
+    /**
+     * Convert common truthy/falsy string/env values to boolean
+     */
+    private static function toBool($value, $default = false)
+    {
+        if ($value === null) return $default;
+        if (is_bool($value)) return $value;
+        $v = strtolower(trim((string)$value));
+        if ($v === '') return $default;
+        return in_array($v, ['1','true','yes','on','y','enabled'], true);
     }
 }

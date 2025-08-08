@@ -345,22 +345,22 @@ class SmartContractManager
     }
 
     /**
-     * Check текущего номера блока
+     * Check current block number
      */
     private function getCurrentBlockNumber(): int
     {
-        // Здесь должна быть логика получения текущего номера блока
+        // TODO: Implement logic to obtain the current block number
         return 1;
     }
 
     /**
-     * Check стандартных контрактов
+     * Deploy standard contracts
      */
     public function deployStandardContracts(string $deployer): array
     {
         $results = [];
 
-        // ERC-20 токен
+    // ERC-20 token
         $erc20Code = $this->getERC20Template();
         $tokenName = $this->config['blockchain']['network_name'] ?? 'My Blockchain Token';
         $tokenSymbol = $this->config['blockchain']['token_symbol'] ?? 'MBC';
@@ -372,19 +372,19 @@ class SmartContractManager
             $deployer
         );
 
-        // Контракт стейкинга
+        // Staking contract
         $stakingCode = $this->getStakingTemplate();
         $results['staking'] = $this->deployContract(
             $stakingCode,
-            [1000, 10], // минимальный стейк, награда за блок
+            [1000, 10], // minimum stake, reward per block
             $deployer
         );
 
-        // Контракт управления
+        // Governance contract
         $governanceCode = $this->getGovernanceTemplate();
         $results['governance'] = $this->deployContract(
             $governanceCode,
-            [$deployer], // начальный администратор
+            [$deployer], // initial administrator
             $deployer
         );
 
@@ -392,7 +392,7 @@ class SmartContractManager
     }
 
     /**
-     * Шаблон ERC-20 токена
+     * ERC-20 token template
      */
     private function getERC20Template(): string
     {
@@ -438,7 +438,7 @@ class SmartContractManager
     }
 
     /**
-     * Шаблон contract стейкинга
+     * Staking contract template
      */
     private function getStakingTemplate(): string
     {
@@ -463,19 +463,19 @@ class SmartContractManager
             function unstake(uint256 _amount) public {
                 require(stakes[msg.sender] >= _amount);
                 stakes[msg.sender] -= _amount;
-                // Send средства обратно
+                // Send funds back
             }
             
             function claimRewards() public {
                 uint256 reward = rewards[msg.sender];
                 rewards[msg.sender] = 0;
-                // Send награду
+                // Send reward
             }
         }';
     }
 
     /**
-     * Шаблон contract управления
+     * Governance contract template
      */
     private function getGovernanceTemplate(): string
     {
@@ -531,7 +531,7 @@ class SmartContractManager
     }
 
     /**
-     * Check статистики смарт-контрактов
+     * Check smart contract statistics
      */
     public function getContractStats(): array
     {
@@ -540,7 +540,7 @@ class SmartContractManager
         $contractsByType = [];
 
         foreach ($this->deployedContracts as $address => $contract) {
-            // Checkируем тип contract по коду
+            // Detect contract type by code
             $type = $this->detectContractType($contract['code']);
             $contractsByType[$type] = ($contractsByType[$type] ?? 0) + 1;
         }
@@ -554,7 +554,7 @@ class SmartContractManager
     }
 
     /**
-     * Check типа contract
+     * Check contract type
      */
     private function detectContractType(string $code): string
     {

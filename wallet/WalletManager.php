@@ -11,21 +11,21 @@ use PDO;
 use Exception;
 
 /**
- * Функция для записи логов в файл WalletManager
+ * Function to write logs to WalletManager log file
  */
 function writeWalletLog($message, $level = 'INFO') {
-    // Проверяем режим отладки из глобального конфига
+    // Check debug mode from global config
     global $config;
     $debugMode = $config['debug_mode'] ?? true;
     
     if (!$debugMode && $level === 'DEBUG') {
-        return; // Не записываем DEBUG логи если отладка выключена
+        return; // Don't write DEBUG logs if debug mode is disabled
     }
     
     $baseDir = dirname(__DIR__);
     $logDir = $baseDir . '/logs';
     
-    // Создаем папку logs если её нет
+    // Create logs folder if it does not exist
     if (!is_dir($logDir)) {
         mkdir($logDir, 0755, true);
     }
@@ -144,7 +144,7 @@ class WalletManager
     public function restoreWalletFromMnemonic(array $mnemonic): array
     {
         try {
-            // Debug: проверим что получили
+            // Debug: verify what we received
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Received mnemonic count: " . count($mnemonic), 'DEBUG');
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Mnemonic words: " . implode(' ', $mnemonic), 'DEBUG');
             
@@ -158,7 +158,7 @@ class WalletManager
                 throw new Exception('Invalid mnemonic phrase');
             }
 
-            // Generate KeyPair from mnemonic - это чисто математическая операция
+            // Generate KeyPair from mnemonic - pure mathematical operation
             try {
                 writeWalletLog("WalletManager::restoreWalletFromMnemonic - Starting KeyPair generation", 'DEBUG');
                 $keyPair = KeyPair::fromMnemonic($mnemonic);
@@ -171,11 +171,11 @@ class WalletManager
             $address = $keyPair->getAddress();
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Generated address: " . $address, 'DEBUG');
 
-            // Проверяем существующий кошелек в БД
+            // Check existing wallet in the database
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Checking for existing wallet in database", 'DEBUG');
             $existingWallet = $this->getWalletInfo($address);
             
-            // Получаем баланс из блокчейна (если есть транзакции)
+            // Get balance from blockchain (if transactions exist)
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Calculating balances from blockchain", 'DEBUG');
             $blockchainBalance = $this->calculateBalanceFromBlockchain($address);
             $blockchainStaked = $this->calculateStakedBalanceFromBlockchain($address);
@@ -183,7 +183,7 @@ class WalletManager
             
             if ($existingWallet) {
                 writeWalletLog("WalletManager::restoreWalletFromMnemonic - Wallet exists in database, updating from blockchain", 'INFO');
-                // Кошелек уже есть в БД - обновляем данные из блокчейна
+                // Wallet already exists in DB - update data from blockchain
                 if ($blockchainBalance > 0 || $blockchainStaked > 0) {
                     $this->updateBalance($address, $blockchainBalance);
                     $this->updateStakedBalance($address, $blockchainStaked);
@@ -200,10 +200,10 @@ class WalletManager
                 ];
             }
             
-            // Кошелек не найден в БД, но может существовать в блокчейне
+            // Wallet not found in DB but may exist in blockchain
             if ($blockchainBalance > 0 || $blockchainStaked > 0) {
                 writeWalletLog("WalletManager::restoreWalletFromMnemonic - Wallet found in blockchain, creating database record", 'INFO');
-                // Кошелек существует в блокчейне - восстанавливаем в БД
+                // Wallet exists in the blockchain - restore in DB
                 $stmt = $this->database->prepare("
                     INSERT INTO wallets (address, public_key, balance, staked_balance, created_at, updated_at) 
                     VALUES (?, ?, ?, ?, NOW(), NOW())
@@ -227,12 +227,12 @@ class WalletManager
                 ];
             }
             
-            // Кошелек не найден ни в БД, ни в блокчейне
+            // Wallet not found in DB or blockchain
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Wallet not found in blockchain or database, creating database record", 'INFO');
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - About to insert wallet: " . $address, 'DEBUG');
             
-            // Сохраняем кошелек в базу данных даже если он не найден в блокчейне
-            // Это позволит использовать его для получения средств
+            // Save wallet to the database even if not found in blockchain
+            // This allows it to be used to receive funds
             $stmt = $this->database->prepare("
                 INSERT INTO wallets (address, public_key, balance, staked_balance, created_at, updated_at) 
                 VALUES (?, ?, ?, ?, NOW(), NOW())
@@ -254,8 +254,8 @@ class WalletManager
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Affected rows: " . $stmt->rowCount(), 'DEBUG');
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Wallet record created in database", 'INFO');
             
-            // Возвращаем параметры кошелька с записью в базе
-            // ВАЖНО: указываем что нужна регистрация в блокчейне
+            // Return wallet parameters with DB record
+            // IMPORTANT: flag that blockchain registration is required
             return [
                 'address' => $address,
                 'public_key' => $keyPair->getPublicKey(),

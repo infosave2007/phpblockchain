@@ -592,7 +592,7 @@ try {
             break;
 
         case 'auto-start':
-            // Автозапуск синхронизации при наличии флага от инсталлятора
+            // Auto-start synchronization if the installer created a flag
             $flag = __DIR__ . '/storage/sync_autostart.flag';
             if (file_exists($flag)) {
                 echo "Auto-start flag found. Starting synchronization...\n";

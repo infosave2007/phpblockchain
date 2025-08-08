@@ -1,6 +1,6 @@
 <?php
 /**
- * API для работы с кошельком
+ * Wallet API
  */
 
 header('Content-Type: application/json');
@@ -8,23 +8,23 @@ header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: POST, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type');
 
-// Обработка preflight запросов
+// Handle CORS preflight requests
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit;
 }
 
-// Подключаем логгер
+// Include logger
 require_once __DIR__ . '/WalletLogger.php';
 
 /**
- * Функция для записи логов в файл (обертка для обратной совместимости)
+ * Log helper wrapper (kept for backward compatibility)
  */
 function writeLog($message, $level = 'INFO') {
     WalletLogger::log($message, $level);
 }
 
-// Обработчик фатальных ошибок
+// Fatal error handler
 register_shutdown_function(function() {
     $error = error_get_last();
     if ($error && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR])) {
@@ -32,7 +32,7 @@ register_shutdown_function(function() {
         WalletLogger::error("File: " . $error['file']);
         WalletLogger::error("Line: " . $error['line']);
         
-        // Try to output JSON error response if possible
+    // Try to output JSON error response if possible
         if (!headers_sent()) {
             http_response_code(500);
             header('Content-Type: application/json');
@@ -50,39 +50,39 @@ register_shutdown_function(function() {
 });
 
 try {
-    // Определяем базовую директорию проекта
+    // Determine project base directory
     $baseDir = dirname(__DIR__);
     
-    // Подключаем автозагрузчик Composer
+    // Include Composer autoloader
     $autoloader = $baseDir . '/vendor/autoload.php';
     if (!file_exists($autoloader)) {
         throw new Exception('Composer autoloader not found. Please run "composer install"');
     }
     require_once $autoloader;
     
-    // Подключаем EnvironmentLoader для загрузки переменных окружения
+    // Load environment variables
     require_once $baseDir . '/core/Environment/EnvironmentLoader.php';
     \Blockchain\Core\Environment\EnvironmentLoader::load($baseDir);
     
-    // Подключаем конфиг
+    // Load config
     $configFile = $baseDir . '/config/config.php';
     $config = [];
     if (file_exists($configFile)) {
         $config = require $configFile;
     }
     
-    // Добавляем debug_mode если не установлен
+    // Add debug_mode if not set
     if (!isset($config['debug_mode'])) {
-        $config['debug_mode'] = true; // По умолчанию включаем отладку
+        $config['debug_mode'] = true; // Default: debug enabled
     }
     
-    // Инициализируем логгер с конфигурацией
+    // Initialize logger with configuration
     WalletLogger::init($config);
     
-    // Создаем конфигурацию базы данных с приоритетом: config.php -> .env -> defaults
+    // Build database config with priority: config.php -> .env -> defaults
     $dbConfig = $config['database'] ?? [];
     
-    // Если конфигурация пустая, используем переменные окружения
+    // If empty, fallback to environment variables
     if (empty($dbConfig) || !isset($dbConfig['host'])) {
         $dbConfig = [
             'host' => \Blockchain\Core\Environment\EnvironmentLoader::get('DB_HOST', 'localhost'),
@@ -99,36 +99,36 @@ try {
         ];
     }
     
-    // Логируем попытку подключения
+    // Log connection attempt
     writeLog("Attempting database connection using DatabaseManager");
     
-    // Подключение к базе данных через DatabaseManager
+    // Connect to database via DatabaseManager
     require_once $baseDir . '/core/Database/DatabaseManager.php';
     $pdo = \Blockchain\Core\Database\DatabaseManager::getConnection();
     
     writeLog("Database connection successful");
     
-    // Подключаем класс WalletManager
+    // Include Wallet classes
     require_once $baseDir . '/wallet/WalletManager.php';
     require_once $baseDir . '/wallet/WalletBlockchainManager.php';
     require_once $baseDir . '/core/Config/NetworkConfig.php';
     require_once $baseDir . '/core/Cryptography/MessageEncryption.php';
     require_once $baseDir . '/core/Cryptography/KeyPair.php';
     
-    // Создаём экземпляр WalletManager с полной конфигурацией
+    // Instantiate WalletManager with full config
     $fullConfig = array_merge($config, ['database' => $dbConfig]);
     $walletManager = new \Blockchain\Wallet\WalletManager($pdo, $fullConfig);
     
-    // Создаём экземпляр WalletBlockchainManager для интеграции с блокчейном
+    // Instantiate WalletBlockchainManager for blockchain integration
     $blockchainManager = new \Blockchain\Wallet\WalletBlockchainManager($pdo, $fullConfig);
     
-    // Создаём экземпляр NetworkConfig для получения настроек сети
+    // Instantiate NetworkConfig to fetch network settings
     $networkConfig = new \Blockchain\Core\Config\NetworkConfig($pdo);
     
-    // Получение данных запроса
+    // Parse input payload
     $input = json_decode(file_get_contents('php://input'), true);
     
-    // Для GET запросов получаем параметры из $_GET
+    // For GET requests use $_GET
     if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $input = $_GET;
     }
@@ -371,7 +371,7 @@ try {
     ]);
     
 } catch (Exception $e) {
-    // Логирование полной информации об ошибке
+    // Log full error info
     $errorInfo = [
         'message' => $e->getMessage(),
         'file' => $e->getFile(),
@@ -382,7 +382,7 @@ try {
         'input_data' => $input ?? []
     ];
     
-    // Записываем в файл логов
+    // Write to logs
     writeLog("Wallet API Error: " . json_encode($errorInfo), 'ERROR');
     
     http_response_code(500);
@@ -399,21 +399,21 @@ try {
 }
 
 /**
- * Создание нового кошелька через WalletManager
+ * Create a new wallet via WalletManager
  */
 function createWallet($walletManager, $blockchainManager) {
     try {
         writeLog("Creating new wallet with blockchain integration", 'INFO');
         
-        // 1. Create wallet using WalletManager
+    // 1. Create wallet using WalletManager
         $walletData = $walletManager->createWallet();
         writeLog("Wallet created successfully: " . $walletData['address'], 'INFO');
         
-        // 2. Record wallet creation in blockchain
+    // 2. Record wallet creation in blockchain
         $blockchainResult = $blockchainManager->createWalletWithBlockchain($walletData);
         writeLog("Blockchain recording result: " . json_encode($blockchainResult['blockchain_recorded']), 'INFO');
         
-        // 3. Return combined result
+    // 3. Return combined result
         return [
             'wallet' => $walletData,
             'blockchain' => [
@@ -430,7 +430,7 @@ function createWallet($walletManager, $blockchainManager) {
 }
 
 /**
- * Получение списка кошельков через WalletManager
+ * List wallets via WalletManager
  */
 function listWallets($walletManager) {
     try {
@@ -444,7 +444,7 @@ function listWallets($walletManager) {
 }
 
 /**
- * Получение баланса кошелька через WalletManager
+ * Get wallet balance via WalletManager
  */
 function getBalance($walletManager, $address) {
     try {
@@ -465,7 +465,7 @@ function getBalance($walletManager, $address) {
 }
 
 /**
- * Получение информации о кошельке через WalletManager
+ * Get wallet information via WalletManager
  */
 function getWalletInfo($walletManager, $address) {
     try {
@@ -482,14 +482,14 @@ function getWalletInfo($walletManager, $address) {
 }
 
 /**
- * Стейкинг токенов через WalletManager
+ * Stake tokens via WalletManager
  */
 function stakeTokens($walletManager, $address, $amount, $period, $privateKey) {
     try {
         $result = $walletManager->stake($address, $amount, $privateKey);
         
         if ($result) {
-            // Получаем обновлённые балансы
+            // Fetch updated balances
             $availableBalance = $walletManager->getAvailableBalance($address);
             $stakedBalance = $walletManager->getStakedBalance($address);
             
@@ -514,7 +514,7 @@ function stakeTokens($walletManager, $address, $amount, $period, $privateKey) {
 }
 
 /**
- * Генерация новой мнемонической фразы
+ * Generate a new mnemonic phrase
  */
 function generateMnemonic($walletManager) {
     try {
@@ -528,7 +528,7 @@ function generateMnemonic($walletManager) {
 }
 
 /**
- * Создание кошелька из мнемонической фразы
+ * Create a wallet from a mnemonic phrase
  */
 function createWalletFromMnemonic($walletManager, $blockchainManager, array $mnemonic) {
     try {
@@ -601,7 +601,7 @@ function createWalletFromMnemonic($walletManager, $blockchainManager, array $mne
 }
 
 /**
- * Валидация мнемонической фразы
+ * Validate a mnemonic phrase
  */
 function validateMnemonic(array $mnemonic) {
     try {
@@ -615,7 +615,7 @@ function validateMnemonic(array $mnemonic) {
 }
 
 /**
- * Восстановление кошелька из мнемонической фразы
+ * Restore a wallet from a mnemonic phrase
  */
 function restoreWalletFromMnemonic($walletManager, $blockchainManager, array $mnemonic) {
     try {
@@ -628,7 +628,7 @@ function restoreWalletFromMnemonic($walletManager, $blockchainManager, array $mn
         $walletData = $walletManager->restoreWalletFromMnemonic($mnemonic);
         writeLog("Wallet restored: " . $walletData['address'] . " from: " . ($walletData['restored_from'] ?? 'unknown'), 'INFO');
         
-        // 2. Проверяем историю транзакций для дополнительной информации
+    // 2. Check transaction history for additional context
         writeLog("Getting wallet transaction history", 'DEBUG');
         $transactionHistory = $blockchainManager->getWalletTransactionHistory($walletData['address']);
         writeLog("Verifying wallet in blockchain", 'DEBUG');
@@ -637,7 +637,7 @@ function restoreWalletFromMnemonic($walletManager, $blockchainManager, array $mn
         writeLog("Wallet verification in blockchain: " . ($isVerified ? 'FOUND' : 'NOT_FOUND'), 'INFO');
         writeLog("Transaction history count: " . count($transactionHistory), 'INFO');
         
-        // 3. Если кошелек нуждается в регистрации в блокчейне - регистрируем
+    // 3. If the wallet needs blockchain registration - register it
         $blockchainRegistered = false;
         $blockchainError = null;
         
@@ -688,10 +688,10 @@ function restoreWalletFromMnemonic($walletManager, $blockchainManager, array $mn
 }
 
 /**
- * Получение информации о конфигурации
+ * Get configuration information
  */
 function getConfigInfo(array $config, ?\Blockchain\Core\Config\NetworkConfig $networkConfig = null) {
-    // Получаем настройки из БД если доступны
+    // Load settings from DB when available
     if ($networkConfig) {
         $tokenInfo = $networkConfig->getTokenInfo();
         $networkInfo = $networkConfig->getNetworkInfo();
@@ -712,7 +712,7 @@ function getConfigInfo(array $config, ?\Blockchain\Core\Config\NetworkConfig $ne
         ];
     }
     
-    // Fallback к статической конфигурации
+    // Fallback to static configuration
     return [
         'config' => [
             'crypto_symbol' => $config['crypto']['symbol'] ?? 'COIN',
@@ -951,19 +951,19 @@ function getBlockchainWalletInfo($blockchainManager, $walletManager, string $add
 }
 
 /**
- * Активация восстановленного кошелька в блокчейне
+ * Activate a restored wallet in the blockchain
  */
 function activateRestoredWallet($walletManager, $blockchainManager, string $address, string $publicKey) {
     try {
         writeLog("Activating restored wallet in blockchain: $address", 'INFO');
         
-        // Проверяем, что кошелек действительно был восстановлен
+    // Ensure the wallet has actually been restored
         writeLog("Checking if wallet exists in database", 'DEBUG');
         $walletInfo = $walletManager->getWalletInfo($address);
         writeLog("Wallet info check result: " . ($walletInfo ? 'FOUND' : 'NOT_FOUND'), 'DEBUG');
         
         if (!$walletInfo) {
-            // Попытаемся восстановить кошелек автоматически, если он есть в блокчейне
+            // Attempt automatic restoration if the wallet exists on the blockchain
             writeLog("Wallet not found in database, checking blockchain", 'INFO');
             $blockchainBalance = $walletManager->calculateBalanceFromBlockchain($address);
             $stakedBalance = $walletManager->calculateStakedBalanceFromBlockchain($address);
@@ -971,7 +971,7 @@ function activateRestoredWallet($walletManager, $blockchainManager, string $addr
             writeLog("Blockchain balances - Available: $blockchainBalance, Staked: $stakedBalance", 'INFO');
             
             if ($blockchainBalance > 0 || $stakedBalance > 0) {
-                // Кошелек есть в блокчейне, но нет в БД - восстанавливаем запись
+                // Wallet exists on blockchain but not in DB - restore the record
                 writeLog("Wallet found in blockchain but not in database, creating record", 'INFO');
                 
                 $stmt = $walletManager->getDatabase()->prepare("
@@ -987,7 +987,7 @@ function activateRestoredWallet($walletManager, $blockchainManager, string $addr
                 $stmt->execute([$address, $publicKey, $blockchainBalance, $stakedBalance]);
                 writeLog("Wallet record created/updated in database", 'INFO');
                 
-                // Повторно получаем информацию о кошельке
+                // Re-fetch wallet information
                 $walletInfo = $walletManager->getWalletInfo($address);
                 writeLog("Wallet info after creation: " . ($walletInfo ? 'FOUND' : 'STILL_NOT_FOUND'), 'DEBUG');
             } else {
@@ -1000,7 +1000,7 @@ function activateRestoredWallet($walletManager, $blockchainManager, string $addr
             throw new Exception('Wallet not found. Please restore it first.');
         }
         
-        // Проверяем, не активирован ли уже
+    // Check if it's already activated
         $isInBlockchain = $blockchainManager->verifyWalletInBlockchain($address);
         if ($isInBlockchain) {
             return [
@@ -1010,13 +1010,13 @@ function activateRestoredWallet($walletManager, $blockchainManager, string $addr
             ];
         }
         
-        // ВАЖНО: Пересчитываем баланс из блокчейна перед активацией
+    // IMPORTANT: Recalculate balance from blockchain before activation
         $blockchainBalance = $walletManager->calculateBalanceFromBlockchain($address);
         $stakedBalance = $walletManager->calculateStakedBalanceFromBlockchain($address);
         
         writeLog("Calculated balances - Available: $blockchainBalance, Staked: $stakedBalance", 'INFO');
         
-        // Обновляем баланс в кошельке
+    // Update wallet balance
         writeLog("Updating wallet balances in database", 'INFO');
         if ($blockchainBalance > 0) {
             $walletManager->updateBalance($address, $blockchainBalance);
@@ -1027,7 +1027,7 @@ function activateRestoredWallet($walletManager, $blockchainManager, string $addr
             writeLog("Updated staked balance to: $stakedBalance", 'INFO');
         }
         
-        // Создаем транзакцию активации с правильным балансом
+    // Create activation transaction with correct balance
         $walletData = [
             'address' => $address,
             'public_key' => $publicKey,
@@ -1038,7 +1038,7 @@ function activateRestoredWallet($walletManager, $blockchainManager, string $addr
         
         writeLog("Created wallet data for blockchain activation: " . json_encode($walletData), 'INFO');
         
-        // Записываем активацию в блокчейн (без изменения баланса)
+    // Record activation on the blockchain (without changing balance)
         writeLog("Starting blockchain activation process", 'INFO');
         try {
             $blockchainResult = $blockchainManager->createWalletWithBlockchain($walletData);

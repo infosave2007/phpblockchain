@@ -9,7 +9,7 @@ use Blockchain\Core\Consensus\ValidatorManager;
 use PDO;
 use Exception;
 
-// Подключаем логгер
+// Include logger
 require_once __DIR__ . '/WalletLogger.php';
 
 /**
@@ -20,19 +20,7 @@ require_once __DIR__ . '/WalletLogger.php';
  * - Removed legacy validator selection methods (getActiveValidatorAddress)
  * - Removed legacy signature generation methods (generateBlockSignature)
  * - Removed legacy cryptography methods (getValidatorPrivateKey, getValidatorSigningKey)
- * - All blockchain operations now require ValidatorManager                $stmt->execute([
-                    $tx['hash'],
-                    $hash,
-                    $index, // ИСПРАВЛЕНО: используем $index вместо $height
-                    $tx['from'],
-                    $tx['to'],
-                    $tx['amount'],
-                    $tx['fee'],
-                    json_encode($tx['data']),
-                    $tx['signature'],
-                    $tx['timestamp'],
-                    $tx['timestamp']
-                ]);orage is disabled to prevent hardcoded validator logic
+ * - All blockchain operations now require ValidatorManager; BlockStorage is disabled to prevent hardcoded validator logic
  * - Centralized validator/signature management ensures consistency
  * 
  * @since 2025-01-20 Refactored to use centralized ValidatorManager
@@ -711,7 +699,7 @@ class WalletBlockchainManager
         
         $transactionStarted = false;
         try {
-            // ПРИНУДИТЕЛЬНО включаем autocommit и начинаем новую транзакцию
+            // Force-enable autocommit and start a new transaction
             \WalletLogger::debug("Checking database transaction state");
             
             if ($this->database->inTransaction()) {
@@ -719,7 +707,7 @@ class WalletBlockchainManager
                 $this->database->commit();
             }
             
-            // Включаем autocommit и начинаем новую транзакцию
+            // Enable autocommit and begin a new transaction
             $this->database->setAttribute(\PDO::ATTR_AUTOCOMMIT, 1);
             $this->database->beginTransaction();
             $transactionStarted = true;

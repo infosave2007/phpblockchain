@@ -13,12 +13,26 @@ class NetworkSyncManager {
     private $config;
     private $logFile;
     private $isWebMode;
+    private $loggingEnabled; // Controls whether logs are written to disk
     
     public function __construct($webMode = false) {
         $this->isWebMode = $webMode;
         $this->logFile = 'logs/network_sync.log';
+        // Default: disable disk logging to prevent excessive disk usage
+        $this->loggingEnabled = false;
         $this->initializeDatabase();
         $this->loadConfig();
+    }
+
+    /**
+     * Parse various truthy/falsy representations to boolean.
+     */
+    private function boolFrom($value, bool $default = false): bool {
+        if ($value === null) return $default;
+        if (is_bool($value)) return $value;
+        $v = strtolower(trim((string)$value));
+        if ($v === '') return $default;
+        return in_array($v, ['1','true','yes','on','y','enabled'], true);
     }
     
     private function initializeDatabase() {
@@ -54,7 +68,7 @@ class NetworkSyncManager {
     
     private function loadConfig() {
         try {
-            // 1) Try installation.json (как в sync-service)
+            // 1) Try installation.json (same format as in sync-service)
             $installConfig = __DIR__ . '/config/installation.json';
             if (file_exists($installConfig)) {
                 $data = json_decode(file_get_contents($installConfig), true);
@@ -63,12 +77,14 @@ class NetworkSyncManager {
                         'network_nodes' => $data['network_nodes'],
                         'node_selection_strategy' => $data['node_selection_strategy'] ?? 'fastest_response'
                     ];
+                    // Optional toggle in installation.json: "logging_enabled": true|false
+                    $this->loggingEnabled = $this->boolFrom($data['logging_enabled'] ?? ($data['sync_logging_enabled'] ?? null), false);
                     $this->log("Configuration loaded successfully from installation.json");
                     return;
                 }
             }
 
-            // 2) Новая модель конфигурации в таблице config (как в sync-service/SyncManager)
+            // 2) New configuration model in the config table (same as sync-service/SyncManager)
             $stmt = $this->pdo->prepare("SELECT key_name, value FROM config WHERE key_name LIKE 'network.%' OR key_name LIKE 'node.%'");
             $stmt->execute();
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -81,7 +97,7 @@ class NetworkSyncManager {
             $networkNodes = $values['network.nodes'] ?? '';
             $selectionStrategy = $values['node.selection_strategy'] ?? 'fastest_response';
 
-            // 3) Legacy-фоллбек: строка id=1 с колонкой settings JSON
+            // 3) Legacy fallback: row id=1 with settings JSON column
             if (empty($networkNodes)) {
                 $stmt = $this->pdo->prepare("SELECT * FROM config WHERE id = 1");
                 $stmt->execute();
@@ -103,6 +119,13 @@ class NetworkSyncManager {
                 'network_nodes' => $networkNodes,
                 'node_selection_strategy' => $selectionStrategy
             ];
+
+            // Determine logging toggle from config table or environment
+            $logFlag = $values['sync.logging_enabled']
+                ?? $values['logging.sync_enabled']
+                ?? $values['logging.enabled']
+                ?? ($_ENV['SYNC_LOGGING'] ?? ($_ENV['SYNC_LOGGING_ENABLED'] ?? ($_ENV['LOGGING_ENABLED'] ?? null)));
+            $this->loggingEnabled = $this->boolFrom($logFlag, $this->loggingEnabled);
 
             $this->log("Configuration loaded successfully" . (empty($networkNodes) ? " (warning: network_nodes is empty)" : ""));
             if (empty($networkNodes)) {
@@ -201,7 +224,7 @@ class NetworkSyncManager {
         // Get current node domain to exclude from sync
         $currentNodeUrl = $this->getCurrentNodeDomain();
         
-        // 1) Попробовать получить активные узлы из таблицы nodes (источник после установки)
+    // 1) Try to get active nodes from the nodes table (primary source after installation)
         // Exclude nodes with low reputation (below 50) to avoid suspicious sources
         $nodeUrls = [];
         try {
@@ -245,7 +268,7 @@ class NetworkSyncManager {
             $this->log("Warning: failed to read nodes table: " . $e->getMessage());
         }
 
-        // 2) Фоллбек: конфиг network_nodes (многострочный или CSV)
+    // 2) Fallback: network_nodes config (multiline or CSV)
         if (empty($nodeUrls)) {
             $rawNodes = $this->config['network_nodes'] ?? '';
             $candidates = preg_split('/[\r\n,]+/', (string)$rawNodes);
@@ -445,7 +468,7 @@ class NetworkSyncManager {
     }
     
     private function syncNodesAndValidators($node) {
-        // Sync nodes -> адаптация под вашу схему nodes (id, node_id, ip_address, port, public_key, version, status, last_seen, blocks_synced, ping_time, reputation_score, metadata, created_at, updated_at)
+        // Sync nodes -> adapt to your schema nodes (id, node_id, ip_address, port, public_key, version, status, last_seen, blocks_synced, ping_time, reputation_score, metadata, created_at, updated_at)
         $url = rtrim($node, '/') . '/api/explorer/index.php?action=get_nodes_list';
         $response = $this->makeApiCall($url);
         
@@ -454,7 +477,7 @@ class NetworkSyncManager {
             $syncedNodes = 0;
             
             foreach ($nodes as $nodeData) {
-                // Маппинг входных полей в вашу схему
+                // Map input fields to your schema
                 $nodeId = $nodeData['node_id'] ?? ($nodeData['address'] ?? '');
                 $version = $nodeData['version'] ?? '1.0.0';
                 $status = $nodeData['status'] ?? 'active';
@@ -462,7 +485,7 @@ class NetworkSyncManager {
                 $reputation = $nodeData['reputation_score'] ?? 100;
                 $publicKey = $nodeData['public_key'] ?? '';
                 
-                // Определяем ip/port/protocol/domain из url/metadata
+                // Determine ip/port/protocol/domain from url/metadata
                 $ip = '';
                 $port = 80;
                 $meta = [];
@@ -475,18 +498,18 @@ class NetworkSyncManager {
                         $scheme = $parts['scheme'] ?? 'http';
                         $host = $parts['host'] ?? '';
                         $port = $parts['port'] ?? ($scheme === 'https' ? 443 : 80);
-                        // host может быть доменом или ip
+                        // host can be a domain name or an IP address
                         if (filter_var($host, FILTER_VALIDATE_IP)) {
                             $ip = $host;
                             $meta['protocol'] = $scheme;
                         } else {
-                            // домен
+                            // domain name
                             $meta['domain'] = $host;
                             $meta['protocol'] = $scheme;
                         }
                     }
                 }
-                // Если ip пустой, но есть явные поля
+                // If IP is empty but explicit fields exist
                 if (empty($ip) && !empty($nodeData['ip_address'])) {
                     $ip = $nodeData['ip_address'];
                 }
@@ -494,10 +517,10 @@ class NetworkSyncManager {
                     $port = (int)$nodeData['port'];
                 }
                 
-                // Приводим metadata к JSON
+                // Convert metadata to JSON
                 $metadataJson = json_encode($meta, JSON_UNESCAPED_UNICODE);
                 
-                // Вставка/обновление по уникальному комбинационному ключу (ip_address, port) или node_id, если он есть
+                // Insert/update using unique composite key (ip_address, port) or node_id if present
                 if (!empty($nodeId)) {
                     $stmt = $this->pdo->prepare("
                         INSERT INTO nodes (node_id, ip_address, port, public_key, version, status, last_seen, reputation_score, metadata)
@@ -524,7 +547,7 @@ class NetworkSyncManager {
                         $metadataJson
                     ]);
                 } else {
-                    // без node_id — используем уникальность ip+port
+                    // Without node_id — use uniqueness of ip+port
                     $stmt = $this->pdo->prepare("
                         INSERT INTO nodes (node_id, ip_address, port, public_key, version, status, last_seen, reputation_score, metadata)
                         VALUES (SHA2(CONCAT(?,':',?), 256), ?, ?, ?, ?, ?, ?, ?, ?)
@@ -555,7 +578,7 @@ class NetworkSyncManager {
             $this->log("Synced $syncedNodes nodes (mapped to schema)");
         }
         
-        // Sync validators -> схема validators по дампу:
+    // Sync validators -> validators schema per dump:
         // (address, public_key, stake, delegated_stake, commission_rate, status, blocks_produced, blocks_missed, last_active_block, jail_until_block, metadata, created_at, updated_at)
         $url = rtrim($node, '/') . '/api/explorer/index.php?action=get_validators_list';
         $response = $this->makeApiCall($url);
@@ -1323,10 +1346,14 @@ class NetworkSyncManager {
     
     private function log($message) {
         $logEntry = date('Y-m-d H:i:s') . " - " . $message . "\n";
-        file_put_contents($this->logFile, $logEntry, FILE_APPEND | LOCK_EX);
-        
+        // In CLI, still echo for observability even when disk logging is disabled
         if (!$this->isWebMode) {
             echo $logEntry;
+        }
+        // Write to disk only if logging is explicitly enabled
+        if ($this->loggingEnabled) {
+            // Best-effort write; suppress errors if log directory is missing
+            @file_put_contents($this->logFile, $logEntry, FILE_APPEND | LOCK_EX);
         }
     }
 
