@@ -1215,50 +1215,85 @@ class NetworkSyncManager {
         $contractsSynced = 0;
         $page = 0;
         $limit = 100;
-        
+
         do {
             $url = rtrim($node, '/') . "/api/explorer/index.php?action=get_smart_contracts&page=$page&limit=$limit";
             $response = $this->makeApiCall($url);
-            
+
             if (!$response || !isset($response['success']) || !$response['success']) {
-                $this->log("No smart contracts data or end of pages reached (page $page)");
+                $this->log("Smart contracts sync: no data or error at page $page");
                 break;
             }
-            
-            $contracts = $response['data']['contracts'] ?? [];
+
+            // Explorer returns contracts array directly in data
+            $contracts = $response['data'] ?? [];
             if (empty($contracts)) {
-                $this->log("No smart contracts found on page $page");
+                $this->log("Smart contracts sync: empty page $page");
                 break;
-            
             }
-            
+
             $newContracts = 0;
+            // Prepare upsert statement aligned with schema in database/Migration.php
+            $stmt = $this->pdo->prepare("
+                INSERT INTO smart_contracts (
+                    address, creator, name, version, bytecode, abi, source_code,
+                    deployment_tx, deployment_block, gas_used, status, storage, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    name=VALUES(name),
+                    version=VALUES(version),
+                    bytecode=VALUES(bytecode),
+                    abi=VALUES(abi),
+                    source_code=VALUES(source_code),
+                    deployment_tx=VALUES(deployment_tx),
+                    deployment_block=VALUES(deployment_block),
+                    gas_used=VALUES(gas_used),
+                    status=VALUES(status),
+                    storage=VALUES(storage),
+                    metadata=VALUES(metadata),
+                    updated_at=CURRENT_TIMESTAMP
+            ");
+
             foreach ($contracts as $contract) {
-                $stmt = $this->pdo->prepare("
-                    INSERT IGNORE INTO smart_contracts (address, creator, bytecode, abi, created_at, transaction_hash)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ");
-                $result = $stmt->execute([
+                // Normalize JSON fields
+                $abi = $contract['abi'] ?? [];
+                if (is_array($abi)) { $abi = json_encode($abi, JSON_UNESCAPED_SLASHES); }
+                $storage = $contract['storage'] ?? [];
+                if (is_array($storage)) { $storage = json_encode($storage, JSON_UNESCAPED_SLASHES); }
+                $metadata = $contract['metadata'] ?? [];
+                if (is_array($metadata)) { $metadata = json_encode($metadata, JSON_UNESCAPED_SLASHES); }
+
+                $ok = $stmt->execute([
                     $contract['address'] ?? '',
                     $contract['creator'] ?? '',
+                    $contract['name'] ?? '',
+                    $contract['version'] ?? '1.0.0',
                     $contract['bytecode'] ?? '',
-                    $contract['abi'] ?? '',
-                    $contract['created_at'] ?? date('Y-m-d H:i:s'),
-                    $contract['transaction_hash'] ?? ''
+                    $abi ?: '[]',
+                    $contract['source_code'] ?? '',
+                    $contract['deployment_tx'] ?? '',
+                    (int)($contract['deployment_block'] ?? 0),
+                    (int)($contract['gas_used'] ?? 0),
+                    $contract['status'] ?? 'active',
+                    $storage ?: '{}',
+                    $metadata ?: '{}'
                 ]);
-                
-                if ($result && $stmt->rowCount() > 0) {
+
+                if ($ok && $stmt->rowCount() > 0) {
                     $newContracts++;
                 }
             }
-            
+
             $contractsSynced += $newContracts;
-            $this->log("Page $page: synced $newContracts smart contracts");
+            $this->log("Smart contracts sync: page $page, new $newContracts");
+
+            $hasMore = (bool)($response['pagination']['has_more'] ?? (count($contracts) === $limit));
             $page++;
-            
-        } while (count($contracts) == $limit);
-        
-        $this->log("Total smart contracts synced: $contractsSynced");
+            if (!$hasMore) { break; }
+
+        } while (true);
+
+        $this->log("Smart contracts sync: total $contractsSynced");
         
         // Sync staking records with proper pagination
         $stakesSynced = 0;
