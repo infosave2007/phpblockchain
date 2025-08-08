@@ -5,7 +5,7 @@ namespace Blockchain\Contracts;
 
 use Blockchain\Core\Contracts\SmartContractInterface;
 use Blockchain\Core\Contracts\TransactionInterface;
-use Blockchain\Core\Virtual\VirtualMachine;
+use Blockchain\Core\SmartContract\VirtualMachine;
 use Blockchain\Core\Storage\StateStorage;
 use Psr\Log\LoggerInterface;
 
@@ -46,7 +46,8 @@ class SmartContractManager
         string $code,
         array $constructorArgs = [],
         string $deployer = '',
-        int $gasLimit = 100000
+        int $gasLimit = 100000,
+        ?string $name = null
     ): array {
         try {
             // Generate contract address
@@ -57,8 +58,10 @@ class SmartContractManager
                 throw new \Exception('Contract already deployed at this address');
             }
 
-            // Compile contract
-            $compiledCode = $this->compileContract($code);
+            // Compile contract (bytecode + abi)
+            $compiled = $this->compileContract($code);
+            $compiledCode = $compiled['bytecode'];
+            $compiledAbi = $compiled['abi'];
             
             // Create initial contract state
             $initialState = [
@@ -67,7 +70,11 @@ class SmartContractManager
                 'balance' => 0,
                 'deployer' => $deployer,
                 'deployed_at' => time(),
-                'constructor_args' => $constructorArgs
+                'constructor_args' => $constructorArgs,
+                // Persist helpful metadata so explorer/API can query by contract name
+                'name' => $name ?? 'Contract',
+                'abi' => $compiledAbi,
+                'source_code' => $code,
             ];
 
             // Execute constructor if exists
@@ -295,16 +302,20 @@ class SmartContractManager
     /**
      * Compile smart contract using professional compiler
      */
-    private function compileContract(string $code): string
+    private function compileContract(string $code): array
     {
         $compiler = new \Blockchain\Core\SmartContract\Compiler();
         $result = $compiler->compile($code);
         
         if (!$result['success']) {
-            throw new Exception("Contract compilation failed: " . $result['error']);
+            throw new \Exception("Contract compilation failed: " . $result['error']);
         }
-        
-        return $result['bytecode'];
+
+        // Return full compile data (bytecode + abi) for persistence
+        return [
+            'bytecode' => (string)$result['bytecode'],
+            'abi' => (array)($result['abi'] ?? []),
+        ];
     }
 
     /**
@@ -369,7 +380,9 @@ class SmartContractManager
         $results['erc20'] = $this->deployContract(
             $erc20Code,
             [$tokenName, $tokenSymbol, 18, $tokenSupply],
-            $deployer
+            $deployer,
+            100000,
+            'ERC20'
         );
 
         // Staking contract
@@ -377,7 +390,9 @@ class SmartContractManager
         $results['staking'] = $this->deployContract(
             $stakingCode,
             [1000, 10], // minimum stake, reward per block
-            $deployer
+            $deployer,
+            100000,
+            'Staking'
         );
 
         // Governance contract
@@ -385,7 +400,9 @@ class SmartContractManager
         $results['governance'] = $this->deployContract(
             $governanceCode,
             [$deployer], // initial administrator
-            $deployer
+            $deployer,
+            100000,
+            'Governance'
         );
 
         return $results;

@@ -136,8 +136,45 @@ class Application
      */
     private function initializeSmartContracts(): void
     {
-        // This would be implemented with actual VM and StateStorage
-        // $this->contractManager = new SmartContractManager($vm, $stateStorage, $logger, $this->config);
+        // Real SmartContractManager wiring (no mocks)
+        $logger = new class implements \Psr\Log\LoggerInterface {
+            public function emergency($message, array $context = []) {}
+            public function alert($message, array $context = []) {}
+            public function critical($message, array $context = []) {}
+            public function error($message, array $context = []) {}
+            public function warning($message, array $context = []) {}
+            public function notice($message, array $context = []) {}
+            public function info($message, array $context = []) {}
+            public function debug($message, array $context = []) {}
+            public function log($level, $message, array $context = []) {}
+        };
+
+        $vm = new \Blockchain\Core\SmartContract\VirtualMachine(3000000);
+        $stateStorage = new \Blockchain\Core\Storage\StateStorage($this->database);
+        $this->contractManager = new SmartContractManager($vm, $stateStorage, $logger, $this->config);
+
+        // Optional: deploy standard contracts if staking contract address is not configured yet.
+        try {
+            $stakingAddr = $this->config['staking']['contract_address'] ?? '';
+            if (empty($stakingAddr)) {
+                // Deploy Staking contract template with sane defaults
+                $results = $this->contractManager->deployStandardContracts($this->config['admin']['deployer'] ?? '');
+                if (!empty($results['staking']['success']) && !empty($results['staking']['address'])) {
+                    // Persist address to a small local cache to avoid changing the main config structure here
+                    $cachePath = dirname(__DIR__) . '/../storage/contract_addresses.json';
+                    $existing = [];
+                    if (is_file($cachePath)) {
+                        $json = @file_get_contents($cachePath);
+                        $decoded = json_decode((string)$json, true);
+                        if (is_array($decoded)) $existing = $decoded;
+                    }
+                    $existing['staking_contract'] = $results['staking']['address'];
+                    @file_put_contents($cachePath, json_encode($existing, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+                }
+            }
+        } catch (\Throwable $e) {
+            // Non-fatal: contracts can be deployed later via API
+        }
     }
 
     /**
@@ -158,35 +195,12 @@ class Application
             public function log($level, $message, array $context = []) {}
         };
         
-        // Create a simple SmartContractManager mock
-        $contractManager = new class extends SmartContractManager {
-            public function __construct() {
-                // Skip parent constructor to avoid dependency issues
-            }
-            
-            public function deployContract($code, $constructorArgs = [], $deployer = '', $gasLimit = 100000): array {
-                return ['success' => false, 'error' => 'Not implemented'];
-            }
-            
-            public function callContract($contractAddress, $functionName, $args = [], $caller = '', $gasLimit = 50000, $value = 0): array {
-                return ['success' => false, 'error' => 'Not implemented'];
-            }
-            
-            public function getContractState($contractAddress): ?array {
-                return null;
-            }
-            
-            public function estimateGas($contractAddress, $functionName, $args = [], $caller = ''): int {
-                return 21000;
-            }
-        };
-        
         // Create a simple WalletManager instance
         $walletManager = new WalletManager($this->database, $this->config);
         
         $this->api = new BlockchainAPI(
             $this->blockchain,
-            $contractManager,
+            $this->contractManager,
             $this->nodeManager,
             $this->consensus,
             $walletManager,
