@@ -2483,16 +2483,11 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                 $address = $params[0] ?? '';
                 if (!$address) return '0x0';
                 // Use spendable balance (exclude staked) for wallet UIs
-                $balanceFloat = (float)$walletManager->getAvailableBalance($address);
-                // Convert to smallest unit based on network decimals
+                $balance = $walletManager->getAvailableBalance($address);
                 $decimals = getTokenDecimals($networkConfig);
-                $multiplier = 10 ** $decimals;
-                $balanceInt = (int)floor($balanceFloat * $multiplier);
-                
-                // TEST LOG: Check if new code is loaded
-                writeLog("TEST: eth_getBalance - decimals=$decimals, multiplier=$multiplier, balanceFloat=$balanceFloat, balanceInt=$balanceInt", 'DEBUG');
-                
-                return '0x' . dechex($balanceInt);
+                // Convert decimal balance to smallest units precisely (no float rounding)
+                $units = convertAmountToUnitsInt($balance, $decimals);
+                return '0x' . dechex(max(0, (int)$units));
             }
 
             case 'eth_coinbase': {
@@ -3290,15 +3285,13 @@ function getTokenDecimals($networkConfig): int
         if (method_exists($networkConfig, 'getTokenInfo')) {
             $info = $networkConfig->getTokenInfo();
             $d = (int)($info['decimals'] ?? 18);
-            return $d > 0 ? $d : 18;
+            return $d > 0 ? $d : 18; // default to 18 for MetaMask compatibility
         }
     } catch (Throwable $e) {
         // ignore
     }
-    return 18; // FIXED: Return 18 decimals for MetaMask compatibility
-}
-
-/**
+    return 18; // Default decimals: 18 (MetaMask standard)
+}/**
  * dApp configuration helper
  * Returns EIP-3085 compatible chain parameters and minimal metadata
  */
@@ -3308,7 +3301,7 @@ function getDappConfig($networkConfig): array
     $net = method_exists($networkConfig, 'getNetworkInfo') ? $networkConfig->getNetworkInfo() : [];
 
     $chainId = (int)($net['chain_id'] ?? 1);
-    $decimals = (int)($token['decimals'] ?? 9);
+    $decimals = (int)($token['decimals'] ?? 18);
     $symbol = $token['symbol'] ?? 'COIN';
     $name = $net['name'] ?? ($token['name'] ?? 'Blockchain');
 
@@ -3349,6 +3342,57 @@ function getDappConfig($networkConfig): array
     }
 
     return $config;
+}
+
+/**
+ * Convert human-readable amount to smallest units (integer) precisely.
+ * Uses bcmath if available; falls back to string math to avoid float issues.
+ * Handles large numbers and prevents integer overflow.
+ */
+function convertAmountToUnitsInt($amount, int $decimals): int {
+    // Normalize to string to avoid float precision
+    $str = is_string($amount) ? $amount : (string)$amount;
+    $str = trim($str);
+    if ($str === '' || $str === '0') return 0;
+    
+    // Handle negative numbers
+    $negative = false;
+    if ($str[0] === '-') { 
+        $negative = true; 
+        $str = substr($str, 1); 
+    }
+    
+    // Split integer and fractional parts
+    $parts = explode('.', $str, 2);
+    $intPart = preg_replace('/\D/', '', $parts[0] ?? '0');
+    $fracPart = preg_replace('/\D/', '', $parts[1] ?? '');
+    
+    // Truncate fractional part to decimals precision
+    if (strlen($fracPart) > $decimals) {
+        $fracPart = substr($fracPart, 0, $decimals);
+    }
+    
+    // Right-pad fractional part to decimals
+    $fracPart = str_pad($fracPart, $decimals, '0');
+    
+    // Combine parts
+    $full = ltrim($intPart . $fracPart, '0');
+    if ($full === '') $full = '0';
+    
+    // Use bcmath for large numbers if available
+    if (function_exists('bcmul')) {
+        $result = bcmul($str, bcpow('10', $decimals));
+        $val = (int)$result;
+    } else {
+        // Fallback: check for overflow
+        $val = (int)$full;
+        if ($val < 0) {
+            // Integer overflow detected, clamp to max safe value
+            $val = PHP_INT_MAX;
+        }
+    }
+    
+    return $negative ? -$val : $val;
 }
 
 /**
