@@ -121,4 +121,8 @@ class WalletLogger
     }
 }
 
-// Note: legacy global class name removed; use fully-qualified \Blockchain\Wallet\WalletLogger
+// Backward compatibility: provide global alias if not already defined
+if (!class_exists('WalletLogger')) {
+    class_alias('Blockchain\\Wallet\\WalletLogger', 'WalletLogger');
+}
+// Note: prefer fully-qualified \\Blockchain\\Wallet\\WalletLogger going forward

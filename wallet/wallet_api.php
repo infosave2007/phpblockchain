@@ -111,6 +111,11 @@ try {
     // Initialize logger with configuration
     \Blockchain\Wallet\WalletLogger::init($config);
 
+    // In development, aggressively reset OPcache so updated API logic (idempotent create) is picked up
+    if (($config['debug_mode'] ?? false) && function_exists('opcache_reset')) {
+        @opcache_reset();
+    }
+
     // Allow force-enabling wallet API logging via query/header/env for diagnostics
     $forceLog = false;
     if (isset($_GET['log']) && ($_GET['log'] === '1' || strtolower((string)$_GET['log']) === 'true')) {
@@ -472,7 +477,28 @@ try {
             if (!in_array(count($mnemonic), [12,15,18,21,24], true)) {
                 throw new Exception('Invalid mnemonic word count. Expected 12/15/18/21/24 words, got ' . count($mnemonic));
             }
-            $result = createWalletFromMnemonic($walletManager, $blockchainManager, $mnemonic);
+            try {
+                $result = createWalletFromMnemonic($walletManager, $blockchainManager, $mnemonic);
+                if (!isset($result['existing'])) {
+                    $result['existing'] = false;
+                }
+            } catch (Exception $e) {
+                if (strpos($e->getMessage(), "Wallet with this mnemonic already exists") !== false) {
+                    // Fallback idempotent response if underlying function still throws (e.g. stale opcode cache)
+                    writeLog('Fallback idempotent handling triggered for existing mnemonic', 'INFO');
+                    $keyPair = \Blockchain\Core\Cryptography\KeyPair::fromMnemonic($mnemonic);
+                    $result = [
+                        'address' => $keyPair->getAddress(),
+                        'public_key' => $keyPair->getPublicKey(),
+                        'private_key' => $keyPair->getPrivateKey(),
+                        'mnemonic' => implode(' ', $mnemonic),
+                        'existing' => true,
+                        'message' => 'Idempotent success (handled in switch): wallet already existed.'
+                    ];
+                } else {
+                    throw $e;
+                }
+            }
             break;
             
         case 'validate_mnemonic':
@@ -916,8 +942,17 @@ function createWalletFromMnemonic($walletManager, $blockchainManager, array $mne
             // Check if this address already exists in database
             $existingWallet = $walletManager->getWalletInfo($derivedAddress);
             if ($existingWallet) {
-                writeLog("Wallet already exists in database, rejecting create request", 'INFO');
-                throw new Exception("Wallet with this mnemonic already exists. Please use 'Restore Wallet' instead of 'Create Wallet'. Address: " . $derivedAddress);
+                // Idempotent behavior: instead of error, return existing wallet info
+                writeLog("Wallet already exists in database, returning existing info (idempotent create)", 'INFO');
+                return [
+                    'address' => $derivedAddress,
+                    'public_key' => $existingWallet['public_key'] ?? $keyPair->getPublicKey(),
+                    // We can safely return the private key because the caller proved knowledge of the mnemonic
+                    'private_key' => $keyPair->getPrivateKey(),
+                    'mnemonic' => implode(' ', $mnemonic),
+                    'existing' => true,
+                    'message' => 'Wallet already existed. This create call is idempotent. Use restore endpoint for future explicit restores.'
+                ];
             }
             writeLog("Wallet does not exist in database, proceeding with creation", 'DEBUG');
         } catch (Exception $e) {

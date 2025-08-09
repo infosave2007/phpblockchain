@@ -41,8 +41,8 @@ WORKDIR /var/www/html
 # Copy application files
 COPY . .
 
-# Install dependencies
-RUN composer install --no-dev --optimize-autoloader
+# Update dependencies for PHP 8.1 compatibility and install
+RUN composer update --no-dev --optimize-autoloader
 
 # Create required directories first
 RUN mkdir -p storage/blockchain storage/state storage/cache logs

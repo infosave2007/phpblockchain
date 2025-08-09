@@ -135,7 +135,7 @@ class WalletBlockchainManager
                 'error' => $e->getMessage()
             ];
             
-            \WalletLogger::warning("WalletBlockchainManager::createWalletWithBlockchain - Fallback result: " . json_encode($fallbackResult));
+            \Blockchain\Wallet\WalletLogger::warning("WalletBlockchainManager::createWalletWithBlockchain - Fallback result: " . json_encode($fallbackResult));
             return $fallbackResult;
         }
     }
@@ -188,26 +188,26 @@ class WalletBlockchainManager
      */
     private function createWalletTransaction(array $walletData): array
     {
-        \WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Starting transaction creation");
+    \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Starting transaction creation");
         
         try {
-            \WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Getting node ID");
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Getting node ID");
             $nodeId = $this->getNodeId();
-            \WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Node ID obtained: " . $nodeId);
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Node ID obtained: " . $nodeId);
             
-            \WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Preparing data for signing");
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Preparing data for signing");
             $dataToSign = [
                 'action' => 'create_wallet',
                 'address' => $walletData['address'],
                 'timestamp' => time()
             ];
-            \WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Data to sign: " . json_encode($dataToSign));
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Data to sign: " . json_encode($dataToSign));
             
-            \WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Starting signature process");
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Starting signature process");
             $signature = $this->signTransaction($dataToSign);
-            \WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Transaction signed successfully");
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Transaction signed successfully");
             
-            \WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Creating transaction array");
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Creating transaction array");
             $transaction = [
                 'hash' => hash('sha256', 'wallet_create_' . $walletData['address'] . '_' . time()),
                 'type' => 'wallet_create',
@@ -227,16 +227,16 @@ class WalletBlockchainManager
                 'signature' => $signature,
                 'status' => 'pending'  // New wallet transactions start as pending
             ];
-            \WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Transaction array created");
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Transaction array created");
             
-            \WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Transaction created successfully");
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Transaction created successfully");
             return $transaction;
             
         } catch (Exception $e) {
-            \WalletLogger::error("WalletBlockchainManager::createWalletTransaction - Error: " . $e->getMessage());
-            \WalletLogger::error("WalletBlockchainManager::createWalletTransaction - Error file: " . $e->getFile());
-            \WalletLogger::error("WalletBlockchainManager::createWalletTransaction - Error line: " . $e->getLine());
-            \WalletLogger::error("WalletBlockchainManager::createWalletTransaction - Error trace: " . $e->getTraceAsString());
+            \Blockchain\Wallet\WalletLogger::error("WalletBlockchainManager::createWalletTransaction - Error: " . $e->getMessage());
+            \Blockchain\Wallet\WalletLogger::error("WalletBlockchainManager::createWalletTransaction - Error file: " . $e->getFile());
+            \Blockchain\Wallet\WalletLogger::error("WalletBlockchainManager::createWalletTransaction - Error line: " . $e->getLine());
+            \Blockchain\Wallet\WalletLogger::error("WalletBlockchainManager::createWalletTransaction - Error trace: " . $e->getTraceAsString());
             throw $e;
         }
     }
