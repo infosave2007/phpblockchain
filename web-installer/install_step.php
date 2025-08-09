@@ -2273,7 +2273,7 @@ function syncBlockchainWithGenesisNode(array $config = []): array {
         echo json_encode(['type' => 'progress', 'percent' => 5, 'message' => 'Initializing sync service...']) . "\n";
         flush();
         
-        $syncManager = new SyncManager(true); // Web mode for progress output
+    $syncManager = new \Blockchain\SyncService\SyncManager(true); // Web mode for progress output (namespaced)
         
         echo json_encode(['type' => 'progress', 'percent' => 10, 'message' => 'Starting intelligent synchronization...']) . "\n";
         flush();

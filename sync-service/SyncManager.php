@@ -2,6 +2,10 @@
 declare(strict_types=1);
 namespace Blockchain\SyncService;
 
+// Import global classes used within the namespace to avoid resolution attempts like Blockchain\SyncService\PDO
+use PDO;
+use Exception;
+
 /**
  * Blockchain Synchronization Manager
  * Standalone service for syncing blockchain data from network nodes

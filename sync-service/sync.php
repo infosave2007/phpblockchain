@@ -11,7 +11,7 @@ if (isset($_GET['action'])) {
     header('Content-Type: application/json');
     
     try {
-        $syncManager = new SyncManager(true);
+    $syncManager = new \Blockchain\SyncService\SyncManager(true);
         
         switch ($_GET['action']) {
             case 'start_sync':

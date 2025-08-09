@@ -132,3 +132,4 @@ config/config.php
 
 # Internal assistant instruction files (do not track)
 .github/instructions/
+dual_quick_sync.php
