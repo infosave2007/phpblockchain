@@ -579,9 +579,15 @@ function createTables(): array
                 $isSystem = strpos($key, 'system.') === 0 ? 1 : 0;
                 
                 // Debug logging
-                error_log("Config insert: key=$key, value=" . (string)$value . ", description=$description, isSystem=$isSystem");
+                error_log("Config insert: key=$key, value=" . (string)$value . ", description=$description, isSystem=" . var_export($isSystem, true));
                 
-                $insertConfigStmt->execute([$key, (string)$value, $description, $isSystem]);
+                try {
+                    $insertConfigStmt->execute([$key, (string)$value, $description, (int)$isSystem]);
+                    error_log("Config insert SUCCESS for key: $key");
+                } catch (Exception $e) {
+                    error_log("Config insert ERROR for key: $key - " . $e->getMessage());
+                    throw $e;
+                }
             }
             
             $configInserted = count($configValues);

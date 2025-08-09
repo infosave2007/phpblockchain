@@ -130,3 +130,5 @@ security_updates_summary.md
 test_full_sync.php
 test_sync.php
 storage/blockchain.bin
+config/install_config.json
+config/install_config.json

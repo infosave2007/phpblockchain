@@ -34,15 +34,6 @@ services:
     networks:
       - blockchain-network
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - blockchain-network
-
   nginx:
     image: nginx:alpine
     ports:
@@ -58,7 +49,6 @@ services:
 
 volumes:
   db_data:
-  redis_data:
 
 networks:
   blockchain-network:

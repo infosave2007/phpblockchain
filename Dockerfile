@@ -53,8 +53,8 @@ RUN chown -R www-data:www-data /var/www/html \
     && chmod -R 755 /var/www/html/logs
 
 # Copy initialization script and run it
-COPY init_standalone.php .
-RUN php init_standalone.php
+COPY check.php .
+RUN php check.php
 
 # Copy PHP-FPM configuration
 COPY docker/php-fpm.conf /usr/local/etc/php-fpm.d/www.conf
