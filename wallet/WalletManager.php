@@ -183,6 +183,18 @@ class WalletManager
             
             if ($existingWallet) {
                 writeWalletLog("WalletManager::restoreWalletFromMnemonic - Wallet exists in database, updating from blockchain", 'INFO');
+                // If the stored public key is a placeholder, update it with the real one derived from mnemonic
+                if (!isset($existingWallet['public_key']) || $existingWallet['public_key'] === '' || $existingWallet['public_key'] === 'placeholder_public_key') {
+                    try {
+                        $upd = $this->database->prepare("UPDATE wallets SET public_key = ?, updated_at = NOW() WHERE address = ?");
+                        $upd->execute([$keyPair->getPublicKey(), $address]);
+                        writeWalletLog("WalletManager::restoreWalletFromMnemonic - Replaced placeholder public key with real one for $address", 'INFO');
+                        // Refresh existing wallet info after update (optional)
+                        $existingWallet['public_key'] = $keyPair->getPublicKey();
+                    } catch (Exception $e) {
+                        writeWalletLog("WalletManager::restoreWalletFromMnemonic - Failed to update placeholder public key: " . $e->getMessage(), 'ERROR');
+                    }
+                }
                 // Wallet already exists in DB - update data from blockchain
                 if ($blockchainBalance > 0 || $blockchainStaked > 0) {
                     $this->updateBalance($address, $blockchainBalance);
