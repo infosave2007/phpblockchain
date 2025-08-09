@@ -13,7 +13,7 @@ services:
       - DB_PORT=3306
       - DB_NAME=blockchain
       - DB_USER=blockchain
-      - DB_PASSWORD=blockchain123
+      - DB_PASSWORD=your_secure_password
     depends_on:
       - database
     networks:
@@ -22,10 +22,10 @@ services:
   database:
     image: mysql:8.0
     environment:
-      - MYSQL_ROOT_PASSWORD=blockchain123
+      - MYSQL_ROOT_PASSWORD=your_secure_root_password
       - MYSQL_DATABASE=blockchain
       - MYSQL_USER=blockchain
-      - MYSQL_PASSWORD=blockchain123
+      - MYSQL_PASSWORD=your_secure_password
     volumes:
       - db_data:/var/lib/mysql
       - ./database:/docker-entrypoint-initdb.d

@@ -65,6 +65,9 @@ phpunit.xml
 # Configuration
 /config/installed
 /config/local.php
+config/config.php
+config/installation.json
+config/install_config.json
 
 # Temporary files
 *.tmp
@@ -75,6 +78,12 @@ phpunit.xml
 # Blockchain data
 /blockchain_data/*
 /peer_data/*
+storage/blockchain/
+storage/state/
+storage/test/
+storage/trustwallet/
+*.sql
+database/*.sql
 
 # Docker
 .docker/
@@ -88,6 +97,7 @@ phpstan.neon.dist
 
 # Logs
 *.log
+logs/
 
 # Private keys and sensitive data
 *.key
@@ -110,25 +120,12 @@ phpstan.neon.dist
 # Runtime files
 *.pid
 *.lock
-blockchain.sql
-.htaccess
-.gitignore
-storage/blockchain/genesis.json
-.gitignore
-storage/blockchain/chain.json
-storage/state/blockchain_state.json
-storage/blockchain/blockchain.bin
-storage/blockchain/blockchain.bin
-.gitignore
-storage/blockchain/blockchain.bin
-.github/instructions/copilot.instructions.md
-a379149_node1.sql
-a379149_wallet (20).sql
-integration_summary.md
-REGULAR_NODE_SETUP.md
-security_updates_summary.md
-test_full_sync.php
-test_sync.php
+
+# Example files that should not be in production
+example_*.php
+demo_*.php
+test_*.php
 storage/blockchain.bin
-config/install_config.json
-config/install_config.json
+config/installation.json
+config/config.php
+.gitignore

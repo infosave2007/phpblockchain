@@ -51,23 +51,23 @@ class WalletBlockchainManager
                 
                 if (class_exists('\Blockchain\Core\Consensus\ValidatorManager')) {
                     $this->validatorManager = new ValidatorManager($this->database, $this->config);
-                    \WalletLogger::info("ValidatorManager initialized successfully");
+                    \Blockchain\Wallet\WalletLogger::info("ValidatorManager initialized successfully");
                 } else {
-                    \WalletLogger::error("ValidatorManager class not found - blockchain operations will fail");
+                    \Blockchain\Wallet\WalletLogger::error("ValidatorManager class not found - blockchain operations will fail");
                     throw new Exception("ValidatorManager is required but not available");
                 }
             } catch (Exception $e) {
-                \WalletLogger::error("Failed to initialize ValidatorManager: " . $e->getMessage());
+                \Blockchain\Wallet\WalletLogger::error("Failed to initialize ValidatorManager: " . $e->getMessage());
                 throw $e; // Re-throw since ValidatorManager is required
             }
         } else {
-            \WalletLogger::warning("No database provided - ValidatorManager cannot be initialized");
+            \Blockchain\Wallet\WalletLogger::warning("No database provided - ValidatorManager cannot be initialized");
         }
         
         // BlockStorage is disabled - using direct database operations with ValidatorManager
         // This ensures all validator/signature operations use the centralized ValidatorManager
         $this->blockStorage = null;
-        \WalletLogger::info("Using direct database operations with ValidatorManager for all blockchain operations");
+    \Blockchain\Wallet\WalletLogger::info("Using direct database operations with ValidatorManager for all blockchain operations");
     }
     
     /**
@@ -76,39 +76,39 @@ class WalletBlockchainManager
     public function createWalletWithBlockchain(array $walletData): array
     {
         try {
-            \WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Starting with data: " . json_encode($walletData));
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Starting with data: " . json_encode($walletData));
             
             // 1. Create wallet transaction
-            \WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Creating wallet transaction");
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Creating wallet transaction");
             $walletTx = $this->createWalletTransaction($walletData);
-            \WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Wallet transaction created: " . json_encode($walletTx));
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Wallet transaction created: " . json_encode($walletTx));
             
             // 2. Add to pending transactions
-            \WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Adding to pending transactions");
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Adding to pending transactions");
             $this->addToPendingTransactions($walletTx);
-            \WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Added to pending transactions");
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Added to pending transactions");
             
             // 3. Create a block if we have enough transactions or this is important
-            \WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Creating block with transactions");
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Creating block with transactions");
             $block = $this->createBlockWithTransactions([$walletTx]);
-            \WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Block created");
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Block created");
             
             // 4. Save block to blockchain
-            \WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Saving block to blockchain");
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Saving block to blockchain");
             if ($this->blockStorage) {
-                \WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Using BlockStorage");
+                \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Using BlockStorage");
                 $this->blockStorage->saveBlock($block);
             } else {
-                \WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Using fallback database save");
+                \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Using fallback database save");
                 // Fallback: save directly to database
                 $this->saveBlockToDatabase($block);
             }
-            \WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Block saved successfully");
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Block saved successfully");
             
             // 5. Broadcast to network (if configured)
-            \WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Broadcasting to network");
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Broadcasting to network");
             $this->broadcastToNetwork($walletTx, $block);
-            \WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Broadcast completed");
+            \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletWithBlockchain - Broadcast completed");
             
             $result = [
                 'wallet' => $walletData,
@@ -121,12 +121,12 @@ class WalletBlockchainManager
                 'blockchain_recorded' => true
             ];
             
-            \WalletLogger::info("WalletBlockchainManager::createWalletWithBlockchain - Success: " . json_encode($result));
+            \Blockchain\Wallet\WalletLogger::info("WalletBlockchainManager::createWalletWithBlockchain - Success: " . json_encode($result));
             return $result;
             
         } catch (Exception $e) {
-            \WalletLogger::error("WalletBlockchainManager::createWalletWithBlockchain - Error: " . $e->getMessage());
-            \WalletLogger::error("WalletBlockchainManager::createWalletWithBlockchain - Error trace: " . $e->getTraceAsString());
+            \Blockchain\Wallet\WalletLogger::error("WalletBlockchainManager::createWalletWithBlockchain - Error: " . $e->getMessage());
+            \Blockchain\Wallet\WalletLogger::error("WalletBlockchainManager::createWalletWithBlockchain - Error trace: " . $e->getTraceAsString());
             
             // Fallback: save only to database without blockchain
             $fallbackResult = [

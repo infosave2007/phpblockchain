@@ -21,7 +21,7 @@ require_once __DIR__ . '/WalletLogger.php';
  * Log helper wrapper (kept for backward compatibility)
  */
 function writeLog($message, $level = 'DEBUG') {
-    WalletLogger::log($message, $level);
+    \Blockchain\Wallet\WalletLogger::log($message, $level);
 }
 
 // Early, dependency-free request logging to guarantee request traces even if later init fails
@@ -60,9 +60,9 @@ if (!defined('WALLET_API_EARLY_LOGGED')) {
 register_shutdown_function(function() {
     $error = error_get_last();
     if ($error && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR])) {
-        WalletLogger::error("FATAL ERROR: " . $error['message']);
-        WalletLogger::error("File: " . $error['file']);
-        WalletLogger::error("Line: " . $error['line']);
+    \Blockchain\Wallet\WalletLogger::error("FATAL ERROR: " . $error['message']);
+    \Blockchain\Wallet\WalletLogger::error("File: " . $error['file']);
+    \Blockchain\Wallet\WalletLogger::error("Line: " . $error['line']);
         
     // Try to output JSON error response if possible
         if (!headers_sent()) {
@@ -109,7 +109,7 @@ try {
     }
     
     // Initialize logger with configuration
-    WalletLogger::init($config);
+    \Blockchain\Wallet\WalletLogger::init($config);
 
     // Allow force-enabling wallet API logging via query/header/env for diagnostics
     $forceLog = false;
@@ -121,7 +121,7 @@ try {
     }
     if ($forceLog) {
         $config['wallet_logging_enabled'] = true;
-        WalletLogger::init($config); // re-init with logging enabled
+    \Blockchain\Wallet\WalletLogger::init($config); // re-init with logging enabled
     }
     
     // Build database config with priority: config.php -> .env -> defaults
@@ -268,8 +268,8 @@ try {
                     return $v;
                 }, $toLog);
             }
-            WalletLogger::info("RPC $requestId: method=" . (is_string($method)?$method:'') . " id=" . json_encode($id));
-            WalletLogger::debug("RPC $requestId: params=" . json_encode($toLog, JSON_UNESCAPED_SLASHES));
+            \Blockchain\Wallet\WalletLogger::info("RPC $requestId: method=" . (is_string($method)?$method:'') . " id=" . json_encode($id));
+            \Blockchain\Wallet\WalletLogger::debug("RPC $requestId: params=" . json_encode($toLog, JSON_UNESCAPED_SLASHES));
         } catch (Throwable $e) {}
         if (!is_string($method) || $method === '') {
             return $jsonRpcErrorResponse($id, -32600, 'Invalid Request');
@@ -278,20 +278,20 @@ try {
         $supported = $supportedRpcMethods();
         if (!in_array($method, $supported, true)) {
             $resp = $jsonRpcErrorResponse($id, -32601, 'Method not found');
-            try { WalletLogger::warning("RPC $requestId: method_not_found method=$method"); } catch (Throwable $e) {}
+            try { \Blockchain\Wallet\WalletLogger::warning("RPC $requestId: method_not_found method=$method"); } catch (Throwable $e) {}
             return $resp;
         }
         // Execute and normalize result/error
         $res = handleRpcRequest($pdo, $walletManager, $networkConfig, $method, is_array($params) ? $params : []);
         if (is_array($res) && array_key_exists('code', $res) && array_key_exists('message', $res) && count($res) >= 2) {
             // Treat arrays with code+message as JSON-RPC error objects returned from rpcError()
-            try { WalletLogger::warning("RPC $requestId: error code={$res['code']} message={$res['message']}"); } catch (Throwable $e) {}
+            try { \Blockchain\Wallet\WalletLogger::warning("RPC $requestId: error code={$res['code']} message={$res['message']}"); } catch (Throwable $e) {}
             return ['jsonrpc' => '2.0', 'id' => $id, 'error' => $res];
         }
         try {
             $preview = is_scalar($res) ? (string)$res : json_encode($res, JSON_UNESCAPED_SLASHES);
             if ($preview !== null) { $preview = substr((string)$preview, 0, 300); }
-            WalletLogger::info("RPC $requestId: result_preview=" . ($preview ?? 'null'));
+            \Blockchain\Wallet\WalletLogger::info("RPC $requestId: result_preview=" . ($preview ?? 'null'));
         } catch (Throwable $e) {}
         return ['jsonrpc' => '2.0', 'id' => $id, 'result' => $res];
     };
@@ -310,7 +310,7 @@ try {
         // Handle single or batch
         if ($isJsonRpcBatch) {
             $responses = [];
-            try { WalletLogger::info("RPC $requestId: batch size=" . count($input)); } catch (Throwable $e) {}
+            try { \Blockchain\Wallet\WalletLogger::info("RPC $requestId: batch size=" . count($input)); } catch (Throwable $e) {}
             foreach ($input as $req) {
                 $responses[] = $processJsonRpc($req);
             }
@@ -330,7 +330,7 @@ try {
                 $params = $paramsRaw;
             }
             $req = ['jsonrpc' => '2.0', 'id' => ($_GET['id'] ?? 1), 'method' => $rpcMethod, 'params' => $params];
-            try { WalletLogger::info("RPC $requestId: alias method=$rpcMethod"); } catch (Throwable $e) {}
+            try { \Blockchain\Wallet\WalletLogger::info("RPC $requestId: alias method=$rpcMethod"); } catch (Throwable $e) {}
             echo json_encode($processJsonRpc($req));
             exit;
         }
@@ -369,8 +369,8 @@ try {
                 $maskKeys = ['private_key','password'];
                 foreach ($maskKeys as $k) { if (isset($safe[$k])) { $safe[$k] = '***'; } }
             }
-            WalletLogger::info("ACTION $requestId: action=$action");
-            WalletLogger::debug("ACTION $requestId: params=" . (is_array($safe)?json_encode($safe, JSON_UNESCAPED_SLASHES):'n/a'));
+            \Blockchain\Wallet\WalletLogger::info("ACTION $requestId: action=$action");
+            \Blockchain\Wallet\WalletLogger::debug("ACTION $requestId: params=" . (is_array($safe)?json_encode($safe, JSON_UNESCAPED_SLASHES):'n/a'));
         } catch (Throwable $e) {}
     }
     
@@ -464,15 +464,20 @@ try {
             break;
             
         case 'create_wallet_from_mnemonic':
-            $mnemonic = $input['mnemonic'] ?? [];
+            $mnemonicInput = $input['mnemonic'] ?? [];
+            $mnemonic = normalizeMnemonicInput($mnemonicInput);
             if (empty($mnemonic)) {
                 throw new Exception('Mnemonic phrase is required');
+            }
+            if (!in_array(count($mnemonic), [12,15,18,21,24], true)) {
+                throw new Exception('Invalid mnemonic word count. Expected 12/15/18/21/24 words, got ' . count($mnemonic));
             }
             $result = createWalletFromMnemonic($walletManager, $blockchainManager, $mnemonic);
             break;
             
         case 'validate_mnemonic':
-            $mnemonic = $input['mnemonic'] ?? [];
+            $mnemonicInput = $input['mnemonic'] ?? [];
+            $mnemonic = normalizeMnemonicInput($mnemonicInput);
             if (empty($mnemonic)) {
                 throw new Exception('Mnemonic phrase is required');
             }
@@ -480,9 +485,13 @@ try {
             break;
             
         case 'restore_wallet_from_mnemonic':
-            $mnemonic = $input['mnemonic'] ?? [];
+            $mnemonicInput = $input['mnemonic'] ?? [];
+            $mnemonic = normalizeMnemonicInput($mnemonicInput);
             if (empty($mnemonic)) {
                 throw new Exception('Mnemonic phrase is required');
+            }
+            if (!in_array(count($mnemonic), [12,15,18,21,24], true)) {
+                throw new Exception('Invalid mnemonic word count. Expected 12/15/18/21/24 words, got ' . count($mnemonic));
             }
             $result = restoreWalletFromMnemonic($walletManager, $blockchainManager, $mnemonic);
             break;
@@ -680,7 +689,7 @@ try {
         'success' => true,
         ...$result
     ];
-    try { WalletLogger::debug("RESP $requestId: action=$action keys=" . implode(',', array_keys($responsePayload))); } catch (Throwable $e) {}
+    try { \Blockchain\Wallet\WalletLogger::debug("RESP $requestId: action=$action keys=" . implode(',', array_keys($responsePayload))); } catch (Throwable $e) {}
     
     // Force commit any pending transaction before sending response
     try {
@@ -849,6 +858,33 @@ function stakeTokens($walletManager, $address, $amount, $period, $privateKey) {
 /**
  * Generate a new mnemonic phrase
  */
+function normalizeMnemonicInput($input): array {
+    // Accept: array of words, space-delimited string, string with extra spaces, JSON string
+    if (is_string($input)) {
+        $trim = trim($input);
+        if ($trim === '') { return []; }
+        // If JSON encoded array
+        if ((str_starts_with($trim, '[') && str_ends_with($trim, ']')) || (str_starts_with($trim, '"') && str_ends_with($trim, '"'))) {
+            $decoded = json_decode($trim, true);
+            if (is_array($decoded)) { $input = $decoded; }
+        }
+        if (is_string($input)) {
+            $parts = preg_split('/\s+/', strtolower($input));
+            $input = array_values(array_filter($parts, fn($w)=>$w !== ''));
+        }
+    }
+    if (!is_array($input)) { return []; }
+    // Normalize: lowercase, trim, remove empties
+    $words = [];
+    foreach ($input as $w) {
+        if (!is_string($w)) continue;
+        $w = strtolower(trim($w));
+        if ($w === '') continue;
+        $words[] = $w;
+    }
+    return $words;
+}
+
 function generateMnemonic($walletManager) {
     try {
         $mnemonic = $walletManager->generateMnemonic();

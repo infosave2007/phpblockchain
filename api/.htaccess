@@ -1,0 +1,10 @@
+RewriteEngine On
+
+# Handle explorer API requests
+RewriteCond %{REQUEST_URI} ^/api/explorer/
+RewriteRule ^explorer/(.*)$ explorer/index.php [QSA,L]
+
+# Handle other API requests
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^(.*)$ router.php [QSA,L]

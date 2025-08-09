@@ -40,7 +40,7 @@ class BlockStorage
      */
     private function writeLog(string $message, string $level = 'INFO'): void
     {
-        \WalletLogger::log($message, $level);
+    \Blockchain\Wallet\WalletLogger::log($message, $level);
     }
     
     public function saveBlock(BlockInterface $block): bool

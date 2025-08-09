@@ -1,0 +1,14 @@
+RewriteEngine On
+
+# Handle /public requests by routing to index.php which has static file serving
+RewriteCond %{REQUEST_URI} ^/public/
+RewriteRule ^(.*)$ index.php [QSA,L]
+
+# Handle API requests
+RewriteCond %{REQUEST_URI} ^/api/
+RewriteRule ^api/(.*)$ api/$1 [QSA,L]
+
+# Handle other requests
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^(.*)$ index.php [QSA,L]

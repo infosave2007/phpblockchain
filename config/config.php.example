@@ -1,7 +1,7 @@
 <?php
 
-// Auto-generated configuration file
-// Generated on: 2025-08-09 13:23:06
+// Configuration template file
+// Copy this file to config.php and update with your settings
 
 return array (
   'app' => 
@@ -10,17 +10,23 @@ return array (
     'version' => '1.0.0',
     'debug' => false,
     'timezone' => 'UTC',
-    'installed' => true,
-    'key' => 'a0950e7c97549a55fb64025204e569c3a299d43768fab3e42be91daedf9499f7',
-    'installation_date' => '2025-08-09 13:23:06',
+    'installed' => false,
+    'key' => '', // Generate a secure key during installation
+    'installation_date' => '',
   ),
   'database' => 
   array (
+    'host' => 'localhost',
+    'port' => 3306,
+    'username' => '',
+    'password' => '',
+    'database' => 'blockchain',
+    'charset' => 'utf8mb4',
   ),
   'blockchain' => 
   array (
-    'genesis_created' => true,
-    'last_block_check' => 1754745786,
+    'genesis_created' => false,
+    'last_block_check' => 0,
     'binary_storage' => 
     array (
       'enabled' => true,
@@ -41,10 +47,14 @@ return array (
   ),
   'network' => 
   array (
+    'name' => 'My Blockchain Network',
+    'chain_id' => 1337,
+    'rpc_port' => 8545,
+    'p2p_port' => 8546,
   ),
   'security' => 
   array (
-    'jwt_secret' => '4dae70d3e56a0d0d998ab313f358c20b06040aedb22f0ac12ba0e84b67d718ef',
+    'jwt_secret' => '', // Generate a secure JWT secret
     'session_lifetime' => 86400,
     'rate_limit' => 
     array (

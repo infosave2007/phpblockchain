@@ -120,3 +120,5 @@ class WalletLogger
         return in_array($v, ['1','true','yes','on','y','enabled'], true);
     }
 }
+
+// Note: legacy global class name removed; use fully-qualified \Blockchain\Wallet\WalletLogger
