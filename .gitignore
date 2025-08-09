@@ -129,3 +129,6 @@ storage/blockchain.bin
 config/installation.json
 config/config.php
 .gitignore
+
+# Internal assistant instruction files (do not track)
+.github/instructions/
