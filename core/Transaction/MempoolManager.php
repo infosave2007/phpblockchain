@@ -24,7 +24,16 @@ class MempoolManager
         $this->database = $database;
         $this->config = $config;
         $this->maxSize = $config['max_size'] ?? 10000;
-        $this->minFee = $config['min_fee'] ?? 0.001;
+        try {
+            $rate = FeePolicy::getRate($database);
+        } catch (\Throwable $e) {
+            $rate = 0.001;
+        }
+        if ($rate <= 0) {
+            $this->minFee = 0.0;
+        } else {
+            $this->minFee = $config['min_fee'] ?? $rate;
+        }
     }
     
     /**

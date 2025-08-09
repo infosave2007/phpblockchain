@@ -1562,13 +1562,14 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
         }
         
         // 5. Create transfer transaction
+        $dynamicFee = \Blockchain\Core\Transaction\FeePolicy::computeFee($walletManager->getDatabase(), $amount);
         $transferTx = [
             'hash' => hash('sha256', 'transfer_' . $fromAddress . '_' . $toAddress . '_' . $amount . '_' . time()),
             'type' => 'transfer',
             'from' => $fromAddress,
             'to' => $toAddress,
             'amount' => $amount,
-            'fee' => $amount * 0.001, // 0.1% fee
+            'fee' => $dynamicFee,
             'timestamp' => time(),
             'data' => [
                 'action' => 'transfer_tokens',

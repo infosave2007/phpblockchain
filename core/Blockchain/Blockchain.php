@@ -323,7 +323,7 @@ class Blockchain implements BlockchainInterface
                     }
                     if ($transaction->getFrom() === $address) {
                         $balance -= $transaction->getAmount();
-                        $fee = $transaction instanceof Transaction ? $transaction->getFee() : 0.001;
+                        $fee = $transaction instanceof Transaction ? $transaction->getFee() : 0.0;
                         $balance -= $fee;
                     }
                 }

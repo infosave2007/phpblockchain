@@ -463,13 +463,17 @@ class WalletManager
         string $fromAddress,
         string $toAddress,
         float $amount,
-        float $fee = 0.001,
+        ?float $fee = null,
         ?string $privateKey = null,
         ?string $data = null
     ): Transaction {
         // Validate balance
         $availableBalance = $this->getAvailableBalance($fromAddress);
         
+        if ($fee === null) {
+            $fee = \Blockchain\Core\Transaction\FeePolicy::computeFee($this->database, $amount);
+        }
+
         if ($availableBalance < ($amount + $fee)) {
             throw new Exception("Insufficient balance");
         }

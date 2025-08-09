@@ -189,9 +189,11 @@ class LightClient
         $utxos = $this->getAddressUTXOs($fromAddress);
         
         // Select UTXOs to cover the amount
-        $selectedUTXOs = $this->selectUTXOs($utxos, $amount + 0.001); // +fee
-        
-        if (array_sum(array_column($selectedUTXOs, 'amount')) < $amount + 0.001) {
+    $feeRate = (float)($this->config['consensus.reward_rate'] ?? 0.001);
+    $calculatedFee = $feeRate > 0 ? round($amount * $feeRate, 8) : 0.0;
+    $selectedUTXOs = $this->selectUTXOs($utxos, $amount + $calculatedFee); // +fee
+
+    if (array_sum(array_column($selectedUTXOs, 'amount')) < $amount + $calculatedFee) {
             throw new Exception("Insufficient funds");
         }
         
@@ -217,7 +219,7 @@ class LightClient
         ];
         
         // Add change output if needed
-        $change = $inputTotal - $amount - 0.001; // subtract fee
+    $change = $inputTotal - $amount - $calculatedFee; // subtract fee
         if ($change > 0) {
             $outputs[] = [
                 'address' => $fromAddress,
@@ -228,7 +230,7 @@ class LightClient
         return [
             'inputs' => $inputs,
             'outputs' => $outputs,
-            'fee' => 0.001,
+            'fee' => $calculatedFee,
             'timestamp' => time()
         ];
     }
