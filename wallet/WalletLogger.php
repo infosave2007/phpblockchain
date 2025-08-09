@@ -1,4 +1,8 @@
 <?php
+declare(strict_types=1);
+
+namespace Blockchain\Wallet;
+
 /**
  * Wallet Logger - unified logging system for the wallet API
  */

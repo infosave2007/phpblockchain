@@ -42,13 +42,14 @@
             "compat_functions.php"
         ],
         "psr-4": {
-            "Blockchain\\": ".",
             "Blockchain\\Core\\": "core/",
             "Blockchain\\API\\": "api/",
             "Blockchain\\Contracts\\": "contracts/",
             "Blockchain\\Nodes\\": "nodes/",
             "Blockchain\\Wallet\\": "wallet/",
-            "Blockchain\\Database\\": "database/"
+            "Blockchain\\Database\\": "database/",
+            "Blockchain\\SyncService\\": "sync-service/",
+            "Blockchain\\Sync\\": "."  
         },
         "exclude-from-classmap": [
             "config/",

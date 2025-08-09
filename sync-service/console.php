@@ -1,13 +1,15 @@
 #!/usr/bin/env php
 <?php
+declare(strict_types=1);
+namespace Blockchain\SyncService;
 /**
  * Blockchain Sync Service - Console Version
  * Quick command-line tool for blockchain synchronization
  */
 
-require_once 'SyncManager.php';
+require_once __DIR__ . '/SyncManager.php';
 
-// Console colors
+// Console colors (local utility class, stays un-namespaced within current namespace)
 class Console {
     const COLOR_GREEN = "\033[32m";
     const COLOR_RED = "\033[31m";

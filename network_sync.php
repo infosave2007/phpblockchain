@@ -1,4 +1,6 @@
 <?php
+declare(strict_types=1);
+namespace Blockchain\Sync;
 /**
  * Network Blockchain Synchronization Manager
  * Standalone script for syncing blockchain data from network nodes

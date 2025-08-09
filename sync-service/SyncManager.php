@@ -1,4 +1,8 @@
 <?php
+declare(strict_types=1);
+
+namespace Blockchain\SyncService;
+
 /**
  * Blockchain Synchronization Manager
  * Standalone service for syncing blockchain data from network nodes
