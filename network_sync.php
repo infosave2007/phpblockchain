@@ -1,6 +1,5 @@
 <?php
 declare(strict_types=1);
-namespace Blockchain\Sync;
 /**
  * Network Blockchain Synchronization Manager
  * Standalone script for syncing blockchain data from network nodes
@@ -10,6 +9,7 @@ namespace Blockchain\Sync;
 require_once 'vendor/autoload.php';
 require_once 'config/config.php';
 
+if (!class_exists('NetworkSyncManager')) {
 class NetworkSyncManager {
     private $pdo;
     private $config;
@@ -2896,6 +2896,7 @@ class NetworkSyncManager {
         
         $this->log("Sync triggers sent to " . count($nodes) . " nodes");
     }
+}
 }
 
 // CLI Mode

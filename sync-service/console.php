@@ -1,13 +1,14 @@
 #!/usr/bin/env php
 <?php
 declare(strict_types=1);
-namespace Blockchain\SyncService;
+// Intentionally no namespace so Composer does not try to autoload Console as PSR-4 class.
 /**
  * Blockchain Sync Service - Console Version
  * Quick command-line tool for blockchain synchronization
  */
 
 require_once __DIR__ . '/SyncManager.php';
+use Blockchain\SyncService\SyncManager;
 
 // Console colors (local utility class, stays un-namespaced within current namespace)
 class Console {

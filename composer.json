@@ -48,16 +48,19 @@
             "Blockchain\\Nodes\\": "nodes/",
             "Blockchain\\Wallet\\": "wallet/",
             "Blockchain\\Database\\": "database/",
-            "Blockchain\\SyncService\\": "sync-service/",
-            "Blockchain\\Sync\\": "."  
+            "Blockchain\\SyncService\\": "sync-service/"
         },
+        "classmap": [
+            "network_sync.php"
+        ],
         "exclude-from-classmap": [
             "config/",
             "tests/",
             "simple_demo.php",
             "simple_test.php",
             "crypto-demo.php",
-            "sync_demo.php"
+            "sync_demo.php",
+            "sync-service/console.php"
         ]
     },
     "autoload-dev": {
