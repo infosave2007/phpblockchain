@@ -13,6 +13,11 @@ class Security
      */
     public static function enforceHTTPS(): void
     {
+        // Skip HTTPS enforcement in development environment
+        if (isset($_ENV['PHP_ENV']) && $_ENV['PHP_ENV'] === 'development') {
+            return;
+        }
+        
         if (!isset($_SERVER['HTTPS']) || $_SERVER['HTTPS'] !== 'on') {
             if (!headers_sent()) {
                 $redirectURL = 'https://' . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI'];
@@ -28,8 +33,10 @@ class Security
     public static function setSecureHeaders(): void
     {
         if (!headers_sent()) {
-            // HTTPS Strict Transport Security
-            header('Strict-Transport-Security: max-age=31536000; includeSubDomains; preload');
+            // Skip HSTS in development
+            if (!isset($_ENV['PHP_ENV']) || $_ENV['PHP_ENV'] !== 'development') {
+                header('Strict-Transport-Security: max-age=31536000; includeSubDomains; preload');
+            }
             
             // Content Security Policy
             header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; font-src 'self' https://cdnjs.cloudflare.com; img-src 'self' data: https:; connect-src 'self'");

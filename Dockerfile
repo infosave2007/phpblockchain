@@ -1,4 +1,4 @@
-FROM php:8.2-fpm-alpine
+FROM php:8.3-fpm-alpine
 
 # Install system dependencies
 RUN apk add --no-cache \
@@ -10,7 +10,13 @@ RUN apk add --no-cache \
     zip \
     unzip \
     openssl-dev \
-    mysql-client
+    mysql-client \
+    gmp-dev \
+    autoconf \
+    gcc \
+    g++ \
+    make \
+    linux-headers
 
 # Install PHP extensions
 RUN docker-php-ext-install \
@@ -20,10 +26,11 @@ RUN docker-php-ext-install \
     pcntl \
     bcmath \
     gd \
-    sockets
+    sockets \
+    gmp
 
-# Install OpenSSL extension
-RUN docker-php-ext-install openssl
+# Install OpenSSL extension (already included in 8.3)
+# RUN docker-php-ext-install openssl
 
 # Install Composer
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
@@ -37,16 +44,25 @@ COPY . .
 # Install dependencies
 RUN composer install --no-dev --optimize-autoloader
 
+# Create required directories first
+RUN mkdir -p storage/blockchain storage/state storage/cache logs
+
 # Set permissions
 RUN chown -R www-data:www-data /var/www/html \
     && chmod -R 755 /var/www/html/storage \
     && chmod -R 755 /var/www/html/logs
 
-# Create required directories
-RUN mkdir -p storage/blocks storage/state storage/cache logs
+# Copy initialization script and run it
+COPY init_standalone.php .
+RUN php init_standalone.php
+
+# Copy PHP-FPM configuration
+COPY docker/php-fpm.conf /usr/local/etc/php-fpm.d/www.conf
 
 # Expose port
 EXPOSE 9000
+
+CMD ["php-fpm"]
 
 # Start PHP-FPM
 CMD ["php-fpm"]

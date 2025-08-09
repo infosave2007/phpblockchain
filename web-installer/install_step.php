@@ -576,7 +576,11 @@ function createTables(): array
             
             foreach ($configValues as $key => $value) {
                 $description = $configDescriptions[$key] ?? '';
-                $isSystem = strpos($key, 'system.') === 0;
+                $isSystem = strpos($key, 'system.') === 0 ? 1 : 0;
+                
+                // Debug logging
+                error_log("Config insert: key=$key, value=" . (string)$value . ", description=$description, isSystem=$isSystem");
+                
                 $insertConfigStmt->execute([$key, (string)$value, $description, $isSystem]);
             }
             
@@ -940,7 +944,7 @@ function generateGenesis(array $config = []): array
                     default => 'Network configuration'
                 };
                 
-                $isSystem = in_array($key, ['blockchain.genesis_block', 'network.chain_id', 'network.protocol_version']);
+                $isSystem = in_array($key, ['blockchain.genesis_block', 'network.chain_id', 'network.protocol_version']) ? 1 : 0;
                 $stmt->execute([$key, (string)$value, $description, $isSystem]);
             }
             

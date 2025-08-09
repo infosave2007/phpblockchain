@@ -341,7 +341,7 @@ class Migration
                 key_name VARCHAR(255) NOT NULL UNIQUE,
                 value TEXT NOT NULL,
                 description TEXT,
-                is_system BOOLEAN NOT NULL DEFAULT FALSE,
+                is_system TINYINT(1) NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_key_name (key_name)
@@ -373,20 +373,20 @@ class Migration
             
             -- Insert default configuration
             INSERT IGNORE INTO config (key_name, value, description, is_system) VALUES
-            ('blockchain.genesis_block', '', 'Genesis block hash', TRUE),
-            ('blockchain.block_time', '10', 'Target block time in seconds', TRUE),
-            ('blockchain.max_block_size', '1000000', 'Maximum block size in bytes', TRUE),
-            ('consensus.min_stake', '1000', 'Minimum stake required for validation', TRUE),
-            ('consensus.reward_rate', '0.05', 'Annual staking reward rate', TRUE),
-            ('network.max_peers', '50', 'Maximum number of peer connections', TRUE),
-            ('network.sync_batch_size', '100', 'Number of blocks to sync at once', TRUE),
-            ('network.name', 'Blockchain Network', 'Network name', FALSE),
-            ('network.token_symbol', 'COIN', 'Token symbol', FALSE),
-            ('network.token_name', 'Blockchain Coin', 'Token full name', FALSE),
-            ('network.initial_supply', '1000000', 'Initial token supply', FALSE),
-            ('network.decimals', '8', 'Token decimal places', FALSE),
-            ('network.chain_id', '1', 'Network chain ID', TRUE),
-            ('network.protocol_version', '1.0.0', 'Protocol version', TRUE);
+            ('blockchain.genesis_block', '', 'Genesis block hash', 1),
+            ('blockchain.block_time', '10', 'Target block time in seconds', 1),
+            ('blockchain.max_block_size', '1000000', 'Maximum block size in bytes', 1),
+            ('consensus.min_stake', '1000', 'Minimum stake required for validation', 1),
+            ('consensus.reward_rate', '0.05', 'Annual staking reward rate', 1),
+            ('network.max_peers', '50', 'Maximum number of peer connections', 1),
+            ('network.sync_batch_size', '100', 'Number of blocks to sync at once', 1),
+            ('network.name', 'Blockchain Network', 'Network name', 0),
+            ('network.token_symbol', 'COIN', 'Token symbol', 0),
+            ('network.token_name', 'Blockchain Coin', 'Token full name', 0),
+            ('network.initial_supply', '1000000', 'Initial token supply', 0),
+            ('network.decimals', '8', 'Token decimal places', 0),
+            ('network.chain_id', '1', 'Network chain ID', 1),
+            ('network.protocol_version', '1.0.0', 'Protocol version', 1);
         ";
     }
 }

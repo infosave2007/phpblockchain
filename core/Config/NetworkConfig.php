@@ -52,7 +52,7 @@ class NetworkConfig
                 updated_at = CURRENT_TIMESTAMP
             ");
             
-            $result = $stmt->execute([$key, $value, $description, $isSystem]);
+            $result = $stmt->execute([$key, $value, $description, $isSystem ? 1 : 0]);
             
             if ($result) {
                 $this->cache[$key] = $value;
@@ -198,11 +198,11 @@ class NetworkConfig
                 if (is_array($data)) {
                     $value = $data['value'] ?? '';
                     $description = $data['description'] ?? '';
-                    $isSystem = $data['is_system'] ?? false;
+                    $isSystem = ($data['is_system'] ?? false) ? 1 : 0;
                 } else {
                     $value = (string)$data;
                     $description = '';
-                    $isSystem = false;
+                    $isSystem = 0;
                 }
                 
                 $stmt->execute([$key, $value, $description, $isSystem]);

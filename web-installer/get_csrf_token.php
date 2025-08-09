@@ -5,15 +5,21 @@ require_once __DIR__ . '/../config/security.php';
 
 use Blockchain\Config\Security;
 
-// Start session securely
-session_start([
-    'cookie_secure' => true,
+// Start session securely (cookie_secure disabled for HTTP in development)
+$sessionConfig = [
     'cookie_httponly' => true,
     'cookie_samesite' => 'Strict',
     'use_strict_mode' => true
-]);
+];
 
-// Enforce HTTPS and set security headers
+// Only enable secure cookies in production
+if (isset($_ENV['PHP_ENV']) && $_ENV['PHP_ENV'] !== 'development') {
+    $sessionConfig['cookie_secure'] = true;
+}
+
+session_start($sessionConfig);
+
+// Enforce HTTPS and set security headers (with development awareness)
 Security::enforceHTTPS();
 Security::setSecureHeaders();
 
