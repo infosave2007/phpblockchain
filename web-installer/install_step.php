@@ -544,7 +544,7 @@ function createTables(): array
             // Insert configuration values
             $insertConfigStmt = $pdo->prepare("
                 INSERT INTO config (key_name, value, description, is_system) 
-                VALUES (?, ?, ?, ?) 
+                VALUES (?, ?, ?, CAST(? AS UNSIGNED)) 
                 ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = CURRENT_TIMESTAMP
             ");
             
@@ -925,7 +925,7 @@ function generateGenesis(array $config = []): array
             ];
             
             $stmt = $pdo->prepare("
-                INSERT INTO config (key_name, value, description, is_system) VALUES (?, ?, ?, ?)
+                INSERT INTO config (key_name, value, description, is_system) VALUES (?, ?, ?, CAST(? AS UNSIGNED))
                 ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = CURRENT_TIMESTAMP
             ");
             
@@ -945,6 +945,10 @@ function generateGenesis(array $config = []): array
                 };
                 
                 $isSystem = in_array($key, ['blockchain.genesis_block', 'network.chain_id', 'network.protocol_version']) ? 1 : 0;
+                
+                // Debug logging
+                error_log("Network config insert: key=$key, value=" . (string)$value . ", description=$description, isSystem=$isSystem");
+                
                 $stmt->execute([$key, (string)$value, $description, $isSystem]);
             }
             
