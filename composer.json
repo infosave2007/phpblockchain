@@ -11,7 +11,7 @@
         }
     ],
     "require": {
-        "php": ">=8.1",
+        "php": ">=8.1 <8.2",
         "ext-curl": "*",
         "ext-hash": "*",
         "ext-json": "*",
@@ -23,7 +23,8 @@
         "kornrunner/secp256k1": "^0.3",
         "monolog/monolog": "^3.0",
         "stephenhill/base58": "^1.1",
-        "symfony/console": "^6.0",
+        "symfony/console": "^6.4",
+    "symfony/string": "^6.4",
         "twig/twig": "^3.0",
         "vlucas/phpdotenv": "^5.0"
     },
@@ -86,7 +87,8 @@
     },
     "config": {
         "optimize-autoloader": true,
-        "sort-packages": true
+        "sort-packages": true,
+        "platform": { "php": "8.1.0" }
     },
     "minimum-stability": "stable",
     "prefer-stable": true,

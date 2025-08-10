@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Blockchain\Core\Transaction;
 
 use Blockchain\Core\Transaction\Transaction;
+use Blockchain\Core\Transaction\FeePolicy;
 use PDO;
 use Exception;
 

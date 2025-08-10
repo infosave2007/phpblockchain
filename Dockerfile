@@ -1,4 +1,4 @@
-FROM php:8.1-fpm-alpine
+FROM php:8.2-fpm-alpine
 
 # Install system dependencies
 RUN apk add --no-cache \
@@ -41,8 +41,8 @@ WORKDIR /var/www/html
 # Copy application files
 COPY . .
 
-# Update dependencies for PHP 8.1 compatibility and install
-RUN composer update --no-dev --optimize-autoloader
+# Install dependencies per lockfile
+RUN composer install --no-dev --optimize-autoloader --no-interaction --no-progress
 
 # Create required directories first
 RUN mkdir -p storage/blockchain storage/state storage/cache logs

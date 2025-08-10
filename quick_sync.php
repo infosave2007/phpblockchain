@@ -7,6 +7,12 @@
 
 require_once __DIR__ . '/network_sync.php';
 
+// Add necessary uses for inline raw queue processing
+use Blockchain\Core\Transaction\Transaction;
+use Blockchain\Core\Transaction\MempoolManager;
+use Blockchain\Core\Transaction\FeePolicy;
+use Blockchain\Core\Crypto\EthereumTx;
+
 function showUsage() {
     echo "Blockchain Quick Sync Tool\n";
     echo "==========================\n\n";
@@ -222,6 +228,26 @@ function performSync($syncManager, $options = []) {
         // Step 2: Perform main synchronization
         if (!$quiet) echo "🔄 Performing blockchain synchronization...\n";
         $result = $syncManager->syncAll();
+
+        // Step 2.5: Inline processing of raw Ethereum-style queued transactions (storage/raw_mempool)
+        if (in_array($command ?? '', ['enhanced-sync','sync']) || $verbose) {
+            if (!$quiet) echo "📥 Processing raw transaction queue (inline)...\n";
+            try {
+                // Temporarily force verbose raw queue diagnostics (override quiet)
+                processRawQueueInline($syncManager, false, true);
+            } catch (Exception $e) {
+                if (!$quiet) echo "Raw queue processing error: " . $e->getMessage() . "\n";
+            }
+            // After raw queue ingestion, try lightweight local finalization to give receipts
+            if (in_array($command ?? '', ['enhanced-sync','sync'])) {
+                try {
+                    $finalized = finalizeMempoolInline($syncManager, 200, $verbose);
+                    if ($verbose && $finalized > 0) echo "⛏️  Finalized $finalized pending tx(s) into a new block\n";
+                } catch (Exception $e) {
+                    if ($verbose) echo "Finalize mempool warning: " . $e->getMessage() . "\n";
+                }
+            }
+        }
         
         // Step 3: Enhanced mempool processing and recovery
         if (!$quiet) echo "🧹 Processing mempool and pending transactions...\n";
@@ -393,6 +419,386 @@ function performRepair($syncManager, $options = []) {
     } catch (Exception $e) {
         echo "\n❌ Repair failed: " . $e->getMessage() . "\n";
     }
+}
+
+/**
+ * Inline raw_mempool processor to avoid invoking legacy CLI PHP.
+ */
+function processRawQueueInline($syncManager, $quiet = false, $verbose = false) {
+    // Get PDO via reflection
+    $reflection = new ReflectionClass($syncManager);
+    if (!$reflection->hasProperty('pdo')) return;
+    $pdoProp = $reflection->getProperty('pdo');
+    $pdoProp->setAccessible(true);
+    $pdo = $pdoProp->getValue($syncManager);
+    if (!$pdo) return;
+
+    $baseDir = __DIR__;
+    $rawDir = $baseDir . '/storage/raw_mempool';
+    $processedDir = $rawDir . '/processed';
+    if (!is_dir($rawDir)) return; // nothing queued
+    if (!is_dir($processedDir)) @mkdir($processedDir, 0755, true);
+
+    $rate = 0.0;
+    try { $rate = FeePolicy::getRate($pdo); } catch (Exception $e) {}
+
+    // Attempt to salvage previously processed files that had empty parsed data (due to older parser)
+    $processedSalvaged = 0;
+    $processedDirScan = @glob($processedDir . '/*.json');
+    if ($processedDirScan) {
+        foreach ($processedDirScan as $pf) {
+            if ($processedSalvaged >= 25) break; // safety cap per run
+            $j = json_decode(@file_get_contents($pf), true);
+            if (!is_array($j)) continue;
+            if (isset($j['parsed']) && is_array($j['parsed']) && count($j['parsed']) > 0) continue; // already had parsed
+            if (!isset($j['raw'])) continue;
+            // Move back for reprocessing with improved parser
+            @rename($pf, $rawDir . '/' . basename($pf));
+            $processedSalvaged++;
+        }
+        if ($processedSalvaged > 0 && !$quiet) echo "  Salvaged $processedSalvaged previously processed raw file(s) for re-parse\n";
+    }
+
+    $files = glob($rawDir . '/*.json');
+    if (!$files) { if ($verbose) echo "  (raw queue empty)\n"; return; }
+
+    // Provide explicit min_fee to enforce non-zero baseline
+    $mempool = new MempoolManager($pdo, ['min_fee' => 0.001]);
+    // Obtain mempool minFee via reflection for logging/enforcement
+    $mpRef = new ReflectionClass($mempool);
+    $minFee = 0.0;
+    if ($mpRef->hasProperty('minFee')) { $pf = $mpRef->getProperty('minFee'); $pf->setAccessible(true); $minFee = (float)$pf->getValue($mempool); }
+    $added = 0; $processed = 0;
+    // Pre-scan processed directory to collect known raw_hash values to speed duplicate detection
+    $knownRawHashes = [];
+    $procScan = glob($processedDir . '/*.json');
+    if ($procScan) {
+        foreach ($procScan as $pf) {
+            $pj = json_decode(@file_get_contents($pf), true);
+            if (!is_array($pj)) continue;
+            if (!empty($pj['raw'])) {
+                $kh = hash('sha256', strtolower($pj['raw']));
+                $knownRawHashes[$kh] = true;
+            } elseif (!empty($pj['raw_hash'])) {
+                $knownRawHashes[$pj['raw_hash']] = true;
+            }
+        }
+    }
+
+    foreach ($files as $file) {
+        $processed++;
+        $json = json_decode(@file_get_contents($file), true);
+        if (!is_array($json)) { @rename($file, $processedDir . '/' . basename($file)); continue; }
+        $hash = isset($json['hash']) ? $json['hash'] : '';
+        $parsed = isset($json['parsed']) && is_array($json['parsed']) ? $json['parsed'] : [];
+        $from = isset($parsed['from']) ? $parsed['from'] : null;
+        $to = isset($parsed['to']) ? $parsed['to'] : null;
+        $valueHex = isset($parsed['value']) ? $parsed['value'] : '0x0';
+        $rawHexOriginal = isset($json['raw']) ? $json['raw'] : null;
+        $stableRawHash = null;
+        if ($rawHexOriginal) {
+            // Normalize: lowercase, ensure 0x prefix removed for hashing stability
+            $norm = strtolower($rawHexOriginal);
+            if (strpos($norm,'0x')===0) $norm = substr($norm,2);
+            $stableRawHash = hash('sha256', $norm);
+            $json['raw_hash'] = $stableRawHash; // persist later
+        }
+        // If no parsed data (legacy empty) attempt inline parse of raw
+        if ((!$to || !$valueHex || $parsed === [] || strlen($to) !== 42) && isset($json['raw'])) {
+            $inlineRaw = $json['raw'];
+            if (strpos($inlineRaw, '0x') === 0) $inlineRaw = substr($inlineRaw, 2);
+            $binRaw = @hex2bin($inlineRaw);
+            if ($binRaw !== false && strlen($binRaw) > 0) {
+                $first = ord($binRaw[0]);
+                $typed = false; $typeByte = null;
+                if ($first <= 0x7f && in_array($first, [0x02], true)) { $typed = true; $typeByte = $first; $binWork = substr($binRaw,1); } else { $binWork = $binRaw; }
+                // Minimal RLP decode (single top-level list)
+                $off = 0;
+                $decode = function($bin,&$o) use (&$decode){
+                    $len = strlen($bin); if ($o >= $len) return null; $b0 = ord($bin[$o]);
+                    if ($b0 <= 0x7f) { $o++; return $bin[$o-1]; }
+                    if ($b0 <= 0xb7) { $l = $b0-0x80; $o++; $v = substr($bin,$o,$l); $o += $l; return $v; }
+                    if ($b0 <= 0xbf) { $ll=$b0-0xb7; $o++; $lBytes=substr($bin,$o,$ll); $o+=$ll; $l = intval(bin2hex($lBytes),16); $v=substr($bin,$o,$l); $o+=$l; return $v; }
+                    if ($b0 <= 0xf7) { $l=$b0-0xc0; $o++; $end=$o+$l; $arr=[]; while($o<$end){ $arr[]=$decode($bin,$o);} return $arr; }
+                    $ll=$b0-0xf7; $o++; $lBytes=substr($bin,$o,$ll); $o+=$ll; $l=intval(bin2hex($lBytes),16); $end=$o+$l; $arr=[]; while($o<$end){ $arr[]=$decode($bin,$o);} return $arr; };
+                $list = $decode($binWork,$off);
+                if (is_array($list)) {
+                    $toHex = function($v){ $h = bin2hex($v ?? ''); $h = ltrim($h,'0'); $h = str_pad($h,40,'0',STR_PAD_LEFT); return '0x'.$h; };
+                    $numHex = function($v){ $h=bin2hex($v ?? ''); $h=ltrim($h,'0'); return '0x'.($h===''?'0':$h); };
+                    if ($typed && $typeByte === 0x02) {
+                        // [chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gas, to, value, data, accessList, v,r,s]
+                        $to = isset($list[5]) ? $toHex($list[5]) : null;
+                        $valueHex = isset($list[6]) ? $numHex($list[6]) : '0x0';
+                        $parsed = [
+                            'nonce' => $numHex($list[1] ?? ''),
+                            'maxPriorityFeePerGas' => $numHex($list[2] ?? ''),
+                            'maxFeePerGas' => $numHex($list[3] ?? ''),
+                            'gas' => $numHex($list[4] ?? ''),
+                            'to' => $to,
+                            'value' => $valueHex,
+                            'type' => '0x2'
+                        ];
+                    } else {
+                        // Legacy: [nonce, gasPrice, gas, to, value, data, v,r,s]
+                        $to = isset($list[3]) ? $toHex($list[3]) : null;
+                        $valueHex = isset($list[4]) ? $numHex($list[4]) : '0x0';
+                        $parsed = [
+                            'nonce' => $numHex($list[0] ?? ''),
+                            'gasPrice' => $numHex($list[1] ?? ''),
+                            'gas' => $numHex($list[2] ?? ''),
+                            'to' => $to,
+                            'value' => $valueHex,
+                            'type' => '0x0'
+                        ];
+                    }
+                }
+            }
+        }
+        // --- Amount extraction (improved big-int safe approximation) ---
+        $amount = 0.0; // final floating approximation for internal Transaction
+        if (preg_match('/^0x[0-9a-f]+$/i', $valueHex)) {
+            $hexDigits = strtolower(substr($valueHex, 2));
+            // Remove leading zeros
+            $hexDigits = ltrim($hexDigits, '0');
+            if ($hexDigits === '') {
+                $amount = 0.0;
+            } else {
+                // If length small enough use native hexdec safely
+                if (strlen($hexDigits) <= 14) {
+                    $units = (string)hexdec($hexDigits); // fits into int
+                } else {
+                    // Convert base16 -> base10 string
+                    $units = '0';
+                    $map = ['0'=>0,'1'=>1,'2'=>2,'3'=>3,'4'=>4,'5'=>5,'6'=>6,'7'=>7,'8'=>8,'9'=>9,'a'=>10,'b'=>11,'c'=>12,'d'=>13,'e'=>14,'f'=>15];
+                    for ($i=0,$L=strlen($hexDigits); $i<$L; $i++) {
+                        $d = $map[$hexDigits[$i]];
+                        // units = units*16 + d (string arithmetic)
+                        $carry = $d;
+                        $res = '';
+                        for ($j=strlen($units)-1; $j>=0; $j--) {
+                            $prod = ((int)$units[$j]) * 16 + $carry;
+                            $resDigit = $prod % 10;
+                            $carry = intdiv($prod, 10);
+                            $res = $resDigit . $res;
+                        }
+                        while ($carry > 0) { $res = ($carry % 10) . $res; $carry = intdiv($carry, 10); }
+                        // Trim leading zeros
+                        $units = ltrim($res, '0');
+                        if ($units === '') $units = '0';
+                    }
+                }
+                // Assume 18 decimals (ERC-20 style). Convert units string to decimal token amount string.
+                $decimals = 18;
+                if ($units === '0') {
+                    $amountStr = '0';
+                } else {
+                    $len = strlen($units);
+                    if ($len <= $decimals) {
+                        $pad = str_pad($units, $decimals, '0', STR_PAD_LEFT);
+                        $intPart = '0';
+                        $fracPart = rtrim($pad, '0');
+                        $amountStr = $fracPart === '' ? '0' : ('0.' . $fracPart);
+                    } else {
+                        $intPart = substr($units, 0, $len - $decimals);
+                        $fracPart = rtrim(substr($units, $len - $decimals), '0');
+                        $amountStr = $intPart . ($fracPart === '' ? '' : ('.' . $fracPart));
+                    }
+                }
+                // Convert to float for current Transaction model (lossy but adequate for pending mempool)
+                if (isset($amountStr)) {
+                    $amount = (float)$amountStr;
+                }
+            }
+        }
+        if (!is_string($to) || strlen($to) !== 42) { @rename($file, $processedDir . '/' . basename($file)); continue; }
+        
+        // Always attempt address recovery if from is not a valid address
+        if (!$from || !is_string($from) || strlen($from) !== 42 || $from === '0x' . str_repeat('0', 40)) {
+            try { 
+                $rec = EthereumTx::recoverAddress(isset($json['raw']) ? $json['raw'] : ''); 
+                if ($rec && is_string($rec) && strlen($rec) === 42) {
+                    $from = strtolower($rec);
+                    // Update parsed data with recovered address
+                    $parsed['from'] = $from;
+                    if ($verbose) echo "  Recovered from address: $from for " . basename($file) . "\n";
+                }
+            } catch (Exception $e) {
+                if ($verbose) echo "  Address recovery failed: " . $e->getMessage() . "\n";
+            }
+        }
+        if (!$from || strlen($from) !== 42) $from = '0x' . str_repeat('0', 40);
+
+        // Gas / fee
+        $gasPriceInt = EthereumTx::effectiveGasPrice(
+            isset($parsed['maxPriorityFeePerGas']) ? $parsed['maxPriorityFeePerGas'] : null,
+            isset($parsed['maxFeePerGas']) ? $parsed['maxFeePerGas'] : null,
+            isset($parsed['gasPrice']) ? $parsed['gasPrice'] : null
+        );
+        $gasLimit = 0;
+        if (isset($parsed['gas'])) {
+            $ghex = strtolower($parsed['gas']);
+            if (strpos($ghex,'0x')===0) $ghex = substr($ghex,2);
+            if ($ghex !== '') $gasLimit = intval($ghex, 16);
+        }
+        $fee = 0.0;
+        if ($gasLimit > 0 && $gasPriceInt > 0) $fee = ($gasLimit * $gasPriceInt) / 1e18;
+    if ($rate > 0 && $fee < $rate) $fee = $rate;
+    if ($fee < $minFee) $fee = $minFee; // ensure meets mempool requirement
+
+        // Extract nonce (hex) -> int (best effort, capped at PHP int range)
+        $nonceInt = 0;
+        if (isset($parsed['nonce']) && preg_match('/^0x[0-9a-f]+$/i', $parsed['nonce'])) {
+            $nhex = substr($parsed['nonce'], 2);
+            if ($nhex !== '') {
+                // Use arbitrary-length conversion but clamp to int
+                $nonceInt = 0;
+                // Safe if length <= 15 (~ hex for 2^60) otherwise take last 15 digits to avoid overflow
+                if (strlen($nhex) <= 15) {
+                    $nonceInt = intval($nhex, 16);
+                } else {
+                    $nonceInt = intval(substr($nhex, -15), 16); // best-effort
+                }
+            }
+        }
+        // Derive human gas price (token units) from effective gas price integer (wei-like assumption 1e18)
+        $gasPriceToken = 0.0;
+        if ($gasPriceInt > 0) {
+            $gasPriceToken = $gasPriceInt / 1e18; // float approximation
+        }
+        // Duplicate raw guard (skip if stable raw already processed OR if same from+nonce already present in mempool/transactions)
+        $duplicateReason = null;
+        if ($stableRawHash && isset($knownRawHashes[$stableRawHash])) {
+            $duplicateReason = 'raw_hash_already_processed';
+        }
+        if (!$duplicateReason && $stableRawHash) {
+            // Quick DB existence check by hash (if already confirmed as transaction)
+            try {
+                $stmt = $pdo->prepare("SELECT 1 FROM transactions WHERE hash = ? LIMIT 1");
+                if ($stmt->execute([$stableRawHash]) && $stmt->fetchColumn()) {
+                    $duplicateReason = 'raw_hash_confirmed';
+                }
+            } catch (Exception $e) { /* ignore */ }
+        }
+        if (!$duplicateReason && $from && $nonceInt > 0) {
+            try {
+                $stmt = $pdo->prepare("SELECT 1 FROM mempool WHERE from_address = ? AND nonce = ? LIMIT 1");
+                if ($stmt->execute([$from, $nonceInt]) && $stmt->fetchColumn()) {
+                    $duplicateReason = 'same_from_nonce_in_mempool';
+                }
+            } catch (Exception $e) { /* ignore if schema mismatch */ }
+            if (!$duplicateReason) {
+                try {
+                    $stmt = $pdo->prepare("SELECT 1 FROM transactions WHERE from_address = ? AND nonce = ? LIMIT 1");
+                    if ($stmt->execute([$from, $nonceInt]) && $stmt->fetchColumn()) {
+                        $duplicateReason = 'same_from_nonce_confirmed';
+                    }
+                } catch (Exception $e) { /* ignore */ }
+            }
+        }
+
+        try {
+            if ($duplicateReason) {
+                if ($verbose) echo "  - skipped raw $hash duplicate ($duplicateReason) from=$from nonce=$nonceInt\n";
+                // Persist parsed & hash then move to processed to stop salvage
+                $json['parsed'] = $parsed;
+                $json['reprocessed_at'] = date('c');
+                $json['internal_tx_hash'] = $json['internal_tx_hash'] ?? $stableRawHash;
+                $outPath = $processedDir . '/' . basename($file);
+                @file_put_contents($outPath . '.tmp', json_encode($json, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+                @rename($outPath . '.tmp', $outPath);
+                @unlink($file);
+                continue;
+            }
+
+            $tx = new Transaction($from, $to, $amount, $fee, $nonceInt, null, $gasLimit > 0 ? $gasLimit : 21000, $gasPriceToken);
+            $ref = new ReflectionClass($tx);
+            if ($ref->hasProperty('signature')) { $p = $ref->getProperty('signature'); $p->setAccessible(true); $p->setValue($tx, 'external_raw'); }
+            // Stabilize transaction hash = sha256(raw) if possible
+            if ($stableRawHash && $ref->hasProperty('hash')) { $hp = $ref->getProperty('hash'); $hp->setAccessible(true); $hp->setValue($tx, $stableRawHash); }
+            $addedOk = $mempool->addTransaction($tx);
+            if ($addedOk) {
+                $added++;
+                if ($verbose) echo "  + queued raw $hash -> {$tx->getHash()} from=$from to=$to amount=$amount fee=$fee nonce=$nonceInt gasLimit=".$tx->getGasLimit()." gasPrice=$gasPriceToken\n";
+                // Best-effort broadcast of original raw tx to peer wallet APIs so they can also queue it
+                if (!empty($json['raw'])) {
+                    try {
+                        // Get peer nodes (excluding self) via reflection if available
+                        $peerNodes = [];
+                        if ($reflection->hasMethod('getNetworkNodesForBroadcast')) {
+                            $m = $reflection->getMethod('getNetworkNodesForBroadcast');
+                            $m->setAccessible(true);
+                            $peerNodes = $m->invoke($syncManager) ?: [];
+                        }
+                        foreach ($peerNodes as $peerUrl) {
+                            // Normalize URL (strip trailing slash)
+                            $peerUrl = rtrim($peerUrl, '/');
+                            // Assume wallet_api path
+                            $rpcUrl = $peerUrl . '/wallet/wallet_api.php';
+                            $payload = json_encode([
+                                'jsonrpc' => '2.0',
+                                'id' => substr($hash,0,8),
+                                'method' => 'eth_sendRawTransaction',
+                                'params' => [$json['raw']]
+                            ]);
+                            // Suppress warnings; short timeout
+                            $ch = curl_init($rpcUrl);
+                            if ($ch) {
+                                curl_setopt_array($ch, [
+                                    CURLOPT_POST => true,
+                                    CURLOPT_RETURNTRANSFER => true,
+                                    CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+                                    CURLOPT_POSTFIELDS => $payload,
+                                    CURLOPT_CONNECTTIMEOUT => 2,
+                                    CURLOPT_TIMEOUT => 4,
+                                ]);
+                                $resp = curl_exec($ch);
+                                curl_close($ch);
+                            }
+                        }
+                    } catch (Exception $e) {
+                        if ($verbose) echo "    (broadcast error suppressed: " . $e->getMessage() . ")\n";
+                    }
+                }
+            } else {
+                if ($verbose) {
+                    // Diagnose reason manually
+                    $reason = 'unknown';
+                    // Duplicate?
+                    try { if ($mempool->hasTransaction($tx->getHash())) $reason = 'duplicate'; } catch (Exception $e) {}
+                    if ($reason === 'unknown') {
+                        if (!$tx->isValid()) {
+                            if ($from === $to) $reason = 'from_equals_to';
+                            elseif (!preg_match('/^0x[a-f0-9]{40}$/', $from) || !preg_match('/^0x[a-f0-9]{40}$/', $to)) $reason = 'invalid_address';
+                            elseif ($tx->getFee() < $minFee) $reason = 'fee_below_min';
+                            elseif ($tx->getAmount() < 0) $reason = 'negative_amount';
+                            elseif ($tx->getSignature() === null) $reason = 'missing_signature';
+                            else $reason = 'invalid_tx';
+                        } else if ($tx->getFee() < $minFee) {
+                            $reason = 'fee_below_min';
+                        }
+                    }
+                    echo "  - failed add $hash (reason=$reason) fee=$fee minFee=$minFee amount=$amount from=$from to=$to\n";
+                }
+            }
+        } catch (Exception $e) {
+            if ($verbose) echo "  ! error $hash: " . $e->getMessage() . "\n";
+        }
+        // Persist updated parsed structure (and mark replay count) to prevent endless salvage
+        try {
+            $json['parsed'] = $parsed;
+            $json['reprocessed_at'] = date('c');
+            $json['internal_tx_hash'] = isset($tx) ? $tx->getHash() : ($json['internal_tx_hash'] ?? ($stableRawHash ?? null));
+            $outPath = $processedDir . '/' . basename($file);
+            $tmpPath = $outPath . '.tmp';
+            @file_put_contents($tmpPath, json_encode($json, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+            @rename($tmpPath, $outPath);
+            @unlink($file);
+        } catch (Exception $e) {
+            // Fallback to simple rename if write fails
+            @rename($file, $processedDir . '/' . basename($file));
+        }
+    }
+    if (!$quiet) echo "  Processed $processed raw file(s), added $added to mempool\n";
 }
 
 // Main execution
@@ -841,6 +1247,104 @@ function fixPendingTransactions($syncManager, $quiet = false, $verbose = false) 
             'fixed' => 0,
             'error' => $error
         ];
+    }
+}
+
+/**
+ * Create a simple block locally including pending mempool transactions so that
+ * they obtain blockHash/blockNumber and MetaMask can receive receipts.
+ * This is a fallback mini-miner used only when full mining logic isn't active.
+ */
+function finalizeMempoolInline($syncManager, int $maxTx = 100, bool $verbose = false): int {
+    try {
+        $refl = new ReflectionClass($syncManager);
+        if (!$refl->hasProperty('pdo')) return 0;
+        $p = $refl->getProperty('pdo');
+        $p->setAccessible(true);
+        $pdo = $p->getValue($syncManager);
+        if (!$pdo) return 0;
+
+        $sel = $pdo->prepare("SELECT tx_hash, from_address, to_address, amount, fee, gas_price, gas_limit, nonce, data, signature FROM mempool WHERE status='pending' ORDER BY id ASC LIMIT ?");
+        $sel->execute([$maxTx]);
+        $txs = $sel->fetchAll(PDO::FETCH_ASSOC);
+        if (empty($txs)) return 0;
+
+        // Determine next height
+        $hStmt = $pdo->query("SELECT MAX(height) h FROM blocks");
+        $cur = $hStmt->fetch(PDO::FETCH_ASSOC);
+        $currentHeight = isset($cur['h']) && $cur['h'] !== null ? (int)$cur['h'] : -1;
+        $newHeight = $currentHeight + 1;
+        $prevHash = '0';
+        if ($currentHeight >= 0) {
+            $ph = $pdo->prepare("SELECT hash FROM blocks WHERE height=? LIMIT 1");
+            $ph->execute([$currentHeight]);
+            $phRow = $ph->fetch(PDO::FETCH_ASSOC);
+            if ($phRow && !empty($phRow['hash'])) $prevHash = $phRow['hash'];
+        }
+
+        // Merkle root simple reduction
+        $hashes = array_map(fn($r) => $r['tx_hash'], $txs);
+        $merkle = function(array $hs) use (&$merkle): string {
+            if (empty($hs)) return hash('sha256','');
+            if (count($hs) === 1) return $hs[0];
+            $n=[]; for($i=0;$i<count($hs);$i+=2){ $a=$hs[$i]; $b=$hs[$i+1]??$a; $n[] = hash('sha256',$a.$b);} return $merkle($n);
+        };
+        $merkleRoot = $merkle($hashes);
+        $ts = time();
+        $blockHash = hash('sha256', $prevHash . $newHeight . $ts . $merkleRoot . count($txs));
+        $validator = '0x' . str_repeat('0',40);
+        $signature = 'auto_local:' . substr(hash('sha256',$blockHash.'local'),0,64);
+        $metadata = json_encode(['created_by'=>'finalizeMempoolInline','txs'=>count($txs)], JSON_UNESCAPED_SLASHES);
+
+        $pdo->beginTransaction();
+        try {
+            $idRow = $pdo->query("SELECT MAX(id) mid FROM blocks")->fetch(PDO::FETCH_ASSOC);
+            $nextId = (int)($idRow['mid'] ?? 0) + 1;
+            $ib = $pdo->prepare("INSERT INTO blocks (id, hash, parent_hash, height, timestamp, validator, signature, merkle_root, transactions_count, metadata) VALUES (?,?,?,?,?,?,?,?,?,?)");
+            $ib->execute([$nextId,$blockHash,$prevHash,$newHeight,$ts,$validator,$signature,$merkleRoot,count($txs),$metadata]);
+        } catch (Throwable $e) {
+            // fallback without explicit id
+            try {
+                $ib = $pdo->prepare("INSERT INTO blocks (hash, parent_hash, height, timestamp, validator, signature, merkle_root, transactions_count, metadata) VALUES (?,?,?,?,?,?,?,?,?)");
+                $ib->execute([$blockHash,$prevHash,$newHeight,$ts,$validator,$signature,$merkleRoot,count($txs),$metadata]);
+            } catch (Throwable $e2) {
+                $pdo->rollBack();
+                if ($verbose) echo "(finalize inline: block insert fail)\n";
+                return 0;
+            }
+        }
+
+        $it = $pdo->prepare("INSERT INTO transactions (hash, block_hash, block_height, from_address, to_address, amount, fee, gas_limit, gas_used, gas_price, nonce, data, signature, status, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE block_hash=VALUES(block_hash), block_height=VALUES(block_height), status='confirmed'");
+        foreach ($txs as $t) {
+            $gasLimit = (int)$t['gas_limit'];
+            $gasUsed = $gasLimit > 0 ? $gasLimit : 0;
+            $it->execute([
+                $t['tx_hash'],
+                $blockHash,
+                $newHeight,
+                $t['from_address'],
+                $t['to_address'],
+                (float)$t['amount'],
+                (float)$t['fee'],
+                $gasLimit,
+                $gasUsed,
+                (float)$t['gas_price'],
+                (int)$t['nonce'],
+                $t['data'],
+                $t['signature'],
+                'confirmed',
+                $ts
+            ]);
+        }
+        $del = $pdo->prepare("DELETE FROM mempool WHERE tx_hash IN (" . implode(',', array_fill(0,count($hashes),'?')) . ")");
+        $del->execute($hashes);
+        $pdo->commit();
+        if ($verbose) echo "(finalize inline: block #$newHeight with ".count($txs)." txs)\n";
+        return count($txs);
+    } catch (Throwable $e) {
+        if (isset($pdo) && $pdo->inTransaction()) { try { $pdo->rollBack(); } catch (Throwable $e2) {} }
+        if ($verbose) echo "(finalize inline error)\n";
+        return 0;
     }
 }
 ?>

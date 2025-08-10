@@ -65,9 +65,6 @@ phpunit.xml
 # Configuration
 /config/installed
 /config/local.php
-config/config.php
-config/installation.json
-config/install_config.json
 
 # Temporary files
 *.tmp
@@ -78,12 +75,6 @@ config/install_config.json
 # Blockchain data
 /blockchain_data/*
 /peer_data/*
-storage/blockchain/
-storage/state/
-storage/test/
-storage/trustwallet/
-*.sql
-database/*.sql
 
 # Docker
 .docker/
@@ -97,7 +88,6 @@ phpstan.neon.dist
 
 # Logs
 *.log
-logs/
 
 # Private keys and sensitive data
 *.key
@@ -120,16 +110,34 @@ logs/
 # Runtime files
 *.pid
 *.lock
-
-# Example files that should not be in production
-example_*.php
-demo_*.php
-test_*.php
-storage/blockchain.bin
-config/installation.json
-config/config.php
+blockchain.sql
+.htaccess
 .gitignore
-
-# Internal assistant instruction files (do not track)
-.github/instructions/
+storage/blockchain/genesis.json
+.gitignore
+storage/blockchain/chain.json
+storage/state/blockchain_state.json
+storage/blockchain/blockchain.bin
+storage/blockchain/blockchain.bin
+.gitignore
+storage/blockchain/blockchain.bin
+.github/instructions/copilot.instructions.md
+a379149_node1.sql
+a379149_wallet (20).sql
+integration_summary.md
+REGULAR_NODE_SETUP.md
+security_updates_summary.md
+test_full_sync.php
+test_sync.php
+storage/blockchain.bin
+config/install_config.json
+config/install_config.json
+storage/state/services_status.json
+config/installation.json
+a379149_wallet (22).sql
 dual_quick_sync.php
+RELEASE_META.json
+storage/raw_mempool/processed/71dc38b219ac74afacfb3a9a6a67a26cae5d72cfa991db0f989b930701ad6124.json
+storage/raw_mempool/processed/261ba80b41ac5563435066a82ed0da2f4318774ba0b53060c63f8e661bafd584.json
+storage/raw_mempool/processed/e93afe56e40cbbaf9431820f443aaca619b2aa36c7f186d76b97d79853202f88.json
+storage/raw_mempool/processed/feb4021e922de07c0b76f98c2195e0a623cccff5e0013c000c7a8ec325a2067a.json

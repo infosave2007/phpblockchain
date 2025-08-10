@@ -2920,24 +2920,54 @@ if (php_sapi_name() === 'cli') {
                 echo "Transactions synced: " . $result['transactions_synced'] . "\n";
                 echo "Completed at: " . $result['completion_time'] . "\n";
                 break;
-                
-            case 'status':
-                echo "Getting synchronization status...\n\n";
-                $status = $syncManager->getStatus();
-                
-                echo "=== Database Status ===\n";
-                foreach ($status['tables'] as $table => $count) {
-                    echo sprintf("%-20s: %d records\n", ucfirst($table), $count);
+                // First attempt: native stream
+                $context = stream_context_create([
+                    'http' => [
+                        'method' => 'POST',
+                        'header' => "Content-Type: application/json\r\n" .
+                                   "Content-Length: " . strlen($postData) . "\r\n",
+                        'content' => $postData,
+                        'timeout' => 5
+                    ]
+                ]);
+                $result = @file_get_contents($syncUrl, false, $context);
+                $httpOk = false; $responseArr = null; $errDetail = '';
+                if ($result !== false) {
+                    $responseArr = json_decode($result, true);
+                    $httpOk = isset($responseArr['status']) && $responseArr['status'] === 'success';
+                } else {
+                    $errDetail = error_get_last()['message'] ?? 'stream_error';
                 }
-                echo "\n";
-                echo "Latest block: " . $status['latest_block'] . "\n";
-                echo "Latest timestamp: " . ($status['latest_timestamp'] ?? 'Unknown') . "\n";
-                echo "Check time: " . $status['sync_time'] . "\n";
-                break;
-                
-            case 'mempool':
-                echo "Running mempool maintenance...\n\n";
-                $result = $syncManager->runMempoolMaintenance();
+                // Fallback with curl for better TLS/redirect handling
+                if (!$httpOk && function_exists('curl_init')) {
+                    $ch = curl_init($syncUrl);
+                    curl_setopt_array($ch, [
+                        CURLOPT_POST => true,
+                        CURLOPT_RETURNTRANSFER => true,
+                        CURLOPT_HTTPHEADER => [ 'Content-Type: application/json' ],
+                        CURLOPT_POSTFIELDS => $postData,
+                        CURLOPT_CONNECTTIMEOUT => 3,
+                        CURLOPT_TIMEOUT => 6,
+                    ]);
+                    $curlResp = curl_exec($ch);
+                    $curlErr = curl_error($ch);
+                    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                    curl_close($ch);
+                    if ($curlResp !== false) {
+                        $responseArr = json_decode($curlResp, true);
+                        if (isset($responseArr['status']) && $responseArr['status'] === 'success') {
+                            $this->log("Block broadcast curl success: $nodeUrl (HTTP $code)");
+                            return true;
+                        }
+                        $errDetail = 'curl_http_'.$code;
+                    } else {
+                        $errDetail = 'curl_err:' . $curlErr;
+                    }
+                }
+                if (!$httpOk) {
+                    $this->log("Block broadcast attempt failed: $nodeUrl detail=$errDetail");
+                }
+                return $httpOk;
                 
                 echo "=== Mempool Maintenance Result ===\n";
                 echo "Status: " . $result['status'] . "\n";
