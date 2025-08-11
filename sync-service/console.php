@@ -82,7 +82,7 @@ try {
     switch ($command) {
         case 'sync':
             Console::info("Initializing synchronization manager...");
-            $syncManager = new \Blockchain\SyncService\SyncManager(false); // Console mode (namespaced)
+            $syncManager = new SyncManager(false); // Console mode
             
             Console::info("Starting blockchain synchronization...");
             $startTime = microtime(true);
@@ -108,7 +108,7 @@ try {
             
         case 'status':
             Console::info("Checking database status...");
-            $syncManager = new \Blockchain\SyncService\SyncManager(false);
+            $syncManager = new SyncManager(false);
             $status = $syncManager->getStatus();
             
             Console::info("Current database status:");

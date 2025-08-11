@@ -172,7 +172,20 @@ class BlockStorage
             foreach ($block->getTransactions() as $index => $transaction) {
                 $this->writeLog("BlockStorage::saveToDatabaseStorage - Processing transaction " . ($index + 1) . "/" . count($block->getTransactions()), 'DEBUG');
                 try {
-                    $this->processTransaction($transaction, $block);
+                    // Convert Transaction object to array if needed
+                    $txData = $transaction instanceof \Blockchain\Core\Transaction\Transaction 
+                        ? $transaction->toArray() 
+                        : $transaction;
+                    
+                    // Normalize array keys for backward compatibility
+                    if (isset($txData['from_address'])) {
+                        $txData['from'] = $txData['from_address'];
+                    }
+                    if (isset($txData['to_address'])) {
+                        $txData['to'] = $txData['to_address'];
+                    }
+                    
+                    $this->processTransaction($txData, $block);
                     $this->writeLog("BlockStorage::saveToDatabaseStorage - Transaction " . ($index + 1) . " processed successfully", 'DEBUG');
                 } catch (\Exception $txError) {
                     $this->writeLog("BlockStorage::saveToDatabaseStorage - TRANSACTION ERROR in tx " . ($index + 1) . ": " . $txError->getMessage(), 'ERROR');
@@ -227,46 +240,72 @@ class BlockStorage
         try {
             // Save transaction to transactions table with UPDATE-first approach
             $this->writeLog("BlockStorage::processTransaction - Saving transaction to transactions table", 'DEBUG');
-            
             $txHash = $transaction['hash'] ?? hash('sha256', json_encode($transaction));
-            
-            // Try UPDATE first
-            $upd = $this->database->prepare("
-                UPDATE transactions 
-                SET block_hash = ?, block_height = ?, status = 'confirmed'
-                WHERE hash = ?
-            ");
+            $upd = $this->database->prepare("\n                UPDATE transactions \n                SET block_hash = ?, block_height = ?, status = 'confirmed'\n                WHERE hash = ?\n            ");
             $upd->execute([$block->getHash(), $block->getIndex(), $txHash]);
-            
+
             if ($upd->rowCount() === 0) {
-                // No existing transaction found, INSERT new one
+                // Check for duplicate transactions by content before inserting
+                $duplicateCheck = $this->database->prepare("
+                    SELECT COUNT(*) FROM transactions 
+                    WHERE from_address = ? 
+                    AND to_address = ? 
+                    AND amount = ? 
+                    AND nonce = ? 
+                    AND status = 'confirmed'
+                ");
+                $duplicateCheck->execute([
+                    $transaction['from'] ?? 'unknown',
+                    $transaction['to'] ?? 'unknown',
+                    $transaction['amount'] ?? 0,
+                    $transaction['nonce'] ?? 0
+                ]);
+                
+                if ((int)$duplicateCheck->fetchColumn() > 0) {
+                    $this->writeLog("BlockStorage::processTransaction - Skipping duplicate transaction by content", 'WARNING');
+                    return;
+                }
+                
+                // Dynamic extraction of fields (preserve external signatures & original gas/nonce)
+                $gasLimit = $transaction['gas_limit'] ?? $transaction['gasLimit'] ?? 21000;
+                $gasUsed  = $transaction['gas_used'] ?? $transaction['gasUsed'] ?? 0;
+                $gasPrice = $transaction['gas_price'] ?? $transaction['gasPrice'] ?? 0.00001;
+                $nonce    = $transaction['nonce'] ?? 0;
+                $fee      = $transaction['fee'] ?? 0;
+                $amount   = $transaction['amount'] ?? 0;
+                $sig      = $transaction['signature'] ?? 'system_signature';
+                if ($sig === '' || $sig === null) { $sig = 'system_signature'; }
+                $timestamp = $transaction['timestamp'] ?? $block->getTimestamp();
+                // Prefer explicit 'data' (string) else metadata JSON
+                if (array_key_exists('data', $transaction) && !is_array($transaction['data'])) {
+                    $dataField = is_string($transaction['data']) ? $transaction['data'] : json_encode($transaction['data']);
+                } else {
+                    $dataField = json_encode($transaction['metadata'] ?? []);
+                }
                 $ins = $this->database->prepare("
                     INSERT INTO transactions (hash, block_hash, block_height, from_address, to_address, amount, fee, gas_limit, gas_used, gas_price, nonce, data, signature, status, timestamp)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?)
                 ");
-                
                 $txResult = $ins->execute([
                     $txHash,
                     $block->getHash(),
                     $block->getIndex(),
                     $transaction['from'] ?? 'unknown',
                     $transaction['to'] ?? 'unknown',
-                    $transaction['amount'] ?? 0,
-                    $transaction['fee'] ?? 0,
-                    21000, // default gas limit
-                    0,     // gas used
-                    0.00001, // default gas price
-                    0,     // nonce
-                    json_encode($transaction['metadata'] ?? []),
-                    'system_signature',
-                    $transaction['timestamp'] ?? $block->getTimestamp()
+                    $amount,
+                    $fee,
+                    $gasLimit,
+                    $gasUsed,
+                    $gasPrice,
+                    $nonce,
+                    $dataField,
+                    $sig,
+                    $timestamp
                 ]);
-                
                 $this->writeLog("BlockStorage::processTransaction - Transaction INSERT result: " . json_encode($txResult), 'DEBUG');
             } else {
                 $this->writeLog("BlockStorage::processTransaction - Transaction UPDATE affected rows: " . $upd->rowCount(), 'DEBUG');
             }
-            
         } catch (\Exception $e) {
             $this->writeLog("BlockStorage::processTransaction - ERROR saving transaction: " . $e->getMessage(), 'ERROR');
             throw $e;
@@ -365,18 +404,23 @@ class BlockStorage
         $validatorAddress = $metadata['validator_address'] ?? $transaction['from'];
         
         // Try to get real public key from wallet or metadata
-        $publicKey = 'placeholder_public_key';
-        
-        if (isset($metadata['public_key'])) {
+        $publicKey = null;
+
+        if (!empty($metadata['public_key']) && $metadata['public_key'] !== 'placeholder_public_key') {
             $publicKey = $metadata['public_key'];
         } else {
-            // Try to get public key from wallets table
+            // Try to get public key from wallets table (real one only)
             $stmt = $this->database->prepare("SELECT public_key FROM wallets WHERE address = ?");
             $stmt->execute([$validatorAddress]);
             $wallet = $stmt->fetch(\PDO::FETCH_ASSOC);
-            if ($wallet && $wallet['public_key'] !== 'placeholder_public_key') {
+            if ($wallet && !empty($wallet['public_key']) && $wallet['public_key'] !== 'placeholder_public_key') {
                 $publicKey = $wallet['public_key'];
             }
+        }
+
+        // Fallback: deterministic pseudo public key (avoids NULL constraint issues)
+        if (empty($publicKey)) {
+            $publicKey = substr(hash('sha256', $validatorAddress . '|auto_pub'), 0, 66);
         }
         
         $stmt = $this->database->prepare("
@@ -509,6 +553,45 @@ class BlockStorage
     public function getBlockCount(): int
     {
         return count($this->blocks);
+    }
+
+    /**
+     * Check if any blocks already persisted in database even if in-memory array is empty
+     */
+    public function hasAnyPersistedBlocks(): bool
+    {
+        if ($this->getBlockCount() > 0) {
+            return true;
+        }
+        if ($this->database) {
+            try {
+                $stmt = $this->database->query("SELECT COUNT(*) FROM blocks");
+                return ((int)$stmt->fetchColumn()) > 0;
+            } catch (\Throwable $e) {
+                // Fallback to in-memory only if query fails
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Get genesis hash from database if present
+     */
+    public function getGenesisHashFromDatabase(): ?string
+    {
+        if ($this->database) {
+            try {
+                $stmt = $this->database->query("SELECT hash FROM blocks WHERE height=0 LIMIT 1");
+                $hash = $stmt->fetchColumn();
+                if ($hash) return $hash;
+                $stmt = $this->database->query("SELECT hash FROM blocks ORDER BY height ASC LIMIT 1");
+                $hash = $stmt->fetchColumn();
+                return $hash ?: null;
+            } catch (\Throwable $e) {
+                return null;
+            }
+        }
+        return null;
     }
     
     private function loadBlocks(): void

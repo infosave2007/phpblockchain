@@ -67,6 +67,7 @@ class Transaction implements TransactionInterface
             'gas_limit' => $this->gasLimit,
             'gas_price' => $this->gasPrice,
             'data' => $this->data,
+            // NOTE: keep timestamp for backward compatibility, but when hydrating from DB we restore original timestamp & hash
             'timestamp' => $this->timestamp
         ]);
         
@@ -104,7 +105,8 @@ class Transaction implements TransactionInterface
             return false;
         }
         
-        if ($this->fromAddress === $this->toAddress) {
+        // For external raw transactions, allow self-transfers (common in Ethereum for account activation)
+        if ($this->fromAddress === $this->toAddress && $this->signature !== 'external_raw') {
             return false;
         }
         
@@ -199,28 +201,38 @@ class Transaction implements TransactionInterface
             (int)($data['gas_limit'] ?? 21000),
             (float)($data['gas_price'] ?? 0.00001)
         );
-        
-        if (isset($data['hash'])) {
-            $tx->hash = $data['hash'];
-        }
-        
-        if (isset($data['signature'])) {
-            $tx->signature = $data['signature'];
-        }
-        
-        if (isset($data['status'])) {
-            $tx->status = $data['status'];
-        }
-        
+        // Hydrate original values if provided
         if (isset($data['timestamp'])) {
             $tx->timestamp = (int)$data['timestamp'];
         }
-        
+        if (isset($data['hash'])) {
+            $tx->hash = $data['hash'];
+        } else {
+            // Recompute hash using possibly restored timestamp
+            $tx->hash = $tx->calculateHash();
+        }
+        if (isset($data['signature'])) {
+            $tx->signature = $data['signature'];
+        }
+        if (isset($data['status'])) {
+            $tx->status = $data['status'];
+        }
         if (isset($data['gas_used'])) {
             $tx->gasUsed = (int)$data['gas_used'];
         }
         
         return $tx;
+    }
+
+    /**
+     * Hydrate raw internal hash & timestamp (used when reconstructing from persistence layers like mempool)
+     */
+    public function hydratePersisted(string $hash, ?int $timestamp = null): void
+    {
+        if ($timestamp !== null) {
+            $this->timestamp = $timestamp;
+        }
+        $this->hash = $hash;
     }
     
     // Getters
@@ -272,5 +284,22 @@ class Transaction implements TransactionInterface
         $gasPriceScore = (int)($this->gasPrice * 1000000);
         
         return $feeScore + $gasPriceScore;
+    }
+
+    /**
+     * Force-set the transaction hash (used for external raw imports so we can deduplicate by original network hash).
+     * Should be called BEFORE adding to mempool. Validation for external_raw signature bypasses hash check.
+     */
+    public function forceHash(string $hash): void
+    {
+        // Accept any valid hex hash and normalize to lowercase with 0x prefix
+        $h = strtolower(trim($hash));
+        if (str_starts_with($h, '0x')) {
+            $h = substr($h, 2);
+        }
+        // Accept any length hex string (32+ chars for proper hashes)
+        if (preg_match('/^[0-9a-f]{32,}$/', $h)) {
+            $this->hash = '0x' . $h;
+        }
     }
 }

@@ -1554,40 +1554,52 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
         // 6. Update balances in database
         $pdo = $walletManager->getDatabase();
         
-        // Ensure we can start a new transaction
-        if ($pdo->inTransaction()) {
-            writeLog("PDO already in transaction, committing previous transaction", 'WARNING');
-            try {
-                $pdo->commit();
-            } catch (Exception $e) {
-                writeLog("Failed to commit previous transaction: " . $e->getMessage(), 'WARNING');
-                try {
-                    $pdo->rollBack();
-                } catch (Exception $e2) {
-                    writeLog("Failed to rollback previous transaction: " . $e2->getMessage(), 'ERROR');
-                }
-            }
+        // Check if we need to start a new transaction
+        $needsTransaction = !$pdo->inTransaction();
+        
+        if ($needsTransaction) {
+            $pdo->beginTransaction();
         }
         
-        $pdo->beginTransaction();
-        
         try {
+            // Verify sender balance before deduction
+            $stmt = $pdo->prepare("SELECT balance FROM wallets WHERE address = ?");
+            $stmt->execute([$fromAddress]);
+            $currentBalance = $stmt->fetchColumn();
+            
+            if ($currentBalance === false) {
+                throw new Exception("Sender wallet not found in database: $fromAddress");
+            }
+            
+            $totalDeduction = $amount + $transferTx['fee'];
+            if ($currentBalance < $totalDeduction) {
+                throw new Exception("Insufficient balance. Current: $currentBalance, Required: $totalDeduction");
+            }
+            
+            // Auto-create recipient wallet if doesn't exist
+            $stmt = $pdo->prepare("INSERT IGNORE INTO wallets (address, public_key, balance) VALUES (?, 'placeholder_public_key', 0)");
+            $stmt->execute([$toAddress]);
+            
             // Deduct from sender
             $stmt = $pdo->prepare("UPDATE wallets SET balance = balance - ?, updated_at = NOW() WHERE address = ?");
-            $stmt->execute([$amount + $transferTx['fee'], $fromAddress]);
+            $stmt->execute([$totalDeduction, $fromAddress]);
             
             // Add to recipient
             $stmt = $pdo->prepare("UPDATE wallets SET balance = balance + ?, updated_at = NOW() WHERE address = ?");
             $stmt->execute([$amount, $toAddress]);
             
-            $pdo->commit();
+            if ($needsTransaction) {
+                $pdo->commit();
+            }
             writeLog("Database balances updated successfully", 'INFO');
             
         } catch (Exception $e) {
-            try {
-                $pdo->rollback();
-            } catch (Exception $rollbackError) {
-                writeLog("Failed to rollback transaction: " . $rollbackError->getMessage(), 'ERROR');
+            if ($needsTransaction && $pdo->inTransaction()) {
+                try {
+                    $pdo->rollback();
+                } catch (Exception $rollbackError) {
+                    writeLog("Failed to rollback transaction: " . $rollbackError->getMessage(), 'ERROR');
+                }
             }
             throw new Exception('Failed to update balances: ' . $e->getMessage());
         }
@@ -1698,43 +1710,50 @@ function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $a
         // 6. Update balances in database
         $pdo = $walletManager->getDatabase();
         
-        // Ensure we can start a new transaction
-        if ($pdo->inTransaction()) {
-            writeLog("PDO already in transaction, committing previous transaction", 'WARNING');
-            try {
-                $pdo->commit();
-            } catch (Exception $e) {
-                writeLog("Failed to commit previous transaction: " . $e->getMessage(), 'WARNING');
-                try {
-                    $pdo->rollBack();
-                } catch (Exception $e2) {
-                    writeLog("Failed to rollback previous transaction: " . $e2->getMessage(), 'ERROR');
-                }
-            }
+        // Check if we need to start a new transaction
+        $needsTransaction = !$pdo->inTransaction();
+        
+        if ($needsTransaction) {
+            $pdo->beginTransaction();
         }
         
-        $pdo->beginTransaction();
-        
         try {
+            // Verify current balance before staking
+            $stmt = $pdo->prepare("SELECT balance FROM wallets WHERE address = ?");
+            $stmt->execute([$address]);
+            $currentBalance = $stmt->fetchColumn();
+            
+            if ($currentBalance === false) {
+                throw new Exception("Wallet not found in database: $address");
+            }
+            
+            if ($currentBalance < $amount) {
+                throw new Exception("Insufficient balance for staking. Current: $currentBalance, Required: $amount");
+            }
+            
             // Move from available to staked balance
             $stmt = $pdo->prepare("UPDATE wallets SET balance = balance - ?, staked_balance = staked_balance + ?, updated_at = NOW() WHERE address = ?");
             $stmt->execute([$amount, $amount, $address]);
             
             // Record staking details
             $stmt = $pdo->prepare("
-                INSERT INTO staking (validator, staker, amount, reward_rate, start_block, rewards_earned, status) 
-                VALUES (?, ?, ?, ?, ?, ?, 'active')
+                INSERT INTO staking (staker, amount, status, start_date) 
+                VALUES (?, ?, 'active', NOW())
             ");
-            $stmt->execute([$address, $address, $amount, $apy/100, 0, $expectedRewards]);
+            $stmt->execute([$address, $amount]);
             
-            $pdo->commit();
+            if ($needsTransaction) {
+                $pdo->commit();
+            }
             writeLog("Staking record created successfully", 'INFO');
             
         } catch (Exception $e) {
-            try {
-                $pdo->rollback();
-            } catch (Exception $rollbackError) {
-                writeLog("Failed to rollback transaction: " . $rollbackError->getMessage(), 'ERROR');
+            if ($needsTransaction && $pdo->inTransaction()) {
+                try {
+                    $pdo->rollback();
+                } catch (Exception $rollbackError) {
+                    writeLog("Failed to rollback transaction: " . $rollbackError->getMessage(), 'ERROR');
+                }
             }
             throw new Exception('Failed to create staking record: ' . $e->getMessage());
         }
@@ -2598,10 +2617,10 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                 if (!$hash) return null;
                 $tx = $walletManager->getTransactionByHash($hash);
                 if (!$tx) {
-                    // Fallback to mempool (correct column tx_hash)
+                    // Fallback to mempool for pending transactions
                     try {
                         $pdo = $walletManager->getDatabase();
-                        $stmt = $pdo->prepare("SELECT tx_hash, from_address, to_address, amount, fee, nonce, gas_limit, gas_price, data, signature, created_at FROM mempool WHERE tx_hash = ? LIMIT 1");
+                        $stmt = $pdo->prepare("SELECT tx_hash as hash, from_address, to_address, amount, fee, nonce, gas_limit, gas_price, data, signature, created_at as timestamp FROM mempool WHERE tx_hash = ? LIMIT 1");
                         $stmt->execute([$hash]);
                         $mp = $stmt->fetch(PDO::FETCH_ASSOC);
                         if ($mp) {
@@ -2610,10 +2629,8 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                             $valueHex = '0x' . dechex((int)floor(((float)($mp['amount'] ?? 0)) * $multiplier));
                             $chainInfo = method_exists($networkConfig, 'getNetworkInfo') ? $networkConfig->getNetworkInfo() : [];
                             $chainIdHex = '0x' . dechex((int)($chainInfo['chain_id'] ?? 0));
-                            $gasLimit = (int)($mp['gas_limit'] ?? 21000);
-                            $gasPrice = (int)($mp['gas_price'] ?? 0);
                             return [
-                                'hash' => $mp['tx_hash'],
+                                'hash' => $mp['hash'],
                                 'nonce' => '0x' . dechex((int)($mp['nonce'] ?? 0)),
                                 'blockHash' => null,
                                 'blockNumber' => null,
@@ -2621,15 +2638,15 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                                 'from' => $mp['from_address'] ?? null,
                                 'to' => $mp['to_address'] ?? null,
                                 'value' => $valueHex,
-                                'gas' => '0x' . dechex($gasLimit),
-                                'gasPrice' => '0x' . dechex($gasPrice),
-                                'maxFeePerGas' => '0x' . dechex($gasPrice),
-                                'maxPriorityFeePerGas' => '0x' . dechex(min($gasPrice, 1000000000)),
+                                'gas' => '0x' . dechex((int)($mp['gas_limit'] ?? 21000)),
+                                'gasPrice' => '0x' . dechex((int)($mp['gas_price'] ?? 0)),
+                                'maxFeePerGas' => '0x0',
+                                'maxPriorityFeePerGas' => '0x0',
                                 'type' => '0x0',
                                 'accessList' => [],
                                 'chainId' => $chainIdHex,
                                 'v' => '0x0', 'r' => '0x0', 's' => '0x0',
-                                'input' => (is_string($mp['data']) && $mp['data'] !== '') ? $mp['data'] : '0x',
+                                'input' => is_string($mp['data'] ?? null) ? $mp['data'] : '0x',
                             ];
                         }
                     } catch (Throwable $e) {
@@ -2645,26 +2662,28 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                 $valueHex = '0x' . dechex((int)floor(((float)($tx['amount'] ?? 0)) * $multiplier));
                 $chainInfo = method_exists($networkConfig, 'getNetworkInfo') ? $networkConfig->getNetworkInfo() : [];
                 $chainIdHex = '0x' . dechex((int)($chainInfo['chain_id'] ?? 0));
-                $gasLimit = (int)($tx['gas_limit'] ?? 21000);
-                $gasPrice = (int)($tx['gas_price'] ?? 0);
                 return [
                     'hash' => $tx['hash'],
-                    'nonce' => '0x' . dechex((int)($tx['nonce'] ?? 0)),
+                    'nonce' => '0x0',
                     'blockHash' => $tx['block_hash'] ?? null,
                     'blockNumber' => $blockNumberHex,
                     'transactionIndex' => '0x0',
                     'from' => $tx['from_address'] ?? null,
                     'to' => $tx['to_address'] ?? null,
                     'value' => $valueHex,
-                    'gas' => '0x' . dechex($gasLimit),
-                    'gasPrice' => '0x' . dechex($gasPrice),
-                    'maxFeePerGas' => '0x' . dechex($gasPrice),
-                    'maxPriorityFeePerGas' => '0x' . dechex(min($gasPrice, 1000000000)),
+                    'gas' => '0x0',
+                    'gasPrice' => '0x0',
+                    // EIP-1559 style fields (placeholders; no gas market)
+                    'maxFeePerGas' => '0x0',
+                    'maxPriorityFeePerGas' => '0x0',
                     'type' => '0x0',
                     'accessList' => [],
                     'chainId' => $chainIdHex,
-                    'v' => '0x0', 'r' => '0x0', 's' => '0x0',
-                    'input' => (is_string($tx['data'] ?? '') && ($tx['data'] ?? '') !== '') ? $tx['data'] : '0x',
+                    // Signature placeholders
+                    'v' => '0x0',
+                    'r' => '0x0',
+                    's' => '0x0',
+                    'input' => '0x',
                 ];
             }
 
@@ -2682,101 +2701,22 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                 }
 
                 $rawHex = strtolower($raw);
-                $hexNoPrefix = substr($rawHex, 2);
-                $bin = @hex2bin($hexNoPrefix);
+                $bin = @hex2bin(substr($rawHex, 2));
                 if ($bin === false) {
                     return rpcError(-32602, 'Raw transaction hex decode failed');
                 }
-                // Stable internal hash (sha256 of normalized raw) so later quick_sync uses same id
-                $stableRawHash = hash('sha256', $hexNoPrefix);
-                $txHash = '0x' . $stableRawHash;
 
-                // Debug log the raw transaction for tracing
-                writeLog("eth_sendRawTransaction received: txHash=$txHash rawLength=" . strlen($rawHex), 'DEBUG');
+                // Compute tx hash as keccak256 of raw bytes (Ethereum-style)
+                $txHash = '0x' . \Blockchain\Core\Crypto\Hash::keccak256($bin);
 
                 // Try to parse minimal fields from RLP for visibility (best-effort)
                 $parsed = parseEthRawTransaction($rawHex);
-
-                // Attempt signature recovery to get from address using EthereumTx
-                if (!isset($parsed['from']) || $parsed['from'] === '0x' . str_repeat('0', 40)) {
-                    try {
-                        if (class_exists('\\Blockchain\\Core\\Crypto\\EthereumTx')) {
-                            $recovered = \Blockchain\Core\Crypto\EthereumTx::recoverAddress($rawHex);
-                            if ($recovered && strlen($recovered) === 42 && str_starts_with($recovered, '0x')) {
-                                $parsed['from'] = strtolower($recovered);
-                                writeLog("eth_sendRawTransaction recovered from address: " . $recovered, 'DEBUG');
-                            } else {
-                                writeLog("eth_sendRawTransaction address recovery failed for " . $txHash, 'DEBUG');
-                            }
-                        }
-                    } catch (\Throwable $e) {
-                        writeLog('Address recovery failed for ' . $txHash . ': ' . $e->getMessage(), 'DEBUG');
-                    }
-                }
-
-                // Fallback to placeholder if recovery failed
-                if (!isset($parsed['from']) || $parsed['from'] === '0x' . str_repeat('0', 40)) {
-                    $parsed['from'] = '0x' . str_repeat('0', 40);
-                    writeLog("eth_sendRawTransaction using placeholder from address for " . $txHash, 'DEBUG');
-                }
-
-                // Debug log parsed fields for troubleshooting
-                $fromAddr = $parsed['from'] ?? 'missing';
-                $toAddr = $parsed['to'] ?? 'missing'; 
-                $valueHex = $parsed['value'] ?? 'missing';
-                $gasPriceHex = $parsed['gasPrice'] ?? ($parsed['maxFeePerGas'] ?? 'missing');
-                writeLog("eth_sendRawTransaction parsed: from=$fromAddr to=$toAddr value=$valueHex gasPrice=$gasPriceHex", 'DEBUG');
 
                 // Persist raw tx to local queue for asynchronous processing
                 $queued = queueRawTransaction($txHash, $rawHex, $parsed);
                 if (!$queued) {
                     // Still return hash so dApps have a handle; log the issue
                     writeLog('Failed to persist raw tx queue for ' . $txHash, 'ERROR');
-                }
-
-                // Direct best-effort DB mempool insert (so pending visible immediately)
-                try {
-                    if (class_exists('ReflectionClass') && isset($walletManager)) {
-                        $pdo = $walletManager->getDatabase();
-                        if ($pdo) {
-                            $nonceInt = 0; $gasLimit = 21000; $gasPriceInt = 0; $amountFloat = 0.0; $feeFloat = 0.0; $dataField = null;
-                            if (isset($parsed['nonce']) && preg_match('/^0x[0-9a-f]+$/i',$parsed['nonce'])) { $nonceInt = hexdec(substr($parsed['nonce'],2)); }
-                            if (isset($parsed['gas']) && preg_match('/^0x[0-9a-f]+$/i',$parsed['gas'])) { $gasLimit = hexdec(substr($parsed['gas'],2)); }
-                            // gasPrice or EIP-1559 fields
-                            if (isset($parsed['gasPrice']) && preg_match('/^0x[0-9a-f]+$/i',$parsed['gasPrice'])) { $gasPriceInt = hexdec(substr($parsed['gasPrice'],2)); }
-                            else {
-                                $mpf = isset($parsed['maxFeePerGas']) && preg_match('/^0x[0-9a-f]+$/i',$parsed['maxFeePerGas']) ? hexdec(substr($parsed['maxFeePerGas'],2)) : 0;
-                                $ppf = isset($parsed['maxPriorityFeePerGas']) && preg_match('/^0x[0-9a-f]+$/i',$parsed['maxPriorityFeePerGas']) ? hexdec(substr($parsed['maxPriorityFeePerGas'],2)) : 0;
-                                $gasPriceInt = $mpf > 0 ? min($mpf, max($mpf, $ppf)) : $ppf;
-                            }
-                            if ($gasPriceInt < 0) $gasPriceInt = 0;
-                            if (isset($parsed['value']) && preg_match('/^0x[0-9a-f]+$/i',$parsed['value'])) {
-                                $valInt = hexdec(substr($parsed['value'],2));
-                                // Assume 18 decimals -> convert to float (lossy)
-                                $amountFloat = $valInt / 1e18;
-                            }
-                            if ($gasLimit > 0 && $gasPriceInt > 0) { $feeFloat = ($gasLimit * $gasPriceInt) / 1e18; }
-                            $toAddr = isset($parsed['to']) && is_string($parsed['to']) ? strtolower($parsed['to']) : '0x' . str_repeat('0',40);
-                            $fromAddr = is_string($parsed['from']) ? strtolower($parsed['from']) : ('0x' . str_repeat('0',40));
-                            if (isset($parsed['input']) && is_string($parsed['input']) && $parsed['input'] !== '0x') { $dataField = $parsed['input']; }
-                            $ins = $pdo->prepare("INSERT IGNORE INTO mempool (tx_hash, from_address, to_address, amount, fee, gas_price, gas_limit, nonce, data, signature, priority_score) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
-                            $ins->execute([
-                                substr($txHash,2),
-                                $fromAddr,
-                                $toAddr,
-                                $amountFloat,
-                                $feeFloat,
-                                $gasPriceInt / 1e18,
-                                $gasLimit,
-                                $nonceInt,
-                                $dataField,
-                                'external_raw',
-                                0
-                            ]);
-                        }
-                    }
-                } catch (\Throwable $e) {
-                    writeLog('Inline mempool insert failed for ' . $txHash . ' : ' . $e->getMessage(), 'ERROR');
                 }
 
                 return $txHash;
@@ -3311,15 +3251,69 @@ function getTransactionReceipt($walletManager, string $hash): ?array
     try {
         $tx = $walletManager->getTransactionByHash($hash);
         if (!$tx) {
-            // Pending: strictly return null until included in a block (Ethereum semantics)
-            return null;
+            // If not confirmed yet, check mempool; auto-confirm no-op self-transfers
+            try {
+                $pdo = $walletManager->getDatabase();
+                $stmt = $pdo->prepare("SELECT tx_hash as hash, from_address, to_address, amount, fee, nonce, gas_limit, gas_price, data, signature, created_at as timestamp FROM mempool WHERE tx_hash = ? LIMIT 1");
+                $stmt->execute([$hash]);
+                $mp = $stmt->fetch(PDO::FETCH_ASSOC);
+                if ($mp) {
+                    $from = strtolower((string)($mp['from_address'] ?? ''));
+                    $to = strtolower((string)($mp['to_address'] ?? ''));
+                    $amount = (float)($mp['amount'] ?? 0);
+                    $isNoop = ($from !== '' && $from === $to && $amount <= 0);
+                    if ($isNoop) {
+                        // Promote to confirmed transaction without block
+                        $started = false;
+                        if (method_exists($pdo, 'inTransaction') && !$pdo->inTransaction()) {
+                            $pdo->beginTransaction();
+                            $started = true;
+                        }
+                        try {
+                            $ins = $pdo->prepare("INSERT INTO transactions (hash, from_address, to_address, amount, fee, nonce, gas_limit, gas_price, data, signature, timestamp, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed') ON DUPLICATE KEY UPDATE status='confirmed'");
+                            $ins->execute([$hash, $from, $to, $amount, (float)($mp['fee'] ?? 0), (int)($mp['nonce'] ?? 0), (int)($mp['gas_limit'] ?? 21000), (int)($mp['gas_price'] ?? 0), (string)($mp['data'] ?? ''), (string)($mp['signature'] ?? ''), (int)($mp['timestamp'] ?? time())]);
+                            $del = $pdo->prepare("DELETE FROM mempool WHERE hash = ?");
+                            $del->execute([$hash]);
+                            if ($started) { $pdo->commit(); }
+                        } catch (Throwable $e) {
+                            if ($started && method_exists($pdo, 'inTransaction') && $pdo->inTransaction()) { $pdo->rollBack(); }
+                            writeLog('getTransactionReceipt promote noop error: ' . $e->getMessage(), 'ERROR');
+                        }
+                        // Re-read as confirmed
+                        $tx = $walletManager->getTransactionByHash($hash);
+                        if (!$tx) {
+                            // Fallback to synthetic receipt with status=1 and no block
+                            return [
+                                'transactionHash' => $hash,
+                                'transactionIndex' => '0x0',
+                                'blockHash' => null,
+                                'blockNumber' => null,
+                                'from' => $from,
+                                'to' => $to,
+                                'cumulativeGasUsed' => '0x0',
+                                'gasUsed' => '0x0',
+                                'contractAddress' => null,
+                                'logs' => [],
+                                'logsBloom' => '0x',
+                                'status' => '0x1',
+                            ];
+                        }
+                    } else {
+                        // For pending non-noop txs return null per Ethereum behavior
+                        return null;
+                    }
+                } else {
+                    return null;
+                }
+            } catch (Throwable $e) {
+                writeLog('getTransactionReceipt mempool check error: ' . $e->getMessage(), 'ERROR');
+                return null;
+            }
         }
         $blockNumberHex = isset($tx['block_height']) && $tx['block_height'] !== null
             ? ('0x' . dechex((int)$tx['block_height']))
             : null;
         $statusHex = ($tx['status'] ?? '') === 'confirmed' ? '0x1' : '0x0';
-        $gasUsed = (int)($tx['gas_used'] ?? 21000);
-        $gasPrice = (int)($tx['gas_price'] ?? 0);
         return [
             'transactionHash' => $tx['hash'],
             'transactionIndex' => '0x0',
@@ -3327,14 +3321,12 @@ function getTransactionReceipt($walletManager, string $hash): ?array
             'blockNumber' => $blockNumberHex,
             'from' => $tx['from_address'] ?? null,
             'to' => $tx['to_address'] ?? null,
-            'cumulativeGasUsed' => '0x' . dechex($gasUsed),
-            'gasUsed' => '0x' . dechex($gasUsed),
+            'cumulativeGasUsed' => '0x0',
+            'gasUsed' => '0x0',
             'contractAddress' => null,
             'logs' => [],
-            'logsBloom' => '0x' . str_repeat('0', 512*2),
+            'logsBloom' => '0x',
             'status' => $statusHex,
-            'effectiveGasPrice' => '0x' . dechex($gasPrice),
-            'type' => '0x0'
         ];
     } catch (Exception $e) {
         writeLog('getTransactionReceipt error: ' . $e->getMessage(), 'ERROR');
@@ -3696,6 +3688,142 @@ function queueRawTransaction(string $txHash, string $rawHex, array $parsed = [])
 }
 
 /**
+ * Recover the 'from' address from an EIP-1559 transaction signature
+ */
+function recoverEIP1559FromAddress($chainIdHex, $nonceHex, $maxPriorityFeePerGasHex, $maxFeePerGasHex, $gasHex, $toHex, $valueHex, $inputHex, $accessList, $vRaw, $rRaw, $sRaw): ?string {
+    try {
+        // Convert hex values to integers
+        $chainId = hexdec(ltrim($chainIdHex, '0x'));
+        $nonce = hexdec(ltrim($nonceHex, '0x'));
+        $maxPriorityFeePerGas = hexdec(ltrim($maxPriorityFeePerGasHex, '0x'));
+        $maxFeePerGas = hexdec(ltrim($maxFeePerGasHex, '0x'));
+        $gasLimit = hexdec(ltrim($gasHex, '0x'));
+        $value = hexdec(ltrim($valueHex, '0x'));
+        
+        // Convert to addresses/data
+        $to = ltrim($toHex, '0x');
+        $input = ltrim($inputHex, '0x');
+        
+        // Build RLP encoding for signing (without signature)
+        $unsignedTxData = [
+            intToRLP($chainId),
+            intToRLP($nonce),
+            intToRLP($maxPriorityFeePerGas),
+            intToRLP($maxFeePerGas),
+            intToRLP($gasLimit),
+            hex2bin(str_pad($to, 40, '0', STR_PAD_LEFT)),
+            intToRLP($value),
+            hex2bin($input),
+            [] // accessList (simplified as empty)
+        ];
+        
+        // RLP encode the unsigned transaction
+        $rlpEncoded = rlpEncode($unsignedTxData);
+        
+        // Prepend transaction type (0x02 for EIP-1559)
+        $messageHash = \Blockchain\Core\Crypto\Hash::keccak256(hex2bin('02') . $rlpEncoded);
+        
+        // Extract signature components
+        $vBin = is_string($vRaw) ? $vRaw : '';
+        $rBin = is_string($rRaw) ? $rRaw : '';
+        $sBin = is_string($sRaw) ? $sRaw : '';
+        
+        if (strlen($vBin) === 0 || strlen($rBin) === 0 || strlen($sBin) === 0) {
+            return null;
+        }
+        
+        // For EIP-1559, v is either 0 or 1 (recovery id)
+        $recoveryId = ord($vBin);
+        
+        // Convert r and s to hex
+        $rHex = bin2hex($rBin);
+        $sHex = bin2hex($sBin);
+        
+        // Use secp256k1 recovery (if available)
+        if (function_exists('secp256k1_ecdsa_recover')) {
+            $context = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+            
+            // Create recoverable signature
+            $signature = pack('H*', $rHex . $sHex);
+            $recoverableSignature = secp256k1_ecdsa_recoverable_signature_parse_compact($context, $signature, $recoveryId);
+            
+            // Recover public key
+            $publicKey = secp256k1_ecdsa_recover($context, $recoverableSignature, hex2bin($messageHash));
+            $publicKeySerialize = secp256k1_ec_pubkey_serialize($context, $publicKey, SECP256K1_EC_UNCOMPRESSED);
+            
+            // Extract address from public key (last 20 bytes of keccak256 hash)
+            $publicKeyHash = \Blockchain\Core\Crypto\Hash::keccak256(substr($publicKeySerialize, 1)); // Remove 0x04 prefix
+            $address = '0x' . substr($publicKeyHash, -40);
+            
+            return strtolower($address);
+        }
+        
+        // Fallback: simplified recovery (may not be accurate)
+        return null;
+        
+    } catch (\Throwable $e) {
+        return null;
+    }
+}
+
+/**
+ * Convert integer to RLP bytes
+ */
+function intToRLP(int $value): string {
+    if ($value === 0) {
+        return '';
+    }
+    
+    $hex = dechex($value);
+    if (strlen($hex) % 2 !== 0) {
+        $hex = '0' . $hex;
+    }
+    
+    return hex2bin($hex);
+}
+
+/**
+ * Simple RLP encoding
+ */
+function rlpEncode($data): string {
+    if (is_string($data)) {
+        $length = strlen($data);
+        if ($length === 1 && ord($data[0]) < 0x80) {
+            return $data;
+        } elseif ($length <= 55) {
+            return chr(0x80 + $length) . $data;
+        } else {
+            $lengthEncoding = '';
+            $temp = $length;
+            while ($temp > 0) {
+                $lengthEncoding = chr($temp & 0xff) . $lengthEncoding;
+                $temp >>= 8;
+            }
+            return chr(0xb7 + strlen($lengthEncoding)) . $lengthEncoding . $data;
+        }
+    } elseif (is_array($data)) {
+        $output = '';
+        foreach ($data as $item) {
+            $output .= rlpEncode($item);
+        }
+        $length = strlen($output);
+        if ($length <= 55) {
+            return chr(0xc0 + $length) . $output;
+        } else {
+            $lengthEncoding = '';
+            $temp = $length;
+            while ($temp > 0) {
+                $lengthEncoding = chr($temp & 0xff) . $lengthEncoding;
+                $temp >>= 8;
+            }
+            return chr(0xf7 + strlen($lengthEncoding)) . $lengthEncoding . $output;
+        }
+    }
+    
+    return '';
+}
+
+/**
  * Minimal RLP decoding for Ethereum legacy txs to extract from/to/value/nonce (best-effort).
  * This is intentionally permissive and does not validate chain IDs or signatures.
  */
@@ -3765,7 +3893,7 @@ function parseEthRawTransaction(string $rawHex): array
         $readItem = function() use (&$read) { return $read(); };
 
         // Patch closures to call nested safely
-        $reflect = function($bin, &$offset) use (&$readItem, &$read) {
+        $reflect = function($bin, &$offset) use (&$reflect) {
             $len = strlen($bin);
             if ($offset >= $len) return null;
             $b0 = ord($bin[$offset]);
@@ -3791,17 +3919,40 @@ function parseEthRawTransaction(string $rawHex): array
 
         if ($isTyped && $typeByte === 0x02) {
             // EIP-1559 fields: [chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data, accessList, v, r, s]
+            $chainId = $numHex($list[0] ?? '');
+            $nonce = $numHex($list[1] ?? '');
+            $maxPriorityFeePerGas = $numHex($list[2] ?? '');
+            $maxFeePerGas = $numHex($list[3] ?? '');
+            $gas = $numHex($list[4] ?? '');
+            $to = $toHex40($list[5] ?? '');
+            $value = $numHex($list[6] ?? '');
+            $input = $hex($list[7] ?? '');
+            $accessList = $list[8] ?? [];
+            $v = $list[9] ?? '';
+            $r = $list[10] ?? '';
+            $s = $list[11] ?? '';
+            
             $out = [
-                'nonce' => $numHex($list[1] ?? ''),
-                'maxPriorityFeePerGas' => $numHex($list[2] ?? ''),
-                'maxFeePerGas' => $numHex($list[3] ?? ''),
-                'gas' => $numHex($list[4] ?? ''),
-                'to' => $toHex40($list[5] ?? ''),
-                'value' => $numHex($list[6] ?? ''),
-                'input' => $hex($list[7] ?? ''),
+                'chainId' => $chainId,
+                'nonce' => $nonce,
+                'maxPriorityFeePerGas' => $maxPriorityFeePerGas,
+                'maxFeePerGas' => $maxFeePerGas,
+                'gas' => $gas,
+                'to' => $to,
+                'value' => $value,
+                'input' => $input,
                 'type' => '0x2'
             ];
-            return $out;
+            
+            // Try to recover 'from' address from signature
+            try {
+                $fromAddress = recoverEIP1559FromAddress($chainId, $nonce, $maxPriorityFeePerGas, $maxFeePerGas, $gas, $to, $value, $input, $accessList, $v, $r, $s);
+                if ($fromAddress) {
+                    $out['from'] = $fromAddress;
+                }
+            } catch (\Throwable $e) {
+                // Ignore signature recovery errors
+            }
         } else {
             // Legacy tx fields: [nonce, gasPrice, gasLimit, to, value, data, v, r, s]
             $out = [
@@ -3813,8 +3964,20 @@ function parseEthRawTransaction(string $rawHex): array
                 'input' => $hex($list[5] ?? ''),
                 'type' => '0x0'
             ];
-            return $out;
         }
+        
+        // Use EthereumTx::recoverAddress to get the 'from' address
+        try {
+            $fullRawHex = '0x' . $rawHex;
+            $fromAddress = \Blockchain\Core\Crypto\EthereumTx::recoverAddress($fullRawHex);
+            if ($fromAddress) {
+                $out['from'] = $fromAddress;
+            }
+        } catch (\Throwable $e) {
+            // Ignore signature recovery errors
+        }
+        
+        return $out;
     } catch (\Throwable $e) {
         writeLog('parseEthRawTransaction error: ' . $e->getMessage(), 'ERROR');
         return [];
@@ -3930,15 +4093,15 @@ function getOrDeployStakingContract(PDO $pdo, string $deployerAddress): string {
     try {
         // Minimal logger implementation
         $logger = new class implements \Psr\Log\LoggerInterface {
-            public function emergency($message, array $context = []) {}
-            public function alert($message, array $context = []) {}
-            public function critical($message, array $context = []) {}
-            public function error($message, array $context = []) {}
-            public function warning($message, array $context = []) {}
-            public function notice($message, array $context = []) {}
-            public function info($message, array $context = []) {}
-            public function debug($message, array $context = []) {}
-            public function log($level, $message, array $context = []) {}
+            public function emergency($message, array $context = []): void {}
+            public function alert($message, array $context = []): void {}
+            public function critical($message, array $context = []): void {}
+            public function error($message, array $context = []): void {}
+            public function warning($message, array $context = []): void {}
+            public function notice($message, array $context = []): void {}
+            public function info($message, array $context = []): void {}
+            public function debug($message, array $context = []): void {}
+            public function log($level, $message, array $context = []): void {}
         };
 
         $vm = new \Blockchain\Core\SmartContract\VirtualMachine(3000000);
@@ -3969,3 +4132,5 @@ function getOrDeployStakingContract(PDO $pdo, string $deployerAddress): string {
     // If still not available
     return '';
 }
+
+

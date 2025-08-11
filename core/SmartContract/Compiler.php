@@ -83,12 +83,12 @@ class Compiler
         ];
 
         // Extract contract name
-        if (preg_match('/contract\s+(\w+)/', $code, $matches)) {
+    if (preg_match('~contract\s+(\w+)~', $code, $matches)) {
             $contract['name'] = $matches[1];
         }
 
         // Extract state variables
-        if (preg_match_all('/(\w+)\s+(?:public\s+)?(\w+)\s*(?:=\s*([^;]+))?;/', $code, $matches, PREG_SET_ORDER)) {
+    if (preg_match_all('~(\w+)\s+(?:public\s+)?(\w+)\s*(?:=\s*([^;]+))?;~', $code, $matches, PREG_SET_ORDER)) {
             foreach ($matches as $match) {
                 $contract['variables'][] = [
                     'type' => $match[1],
@@ -100,7 +100,7 @@ class Compiler
         }
 
         // Extract functions
-        if (preg_match_all('/function\s+(\w+)\s*\([^)]*\)\s*(?:public|private)?\s*(?:returns\s*\([^)]*\))?\s*\{([^}]+)\}/', $code, $matches, PREG_SET_ORDER)) {
+    if (preg_match_all('~function\s+(\w+)\s*\([^)]*\)\s*(?:public|private)?\s*(?:returns\s*\([^)]*\))?\s*\{([^}]+)\}~', $code, $matches, PREG_SET_ORDER)) {
             foreach ($matches as $match) {
                 $contract['functions'][] = [
                     'name' => $match[1],
@@ -272,13 +272,13 @@ class Compiler
         }
         
         // Variable reference
-        if (preg_match('/^\w+$/', $expression)) {
+    if (preg_match('~^\w+$~', $expression)) {
             $address = $this->getVariableAddress($expression);
             return '61' . str_pad(dechex($address), 4, '0', STR_PAD_LEFT) . '54'; // PUSH2 address, SLOAD
         }
         
         // Binary operation
-        if (preg_match('/(.+)\s*([+\-*/])\s*(.+)/', $expression, $matches)) {
+    if (preg_match('~(.+)\s*([+\-*/])\s*(.+)~', $expression, $matches)) {
             $left = $this->compileExpression($matches[1]);
             $right = $this->compileExpression($matches[3]);
             $operator = $matches[2];
@@ -302,7 +302,7 @@ class Compiler
      */
     private function parseParameters(string $functionSignature): array
     {
-        if (preg_match('/\(([^)]*)\)/', $functionSignature, $matches)) {
+    if (preg_match('~\(([^)]*)\)~', $functionSignature, $matches)) {
             $params = trim($matches[1]);
             if (empty($params)) {
                 return [];
@@ -311,7 +311,7 @@ class Compiler
             $parameters = [];
             foreach (explode(',', $params) as $param) {
                 $param = trim($param);
-                if (preg_match('/(\w+)\s+(\w+)/', $param, $paramMatches)) {
+                if (preg_match('~(\w+)\s+(\w+)~', $param, $paramMatches)) {
                     $parameters[] = [
                         'type' => $paramMatches[1],
                         'name' => $paramMatches[2]
@@ -329,7 +329,7 @@ class Compiler
      */
     private function parseReturns(string $functionSignature): array
     {
-        if (preg_match('/returns\s*\(([^)]*)\)/', $functionSignature, $matches)) {
+    if (preg_match('~returns\s*\(([^)]*)\)~', $functionSignature, $matches)) {
             $returns = trim($matches[1]);
             if (empty($returns)) {
                 return [];
@@ -354,7 +354,7 @@ class Compiler
             if (empty($line)) continue;
             
             // Assignment
-            if (preg_match('/(\w+)\s*=\s*(.+)/', $line, $matches)) {
+            if (preg_match('~(\w+)\s*=\s*(.+)~', $line, $matches)) {
                 $statements[] = [
                     'type' => 'assignment',
                     'variable' => $matches[1],
@@ -362,7 +362,7 @@ class Compiler
                 ];
             }
             // Return
-            elseif (preg_match('/return\s*(.*)/', $line, $matches)) {
+            elseif (preg_match('~return\s*(.*)~', $line, $matches)) {
                 $statements[] = [
                     'type' => 'return',
                     'value' => $matches[1] ?: null

@@ -2,27 +2,45 @@
 
 # Environment files
 .env
-config/.env
-.env.local
-.env.production
-.env.test
+.env.*
+config/.env*
 
 # Composer
 /vendor/
 composer.lock
 
-# Storage and logs
+# Storage and blockchain data
 /storage/logs/*
 /storage/blocks/*
 /storage/wallets/*
 /storage/cache/*
 /storage/temp/*
+/storage/blockchain/*
+/storage/state/*
+/storage/test/*
+/storage/raw_mempool/processed/*
+/storage/trustwallet/*
 !/storage/.gitkeep
+!/storage/raw_mempool/.gitkeep
 
-# Database
+# Database files
 *.db
 *.sqlite
 *.sqlite3
+*.sql
+blockchain.sql
+blockchain.bin
+blockchain.idx
+
+# Configuration files (sensitive)
+config/installation.json
+config/install_config.json
+config/installed
+config/local.php
+
+# Test files
+test_*.php
+*_test.php
 
 # IDE files
 .vscode/
@@ -58,32 +76,9 @@ yarn.lock
 .phpunit.result.cache
 phpunit.xml
 
-# Deployment
-.deployment
-.deploy
-
-# Configuration
-/config/installed
-/config/local.php
-
-# Temporary files
-*.tmp
-*.temp
-*.bak
-*.backup
-
-# Blockchain data
-/blockchain_data/*
-/peer_data/*
-
-# Docker
-.docker/
-
-# PHP CS Fixer
+# PHP tools
 .php_cs.cache
 .php-cs-fixer.cache
-
-# PHPStan
 phpstan.neon.dist
 
 # Logs
@@ -96,10 +91,14 @@ phpstan.neon.dist
 /keys/
 /certificates/
 
-# Backup files
+# Backup and temporary files
 *.backup
 *.bak
 *.old
+*.tmp
+*.temp
+*.pid
+*.lock
 
 # Archives
 *.zip
@@ -107,37 +106,25 @@ phpstan.neon.dist
 *.tar.gz
 *.rar
 
-# Runtime files
-*.pid
-*.lock
-blockchain.sql
-.htaccess
-.gitignore
-storage/blockchain/genesis.json
-.gitignore
-storage/blockchain/chain.json
-storage/state/blockchain_state.json
-storage/blockchain/blockchain.bin
-storage/blockchain/blockchain.bin
-.gitignore
-storage/blockchain/blockchain.bin
-.github/instructions/copilot.instructions.md
-a379149_node1.sql
-a379149_wallet (20).sql
-integration_summary.md
-REGULAR_NODE_SETUP.md
-security_updates_summary.md
-test_full_sync.php
-test_sync.php
-storage/blockchain.bin
-config/install_config.json
-config/install_config.json
-storage/state/services_status.json
-config/installation.json
-a379149_wallet (22).sql
-dual_quick_sync.php
+# Documentation and release files
 RELEASE_META.json
-storage/raw_mempool/processed/71dc38b219ac74afacfb3a9a6a67a26cae5d72cfa991db0f989b930701ad6124.json
-storage/raw_mempool/processed/261ba80b41ac5563435066a82ed0da2f4318774ba0b53060c63f8e661bafd584.json
-storage/raw_mempool/processed/e93afe56e40cbbaf9431820f443aaca619b2aa36c7f186d76b97d79853202f88.json
-storage/raw_mempool/processed/feb4021e922de07c0b76f98c2195e0a623cccff5e0013c000c7a8ec325a2067a.json
+*.md
+!README.md
+
+# CLI scripts (optional, may want to keep some)
+recovery_cli.php
+dual_quick_sync.php
+
+# Apache/nginx
+.htaccess
+storage/blockchain_runtime.json
+storage/sync_autostart.flag
+storage/blockchain/blockchain.bin
+storage/blockchain/blockchain.idx
+storage/test/blockchain.bin
+storage/test/test_blockchain.bin
+storage/trustwallet/network.json
+storage/trustwallet/tokenlist.json
+blockchain.json
+storage/trustwallet/network.json
+storage/trustwallet/tokenlist.json

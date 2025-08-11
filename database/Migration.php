@@ -177,7 +177,7 @@ class Migration
             -- Transactions table
             CREATE TABLE IF NOT EXISTS transactions (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                hash VARCHAR(64) NOT NULL UNIQUE,
+                hash VARCHAR(66) NOT NULL UNIQUE,
                 block_hash VARCHAR(64) NOT NULL,
                 block_height BIGINT NOT NULL,
                 from_address VARCHAR(42) NOT NULL,
@@ -306,7 +306,7 @@ class Migration
             -- Mempool table (consensus-critical)
             CREATE TABLE IF NOT EXISTS mempool (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                tx_hash VARCHAR(64) NOT NULL UNIQUE,
+                tx_hash VARCHAR(66) NOT NULL UNIQUE,
                 from_address VARCHAR(42) NOT NULL,
                 to_address VARCHAR(42) NOT NULL,
                 amount DECIMAL(20,8) NOT NULL DEFAULT 0,

@@ -60,6 +60,15 @@ class EthereumTx
         return self::rlpEncodeList($norm);
     }
 
+    // Encode single element (string raw) per RLP rules
+    private static function rlpEncodeElement(string $bin): string {
+        $len = strlen($bin);
+        if ($len===1 && ord($bin)<=0x7f) return $bin;
+        if ($len<=55) return chr(0x80+$len).$bin;
+        $lenBytes = self::intToBin($len);
+        return chr(0xb7+strlen($lenBytes)).$lenBytes.$bin;
+    }
+
     public static function effectiveGasPrice($maxPriority, $maxFee, $gasPriceLegacy): int {
         $toInt = function($h){ if(!$h) return 0; $h=strtolower($h); if(str_starts_with($h,'0x')) $h=substr($h,2); if($h==='') return 0; return intval($h,16); };
         if ($gasPriceLegacy) return $toInt($gasPriceLegacy);
@@ -86,9 +95,34 @@ class EthereumTx
             $r = self::gmpFromBin($items[10] ?? '');
             $s = self::gmpFromBin($items[11] ?? '');
             if ($r == 0 || $s == 0) return null;
-            // Signing payload: type byte + RLP([chainId..accessList])
-            $core = array_slice($items,0,9);
-            $enc = self::rlpEncode($core);
+            // Signing payload: 0x02 || RLP([chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data, accessList])
+            // В simpleRlpTopLevel accessList возвращается уже целиком RLP-энкоденной (как raw bytes списка).
+            // Нельзя её пере-энкодить повторно, иначе получится неверный хэш и неправильный адрес.
+            $chainToData = array_slice($items, 0, 8); // первые 8 примитивов (без accessList)
+            $accessListEnc = $items[8] ?? "";       // уже RLP-encoded список
+            // Сформировать тело списка вручную: RLP(элементы) + raw accessList
+            $inner = '';
+            foreach ($chainToData as $rawEl) {
+                // Используем приватный rlpEncodeStr эквивалент (доступен внутри класса)
+                if ($rawEl === null) $rawEl = '';
+                if (!is_string($rawEl)) $rawEl = '';
+                $inner .= self::rlpEncodeElement($rawEl);
+            }
+            // Добавляем accessList как уже закодированный элемент (он уже включает собственный префикс)
+            if (is_string($accessListEnc)) {
+                $inner .= $accessListEnc;
+            } else {
+                // fallback: пустой список
+                $inner .= "\xc0";
+            }
+            // Теперь оборачиваем весь внутренний payload как список
+            $lenInner = strlen($inner);
+            if ($lenInner <= 55) {
+                $enc = chr(0xc0 + $lenInner) . $inner;
+            } else {
+                $lenBytes = self::intToBin($lenInner);
+                $enc = chr(0xf7 + strlen($lenBytes)) . $lenBytes . $inner;
+            }
             $preimage = hex2bin($type) . $enc;
             $hashHex = self::keccak256($preimage);
             $vInt = (int)gmp_strval($v,10); // For 1559 v is yParity (0 or 1)

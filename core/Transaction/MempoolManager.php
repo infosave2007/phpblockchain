@@ -4,7 +4,6 @@ declare(strict_types=1);
 namespace Blockchain\Core\Transaction;
 
 use Blockchain\Core\Transaction\Transaction;
-use Blockchain\Core\Transaction\FeePolicy;
 use PDO;
 use Exception;
 
@@ -25,16 +24,7 @@ class MempoolManager
         $this->database = $database;
         $this->config = $config;
         $this->maxSize = $config['max_size'] ?? 10000;
-        try {
-            $rate = FeePolicy::getRate($database);
-        } catch (\Throwable $e) {
-            $rate = 0.001;
-        }
-        if ($rate <= 0) {
-            $this->minFee = 0.0;
-        } else {
-            $this->minFee = $config['min_fee'] ?? $rate;
-        }
+        $this->minFee = $config['min_fee'] ?? 0.001;
     }
     
     /**
@@ -48,9 +38,14 @@ class MempoolManager
                 throw new Exception("Invalid transaction");
             }
             
-            // Check if transaction already exists
+            // Check if transaction already exists by hash
             if ($this->hasTransaction($transaction->getHash())) {
                 throw new Exception("Transaction already in mempool");
+            }
+            
+            // Check for duplicate by content (from, to, amount, nonce)
+            if ($this->hasSimilarTransaction($transaction)) {
+                throw new Exception("Similar transaction already in mempool");
             }
             
             // Check minimum fee
@@ -143,6 +138,29 @@ class MempoolManager
     }
     
     /**
+     * Check if similar transaction exists in mempool
+     */
+    public function hasSimilarTransaction(Transaction $transaction): bool
+    {
+        $stmt = $this->database->prepare("
+            SELECT COUNT(*) FROM mempool 
+            WHERE from_address = ? 
+            AND to_address = ? 
+            AND amount = ? 
+            AND nonce = ?
+        ");
+        
+        $stmt->execute([
+            $transaction->getFromAddress(),
+            $transaction->getToAddress(),
+            $transaction->getAmount(),
+            $transaction->getNonce()
+        ]);
+        
+        return (int)$stmt->fetchColumn() > 0;
+    }
+    
+    /**
      * Get transactions for block creation
      */
     public function getTransactionsForBlock(int $maxCount = 1000, int $maxGas = 8000000): array
@@ -150,10 +168,11 @@ class MempoolManager
         $stmt = $this->database->prepare("
             SELECT * FROM mempool 
             ORDER BY priority_score DESC, created_at ASC 
-            LIMIT ?
+            LIMIT :max_count
         ");
         
-        $stmt->execute([$maxCount]);
+        $stmt->bindParam(':max_count', $maxCount, PDO::PARAM_INT);
+        $stmt->execute();
         $transactions = [];
         $totalGas = 0;
         
@@ -376,7 +395,15 @@ class MempoolManager
             (float)$data['gas_price']
         );
         
-        $transaction->setSignature($data['signature']);
+        // Preserve original persisted hash
+        if (isset($data['tx_hash'])) {
+            $transaction->forceHash($data['tx_hash']);
+        }
+        
+        // Set signature if present
+        if (!empty($data['signature'])) {
+            $transaction->setSignature($data['signature']);
+        }
         
         return $transaction;
     }

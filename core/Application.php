@@ -17,6 +17,7 @@ use Blockchain\Nodes\NodeManager;
 use Blockchain\Core\Network\MultiCurl;
 use Blockchain\Contracts\SmartContractManager;
 use Blockchain\Core\Consensus\ProofOfStake;
+use Blockchain\Core\Logging\NullLogger;
 use Blockchain\Core\Cryptography\MessageEncryption;
 use Blockchain\Core\Recovery\BlockchainRecoveryManager;
 use Blockchain\Wallet\WalletManager;
@@ -91,20 +92,7 @@ class Application
      */
     private function initializeConsensus(): void
     {
-        // Create a simple logger for consensus
-        $logger = new class implements \Psr\Log\LoggerInterface {
-            public function emergency($message, array $context = []) {}
-            public function alert($message, array $context = []) {}
-            public function critical($message, array $context = []) {}
-            public function error($message, array $context = []) {}
-            public function warning($message, array $context = []) {}
-            public function notice($message, array $context = []) {}
-            public function info($message, array $context = []) {}
-            public function debug($message, array $context = []) {}
-            public function log($level, $message, array $context = []) {}
-        };
-        
-        $this->consensus = new ProofOfStake($logger);
+    $this->consensus = new ProofOfStake(new NullLogger());
     }
 
     /**
@@ -115,20 +103,7 @@ class Application
         $multiCurl = new MultiCurl();
         $eventDispatcher = new EventDispatcher();
         
-        // Create a simple logger for node manager
-        $logger = new class implements \Psr\Log\LoggerInterface {
-            public function emergency($message, array $context = []) {}
-            public function alert($message, array $context = []) {}
-            public function critical($message, array $context = []) {}
-            public function error($message, array $context = []) {}
-            public function warning($message, array $context = []) {}
-            public function notice($message, array $context = []) {}
-            public function info($message, array $context = []) {}
-            public function debug($message, array $context = []) {}
-            public function log($level, $message, array $context = []) {}
-        };
-        
-        $this->nodeManager = new NodeManager($multiCurl, $eventDispatcher, $logger, $this->config);
+    $this->nodeManager = new NodeManager($multiCurl, $eventDispatcher, new NullLogger(), $this->config);
     }
 
     /**
@@ -136,19 +111,8 @@ class Application
      */
     private function initializeSmartContracts(): void
     {
-        // Real SmartContractManager wiring (no mocks)
-        $logger = new class implements \Psr\Log\LoggerInterface {
-            public function emergency($message, array $context = []) {}
-            public function alert($message, array $context = []) {}
-            public function critical($message, array $context = []) {}
-            public function error($message, array $context = []) {}
-            public function warning($message, array $context = []) {}
-            public function notice($message, array $context = []) {}
-            public function info($message, array $context = []) {}
-            public function debug($message, array $context = []) {}
-            public function log($level, $message, array $context = []) {}
-        };
-
+    // Real SmartContractManager wiring (no mocks)
+    $logger = new NullLogger();
         $vm = new \Blockchain\Core\SmartContract\VirtualMachine(3000000);
         $stateStorage = new \Blockchain\Core\Storage\StateStorage($this->database);
         $this->contractManager = new SmartContractManager($vm, $stateStorage, $logger, $this->config);
@@ -182,19 +146,8 @@ class Application
      */
     private function initializeAPI(): void
     {
-        // Create a simple logger for API
-        $logger = new class implements \Psr\Log\LoggerInterface {
-            public function emergency($message, array $context = []) {}
-            public function alert($message, array $context = []) {}
-            public function critical($message, array $context = []) {}
-            public function error($message, array $context = []) {}
-            public function warning($message, array $context = []) {}
-            public function notice($message, array $context = []) {}
-            public function info($message, array $context = []) {}
-            public function debug($message, array $context = []) {}
-            public function log($level, $message, array $context = []) {}
-        };
-        
+    // Create a simple logger for API
+    $logger = new NullLogger();
         // Create a simple WalletManager instance
         $walletManager = new WalletManager($this->database, $this->config);
         

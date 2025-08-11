@@ -35,3 +35,16 @@ Thumbs.db
 # Temporary files
 tmp/
 temp/
+
+# Release artifacts
+release-*.zip
+RELEASE_META.json
+
+# Blockchain runtime data (mounted via volumes instead)
+storage/blockchain/
+storage/state/
+storage/trustwallet/
+storage/test/
+
+# Local composer lock can optionally be excluded for faster iterative dev builds (comment out if deterministic builds needed)
+composer.lock

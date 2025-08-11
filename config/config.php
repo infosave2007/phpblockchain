@@ -1,7 +1,7 @@
 <?php
 
 // Auto-generated configuration file
-// Generated on: 2025-08-09 13:23:06
+// Generated on: 2025-08-11 12:16:49
 
 return array (
   'app' => 
@@ -11,8 +11,8 @@ return array (
     'debug' => false,
     'timezone' => 'UTC',
     'installed' => true,
-    'key' => 'a0950e7c97549a55fb64025204e569c3a299d43768fab3e42be91daedf9499f7',
-    'installation_date' => '2025-08-09 13:23:06',
+    'key' => '79e550704f20eb1cf4b7ba16bed62f87fc62e415a3467d5903b19e138f73b606',
+    'installation_date' => '2025-08-11 12:16:49',
   ),
   'database' => 
   array (
@@ -20,7 +20,7 @@ return array (
   'blockchain' => 
   array (
     'genesis_created' => true,
-    'last_block_check' => 1754745786,
+    'last_block_check' => 1754914609,
     'binary_storage' => 
     array (
       'enabled' => true,
@@ -44,7 +44,7 @@ return array (
   ),
   'security' => 
   array (
-    'jwt_secret' => '4dae70d3e56a0d0d998ab313f358c20b06040aedb22f0ac12ba0e84b67d718ef',
+    'jwt_secret' => '0ecd8143193a5ac4599013699c7a2b7a1cefbde742a2fb0f781b10fcc0523d67',
     'session_lifetime' => 86400,
     'rate_limit' => 
     array (

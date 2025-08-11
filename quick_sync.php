@@ -238,15 +238,6 @@ function performSync($syncManager, $options = []) {
             } catch (Exception $e) {
                 if (!$quiet) echo "Raw queue processing error: " . $e->getMessage() . "\n";
             }
-            // After raw queue ingestion, try lightweight local finalization to give receipts
-            if (in_array($command ?? '', ['enhanced-sync','sync'])) {
-                try {
-                    $finalized = finalizeMempoolInline($syncManager, 200, $verbose);
-                    if ($verbose && $finalized > 0) echo "⛏️  Finalized $finalized pending tx(s) into a new block\n";
-                } catch (Exception $e) {
-                    if ($verbose) echo "Finalize mempool warning: " . $e->getMessage() . "\n";
-                }
-            }
         }
         
         // Step 3: Enhanced mempool processing and recovery
@@ -469,22 +460,6 @@ function processRawQueueInline($syncManager, $quiet = false, $verbose = false) {
     $minFee = 0.0;
     if ($mpRef->hasProperty('minFee')) { $pf = $mpRef->getProperty('minFee'); $pf->setAccessible(true); $minFee = (float)$pf->getValue($mempool); }
     $added = 0; $processed = 0;
-    // Pre-scan processed directory to collect known raw_hash values to speed duplicate detection
-    $knownRawHashes = [];
-    $procScan = glob($processedDir . '/*.json');
-    if ($procScan) {
-        foreach ($procScan as $pf) {
-            $pj = json_decode(@file_get_contents($pf), true);
-            if (!is_array($pj)) continue;
-            if (!empty($pj['raw'])) {
-                $kh = hash('sha256', strtolower($pj['raw']));
-                $knownRawHashes[$kh] = true;
-            } elseif (!empty($pj['raw_hash'])) {
-                $knownRawHashes[$pj['raw_hash']] = true;
-            }
-        }
-    }
-
     foreach ($files as $file) {
         $processed++;
         $json = json_decode(@file_get_contents($file), true);
@@ -494,15 +469,6 @@ function processRawQueueInline($syncManager, $quiet = false, $verbose = false) {
         $from = isset($parsed['from']) ? $parsed['from'] : null;
         $to = isset($parsed['to']) ? $parsed['to'] : null;
         $valueHex = isset($parsed['value']) ? $parsed['value'] : '0x0';
-        $rawHexOriginal = isset($json['raw']) ? $json['raw'] : null;
-        $stableRawHash = null;
-        if ($rawHexOriginal) {
-            // Normalize: lowercase, ensure 0x prefix removed for hashing stability
-            $norm = strtolower($rawHexOriginal);
-            if (strpos($norm,'0x')===0) $norm = substr($norm,2);
-            $stableRawHash = hash('sha256', $norm);
-            $json['raw_hash'] = $stableRawHash; // persist later
-        }
         // If no parsed data (legacy empty) attempt inline parse of raw
         if ((!$to || !$valueHex || $parsed === [] || strlen($to) !== 42) && isset($json['raw'])) {
             $inlineRaw = $json['raw'];
@@ -611,20 +577,8 @@ function processRawQueueInline($syncManager, $quiet = false, $verbose = false) {
             }
         }
         if (!is_string($to) || strlen($to) !== 42) { @rename($file, $processedDir . '/' . basename($file)); continue; }
-        
-        // Always attempt address recovery if from is not a valid address
-        if (!$from || !is_string($from) || strlen($from) !== 42 || $from === '0x' . str_repeat('0', 40)) {
-            try { 
-                $rec = EthereumTx::recoverAddress(isset($json['raw']) ? $json['raw'] : ''); 
-                if ($rec && is_string($rec) && strlen($rec) === 42) {
-                    $from = strtolower($rec);
-                    // Update parsed data with recovered address
-                    $parsed['from'] = $from;
-                    if ($verbose) echo "  Recovered from address: $from for " . basename($file) . "\n";
-                }
-            } catch (Exception $e) {
-                if ($verbose) echo "  Address recovery failed: " . $e->getMessage() . "\n";
-            }
+        if (!$from) {
+            try { $rec = EthereumTx::recoverAddress(isset($json['raw']) ? $json['raw'] : ''); if ($rec) $from = strtolower($rec); } catch (Exception $e) {}
         }
         if (!$from || strlen($from) !== 42) $from = '0x' . str_repeat('0', 40);
 
@@ -665,56 +619,10 @@ function processRawQueueInline($syncManager, $quiet = false, $verbose = false) {
         if ($gasPriceInt > 0) {
             $gasPriceToken = $gasPriceInt / 1e18; // float approximation
         }
-        // Duplicate raw guard (skip if stable raw already processed OR if same from+nonce already present in mempool/transactions)
-        $duplicateReason = null;
-        if ($stableRawHash && isset($knownRawHashes[$stableRawHash])) {
-            $duplicateReason = 'raw_hash_already_processed';
-        }
-        if (!$duplicateReason && $stableRawHash) {
-            // Quick DB existence check by hash (if already confirmed as transaction)
-            try {
-                $stmt = $pdo->prepare("SELECT 1 FROM transactions WHERE hash = ? LIMIT 1");
-                if ($stmt->execute([$stableRawHash]) && $stmt->fetchColumn()) {
-                    $duplicateReason = 'raw_hash_confirmed';
-                }
-            } catch (Exception $e) { /* ignore */ }
-        }
-        if (!$duplicateReason && $from && $nonceInt > 0) {
-            try {
-                $stmt = $pdo->prepare("SELECT 1 FROM mempool WHERE from_address = ? AND nonce = ? LIMIT 1");
-                if ($stmt->execute([$from, $nonceInt]) && $stmt->fetchColumn()) {
-                    $duplicateReason = 'same_from_nonce_in_mempool';
-                }
-            } catch (Exception $e) { /* ignore if schema mismatch */ }
-            if (!$duplicateReason) {
-                try {
-                    $stmt = $pdo->prepare("SELECT 1 FROM transactions WHERE from_address = ? AND nonce = ? LIMIT 1");
-                    if ($stmt->execute([$from, $nonceInt]) && $stmt->fetchColumn()) {
-                        $duplicateReason = 'same_from_nonce_confirmed';
-                    }
-                } catch (Exception $e) { /* ignore */ }
-            }
-        }
-
         try {
-            if ($duplicateReason) {
-                if ($verbose) echo "  - skipped raw $hash duplicate ($duplicateReason) from=$from nonce=$nonceInt\n";
-                // Persist parsed & hash then move to processed to stop salvage
-                $json['parsed'] = $parsed;
-                $json['reprocessed_at'] = date('c');
-                $json['internal_tx_hash'] = $json['internal_tx_hash'] ?? $stableRawHash;
-                $outPath = $processedDir . '/' . basename($file);
-                @file_put_contents($outPath . '.tmp', json_encode($json, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
-                @rename($outPath . '.tmp', $outPath);
-                @unlink($file);
-                continue;
-            }
-
             $tx = new Transaction($from, $to, $amount, $fee, $nonceInt, null, $gasLimit > 0 ? $gasLimit : 21000, $gasPriceToken);
             $ref = new ReflectionClass($tx);
             if ($ref->hasProperty('signature')) { $p = $ref->getProperty('signature'); $p->setAccessible(true); $p->setValue($tx, 'external_raw'); }
-            // Stabilize transaction hash = sha256(raw) if possible
-            if ($stableRawHash && $ref->hasProperty('hash')) { $hp = $ref->getProperty('hash'); $hp->setAccessible(true); $hp->setValue($tx, $stableRawHash); }
             $addedOk = $mempool->addTransaction($tx);
             if ($addedOk) {
                 $added++;
@@ -787,7 +695,7 @@ function processRawQueueInline($syncManager, $quiet = false, $verbose = false) {
         try {
             $json['parsed'] = $parsed;
             $json['reprocessed_at'] = date('c');
-            $json['internal_tx_hash'] = isset($tx) ? $tx->getHash() : ($json['internal_tx_hash'] ?? ($stableRawHash ?? null));
+            $json['internal_tx_hash'] = isset($tx) ? $tx->getHash() : ($json['internal_tx_hash'] ?? null);
             $outPath = $processedDir . '/' . basename($file);
             $tmpPath = $outPath . '.tmp';
             @file_put_contents($tmpPath, json_encode($json, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
@@ -880,11 +788,11 @@ try {
                 }
             }
         }
-        $dbHost = $env['DB_HOST'] ?? ($_ENV['DB_HOST'] ?? 'localhost');
+        $dbHost = $env['DB_HOST'] ?? ($_ENV['DB_HOST'] ?? 'database');
         $dbPort = $env['DB_PORT'] ?? ($_ENV['DB_PORT'] ?? '3306');
-        $dbName = $env['DB_DATABASE'] ?? ($_ENV['DB_DATABASE'] ?? '');
-        $dbUser = $env['DB_USERNAME'] ?? ($_ENV['DB_USERNAME'] ?? '');
-        $dbPass = $env['DB_PASSWORD'] ?? ($_ENV['DB_PASSWORD'] ?? '');
+        $dbName = $env['DB_DATABASE'] ?? ($_ENV['DB_NAME'] ?? 'blockchain');
+        $dbUser = $env['DB_USERNAME'] ?? ($_ENV['DB_USER'] ?? 'blockchain');
+        $dbPass = $env['DB_PASSWORD'] ?? ($_ENV['DB_PASSWORD'] ?? 'blockchain123');
         $dsn = "mysql:host={$dbHost};port={$dbPort};dbname={$dbName};charset=utf8mb4";
         try {
             $pdo = new PDO($dsn, $dbUser, $dbPass, [
@@ -1247,104 +1155,6 @@ function fixPendingTransactions($syncManager, $quiet = false, $verbose = false) 
             'fixed' => 0,
             'error' => $error
         ];
-    }
-}
-
-/**
- * Create a simple block locally including pending mempool transactions so that
- * they obtain blockHash/blockNumber and MetaMask can receive receipts.
- * This is a fallback mini-miner used only when full mining logic isn't active.
- */
-function finalizeMempoolInline($syncManager, int $maxTx = 100, bool $verbose = false): int {
-    try {
-        $refl = new ReflectionClass($syncManager);
-        if (!$refl->hasProperty('pdo')) return 0;
-        $p = $refl->getProperty('pdo');
-        $p->setAccessible(true);
-        $pdo = $p->getValue($syncManager);
-        if (!$pdo) return 0;
-
-        $sel = $pdo->prepare("SELECT tx_hash, from_address, to_address, amount, fee, gas_price, gas_limit, nonce, data, signature FROM mempool WHERE status='pending' ORDER BY id ASC LIMIT ?");
-        $sel->execute([$maxTx]);
-        $txs = $sel->fetchAll(PDO::FETCH_ASSOC);
-        if (empty($txs)) return 0;
-
-        // Determine next height
-        $hStmt = $pdo->query("SELECT MAX(height) h FROM blocks");
-        $cur = $hStmt->fetch(PDO::FETCH_ASSOC);
-        $currentHeight = isset($cur['h']) && $cur['h'] !== null ? (int)$cur['h'] : -1;
-        $newHeight = $currentHeight + 1;
-        $prevHash = '0';
-        if ($currentHeight >= 0) {
-            $ph = $pdo->prepare("SELECT hash FROM blocks WHERE height=? LIMIT 1");
-            $ph->execute([$currentHeight]);
-            $phRow = $ph->fetch(PDO::FETCH_ASSOC);
-            if ($phRow && !empty($phRow['hash'])) $prevHash = $phRow['hash'];
-        }
-
-        // Merkle root simple reduction
-        $hashes = array_map(fn($r) => $r['tx_hash'], $txs);
-        $merkle = function(array $hs) use (&$merkle): string {
-            if (empty($hs)) return hash('sha256','');
-            if (count($hs) === 1) return $hs[0];
-            $n=[]; for($i=0;$i<count($hs);$i+=2){ $a=$hs[$i]; $b=$hs[$i+1]??$a; $n[] = hash('sha256',$a.$b);} return $merkle($n);
-        };
-        $merkleRoot = $merkle($hashes);
-        $ts = time();
-        $blockHash = hash('sha256', $prevHash . $newHeight . $ts . $merkleRoot . count($txs));
-        $validator = '0x' . str_repeat('0',40);
-        $signature = 'auto_local:' . substr(hash('sha256',$blockHash.'local'),0,64);
-        $metadata = json_encode(['created_by'=>'finalizeMempoolInline','txs'=>count($txs)], JSON_UNESCAPED_SLASHES);
-
-        $pdo->beginTransaction();
-        try {
-            $idRow = $pdo->query("SELECT MAX(id) mid FROM blocks")->fetch(PDO::FETCH_ASSOC);
-            $nextId = (int)($idRow['mid'] ?? 0) + 1;
-            $ib = $pdo->prepare("INSERT INTO blocks (id, hash, parent_hash, height, timestamp, validator, signature, merkle_root, transactions_count, metadata) VALUES (?,?,?,?,?,?,?,?,?,?)");
-            $ib->execute([$nextId,$blockHash,$prevHash,$newHeight,$ts,$validator,$signature,$merkleRoot,count($txs),$metadata]);
-        } catch (Throwable $e) {
-            // fallback without explicit id
-            try {
-                $ib = $pdo->prepare("INSERT INTO blocks (hash, parent_hash, height, timestamp, validator, signature, merkle_root, transactions_count, metadata) VALUES (?,?,?,?,?,?,?,?,?)");
-                $ib->execute([$blockHash,$prevHash,$newHeight,$ts,$validator,$signature,$merkleRoot,count($txs),$metadata]);
-            } catch (Throwable $e2) {
-                $pdo->rollBack();
-                if ($verbose) echo "(finalize inline: block insert fail)\n";
-                return 0;
-            }
-        }
-
-        $it = $pdo->prepare("INSERT INTO transactions (hash, block_hash, block_height, from_address, to_address, amount, fee, gas_limit, gas_used, gas_price, nonce, data, signature, status, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE block_hash=VALUES(block_hash), block_height=VALUES(block_height), status='confirmed'");
-        foreach ($txs as $t) {
-            $gasLimit = (int)$t['gas_limit'];
-            $gasUsed = $gasLimit > 0 ? $gasLimit : 0;
-            $it->execute([
-                $t['tx_hash'],
-                $blockHash,
-                $newHeight,
-                $t['from_address'],
-                $t['to_address'],
-                (float)$t['amount'],
-                (float)$t['fee'],
-                $gasLimit,
-                $gasUsed,
-                (float)$t['gas_price'],
-                (int)$t['nonce'],
-                $t['data'],
-                $t['signature'],
-                'confirmed',
-                $ts
-            ]);
-        }
-        $del = $pdo->prepare("DELETE FROM mempool WHERE tx_hash IN (" . implode(',', array_fill(0,count($hashes),'?')) . ")");
-        $del->execute($hashes);
-        $pdo->commit();
-        if ($verbose) echo "(finalize inline: block #$newHeight with ".count($txs)." txs)\n";
-        return count($txs);
-    } catch (Throwable $e) {
-        if (isset($pdo) && $pdo->inTransaction()) { try { $pdo->rollBack(); } catch (Throwable $e2) {} }
-        if ($verbose) echo "(finalize inline error)\n";
-        return 0;
     }
 }
 ?>

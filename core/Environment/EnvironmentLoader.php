@@ -59,8 +59,9 @@ class EnvironmentLoader
                 $value = trim($value);
                 
                 // Remove quotes if present
-                if (($value[0] === '"' && $value[-1] === '"') || 
-                    ($value[0] === "'" && $value[-1] === "'")) {
+                if (strlen($value) >= 2 && 
+                    (($value[0] === '"' && $value[strlen($value)-1] === '"') || 
+                     ($value[0] === "'" && $value[strlen($value)-1] === "'"))) {
                     $value = substr($value, 1, -1);
                 }
                 

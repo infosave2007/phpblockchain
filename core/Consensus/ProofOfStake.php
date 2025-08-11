@@ -607,4 +607,13 @@ class ProofOfStake implements ConsensusInterface
     {
         return $currentBlockHeight % $this->epochLength === 0;
     }
+
+    /**
+     * Start lifecycle hook (compatibility with Application::run())
+     */
+    public function start(): void
+    {
+        // Placeholder: real scheduling/loop can be implemented later
+        $this->logger->info('ProofOfStake::start invoked');
+    }
 }

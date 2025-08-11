@@ -29,6 +29,7 @@ class NodeHealthMonitor
     const STATUS_RECOVERING = 'recovering';
     const STATUS_OFFLINE = 'offline';
     const STATUS_ERROR = 'error';
+    const STATUS_UNKNOWN = 'unknown';
     
     // Check intervals
     const QUICK_CHECK_INTERVAL = 30; // Quick check every 30 seconds
@@ -56,6 +57,19 @@ class NodeHealthMonitor
         $this->createNodeStatusTable();
     }
     
+    /**
+     * Generate node ID (restored after patch)
+     */
+    private function generateNodeId(): string
+    {
+        $configured = $this->config['node_id'] ?? null;
+        if ($configured) {
+            return $configured;
+        }
+        $hostPart = php_sapi_name() === 'cli' ? gethostname() : ($_SERVER['SERVER_NAME'] ?? ($_SERVER['HTTP_HOST'] ?? 'localhost'));
+        return hash('sha256', gethostname() . '|' . $hostPart);
+    }
+
     /**
      * Quick health check on every request to the node
      * Should execute as fast as possible (< 100ms)
@@ -408,7 +422,7 @@ class NodeHealthMonitor
                 ];
             }
             
-            $responses = $multiCurl->executeBatch($requests);
+            $responses = $multiCurl->executeRequests($requests);
             
             // Update node status based on responses
             $this->updateNodeStatusFromResponses($responses, $urls);
@@ -518,7 +532,7 @@ class NodeHealthMonitor
                 return ['healthy' => true, 'nodes' => []];
             }
             
-            $responses = $multiCurl->executeBatch($requests);
+            $responses = $multiCurl->executeRequests($requests);
             
             foreach ($responses as $i => $response) {
                 $node = array_values(array_filter($this->knownNodes, fn($n) => $n['id'] !== $this->nodeId))[$i];
@@ -650,27 +664,22 @@ class NodeHealthMonitor
                 WHERE status != 'disabled'
                 ORDER BY last_seen DESC
             ");
-            
-            return $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
-            
+            $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+            foreach ($rows as &$row) {
+                // legacy schema may not have ip_address/port columns, keep fallback
+                $host = $row['ip_address'] ?? ($row['url'] ?? 'localhost');
+                $port = isset($row['port']) ? (int)$row['port'] : 80;
+                $scheme = 'http';
+                $defaultPort = $scheme === 'https' ? 443 : 80;
+                if (!isset($row['url']) || strpos($row['url'], 'http') !== 0) {
+                    $row['url'] = $scheme . '://' . $host . ($port !== $defaultPort ? ':' . $port : '');
+                }
+            }
+            return $rows;
         } catch (Exception $e) {
             error_log("Failed to load known nodes: " . $e->getMessage());
             return [];
-        }
     }
-    
-    /**
-     * Generate node ID
-     */
-    private function generateNodeId(): string
-    {
-        $nodeId = $this->config['node_id'] ?? null;
-        
-        if (!$nodeId) {
-            $nodeId = hash('sha256', gethostname() . $_SERVER['SERVER_NAME'] ?? 'localhost' . time());
-        }
-        
-        return $nodeId;
     }
     
     /**

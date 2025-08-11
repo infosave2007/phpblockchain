@@ -1,0 +1,14 @@
+services:
+  blockchain:
+    volumes:
+      - ./:/var/www/html:rw,cached
+      - ./docker/php-fpm.conf:/usr/local/etc/php-fpm.d/www.conf:ro
+      - ./storage:/var/www/html/storage:rw
+      - ./logs:/var/www/html/logs:rw
+    environment:
+      - PHP_ENV=development
+    command: []
+
+  nginx:
+    volumes:
+      - ./:/var/www/html:rw,cached

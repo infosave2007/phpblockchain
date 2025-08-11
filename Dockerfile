@@ -1,4 +1,4 @@
-FROM php:8.2-fpm-alpine
+FROM php:8.3-fpm-alpine
 
 # Install system dependencies
 RUN apk add --no-cache \
@@ -41,8 +41,8 @@ WORKDIR /var/www/html
 # Copy application files
 COPY . .
 
-# Install dependencies per lockfile
-RUN composer install --no-dev --optimize-autoloader --no-interaction --no-progress
+# Install dependencies
+RUN composer install --no-dev --optimize-autoloader
 
 # Create required directories first
 RUN mkdir -p storage/blockchain storage/state storage/cache logs
@@ -59,10 +59,11 @@ RUN php check.php
 # Copy PHP-FPM configuration
 COPY docker/php-fpm.conf /usr/local/etc/php-fpm.d/www.conf
 
+# Add entrypoint script for dev/prod runtime adjustments
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 # Expose port
 EXPOSE 9000
 
-CMD ["php-fpm"]
-
-# Start PHP-FPM
-CMD ["php-fpm"]
+ENTRYPOINT ["/entrypoint.sh"]

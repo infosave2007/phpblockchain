@@ -66,6 +66,18 @@ class Blockchain implements BlockchainInterface
      */
     private function initializeGenesis(): void
     {
+        // If in-memory has no blocks but database already has persisted ones – load/reference existing genesis
+        if (method_exists($this->storage, 'hasAnyPersistedBlocks') && $this->storage->hasAnyPersistedBlocks()) {
+            // Try obtain genesis hash from database
+            if (method_exists($this->storage, 'getGenesisHashFromDatabase')) {
+                $hash = $this->storage->getGenesisHashFromDatabase();
+                if ($hash) {
+                    $this->genesisHash = $hash;
+                    return;
+                }
+            }
+        }
+
         if ($this->storage->getBlockCount() === 0) {
             $genesisBlock = $this->createGenesisBlock();
             $this->storage->saveBlock($genesisBlock);
@@ -85,6 +97,8 @@ class Blockchain implements BlockchainInterface
             // Initial token distribution
             [
                 'type' => 'genesis',
+                // Explicit sender to avoid 'unknown' in transactions table
+                'from' => 'genesis',
                 'to' => 'genesis_address',
                 'amount' => 1000000,
                 'timestamp' => time()
