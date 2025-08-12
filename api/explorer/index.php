@@ -195,11 +195,16 @@ try {
             break;
             
         case 'search':
-            $query = $params['q'] ?? '';
+            $query = $params['query'] ?? $params['q'] ?? '';
             if (empty($query)) {
                 throw new Exception('Search query required');
             }
-            echo json_encode(search($pdo, $network, $query));
+            
+            error_log("Search request: query='$query', network='$network'");
+            $result = search($pdo, $network, $query);
+            error_log("Search result: " . json_encode($result));
+            
+            echo json_encode($result);
             break;
             
         case 'nodes':
@@ -750,20 +755,19 @@ function getBlock(PDO $pdo, string $network, string $blockId): array
                 }, $transactions);
                 
                 return [
-                    'block' => [
-                        'index' => (int)$dbBlock['height'],
+                    'success' => true,
+                    'data' => [
+                        'height' => (int)$dbBlock['height'],
                         'hash' => $dbBlock['hash'],
-                        'previous_hash' => $dbBlock['parent_hash'],
+                        'parent_hash' => $dbBlock['parent_hash'],
                         'timestamp' => (int)$dbBlock['timestamp'],
                         'validator' => $dbBlock['validator'],
                         'signature' => $dbBlock['signature'],
                         'merkle_root' => $dbBlock['merkle_root'],
                         'transactions' => $formattedTransactions,
+                        'transaction_count' => count($formattedTransactions),
                         'metadata' => json_decode($dbBlock['metadata'] ?? '{}', true)
-                    ],
-                    'transaction_count' => count($formattedTransactions),
-                    'size' => strlen(json_encode($dbBlock)),
-                    '_debug' => $debug ? ['source' => 'database'] : null
+                    ]
                 ];
             }
         }
@@ -783,10 +787,18 @@ function getBlock(PDO $pdo, string $network, string $blockId): array
                 if ((string)($block['index'] ?? '') === $blockId || 
                     ($block['hash'] ?? '') === $blockId) {
                     return [
-                        'block' => $block,
-                        'transaction_count' => count($block['transactions'] ?? []),
-                        'size' => strlen(json_encode($block)),
-                        '_debug' => $debug ? ['source' => 'file'] : null
+                        'success' => true,
+                        'data' => [
+                            'height' => (int)($block['index'] ?? $block['height'] ?? 0),
+                            'hash' => $block['hash'] ?? '',
+                            'parent_hash' => $block['previousHash'] ?? $block['parent_hash'] ?? '',
+                            'timestamp' => (int)($block['timestamp'] ?? time()),
+                            'validator' => $block['validator'] ?? '',
+                            'signature' => $block['signature'] ?? '',
+                            'merkle_root' => $block['merkleRoot'] ?? $block['merkle_root'] ?? '',
+                            'transactions' => $block['transactions'] ?? [],
+                            'transaction_count' => count($block['transactions'] ?? [])
+                        ]
                     ];
                 }
             }
@@ -842,22 +854,21 @@ function getTransaction(PDO $pdo, string $network, string $txId): array
                 $confirmations = max(0, $totalBlocks - (int)$dbTx['block_height']);
                 
                 return [
-                    'transaction' => [
+                    'success' => true,
+                    'data' => [
                         'hash' => $dbTx['hash'],
                         'type' => $txType,
-                        'from' => $dbTx['from_address'],
-                        'to' => $dbTx['to_address'],
+                        'from_address' => $dbTx['from_address'],
+                        'to_address' => $dbTx['to_address'],
                         'amount' => (float)$dbTx['amount'],
                         'fee' => (float)$dbTx['fee'],
                         'timestamp' => (int)$dbTx['timestamp'],
                         'status' => $dbTx['status'] === 'confirmed' ? 'confirmed' : 'pending',
                         'data' => $dbTx['data'] ? json_decode($dbTx['data'], true) : null,
-                        'signature' => $dbTx['signature']
-                    ],
-                    'block_index' => (int)$dbTx['block_height'],
-                    'block_hash' => $dbTx['block_hash'],
-                    'confirmations' => $confirmations,
-                    '_debug' => $debug ? ['source' => 'database'] : null
+                        'signature' => $dbTx['signature'],
+                        'block_height' => (int)$dbTx['block_height'],
+                        'block_hash' => $dbTx['block_hash']
+                    ]
                 ];
             }
         }
@@ -879,11 +890,19 @@ function getTransaction(PDO $pdo, string $network, string $txId): array
                         $txHash = $tx['hash'] ?? hash('sha256', json_encode($tx));
                         if ($txHash === $txId) {
                             return [
-                                'transaction' => $tx,
-                                'block_index' => $block['index'] ?? 0,
-                                'block_hash' => $block['hash'] ?? '',
-                                'confirmations' => count($chain) - ($block['index'] ?? 0),
-                                '_debug' => $debug ? ['source' => 'file'] : null
+                                'success' => true,
+                                'data' => [
+                                    'hash' => $tx['hash'] ?? $txHash,
+                                    'type' => $tx['type'] ?? 'transfer',
+                                    'from_address' => $tx['from'] ?? $tx['from_address'] ?? '',
+                                    'to_address' => $tx['to'] ?? $tx['to_address'] ?? '',
+                                    'amount' => (float)($tx['amount'] ?? 0),
+                                    'fee' => (float)($tx['fee'] ?? 0),
+                                    'timestamp' => (int)($tx['timestamp'] ?? time()),
+                                    'status' => 'confirmed',
+                                    'block_height' => (int)($block['index'] ?? $block['height'] ?? 0),
+                                    'block_hash' => $block['hash'] ?? ''
+                                ]
                             ];
                         }
                     }
@@ -1339,35 +1358,120 @@ function generateAddressFromPublicKey(string $publicKeyHex): string {
 
 function search(PDO $pdo, string $network, string $query): array
 {
-    $results = [];
+    error_log("Search function called with query: '$query'");
     
     // Try to find as block hash/index
     try {
+        error_log("Trying to find as block...");
         $block = getBlock($pdo, $network, $query);
-        $results[] = [
-            'type' => 'block',
-            'data' => $block
-        ];
+        error_log("Block result: " . json_encode($block));
+        
+        if ($block && $block['success']) {
+            error_log("Found block, returning result");
+            return [
+                'type' => 'block',
+                'result' => $block['data']
+            ];
+        }
     } catch (Exception $e) {
+        error_log("Block search failed: " . $e->getMessage());
         // Not a block
     }
     
     // Try to find as transaction hash
     try {
+        error_log("Trying to find as transaction...");
         $transaction = getTransaction($pdo, $network, $query);
-        $results[] = [
-            'type' => 'transaction',
-            'data' => $transaction
-        ];
+        error_log("Transaction result: " . json_encode($transaction));
+        
+        if ($transaction && $transaction['success']) {
+            error_log("Found transaction, returning result");
+            return [
+                'type' => 'transaction',
+                'result' => $transaction['data']
+            ];
+        }
     } catch (Exception $e) {
+        error_log("Transaction search failed: " . $e->getMessage());
         // Not a transaction
     }
     
-    if (empty($results)) {
-        throw new Exception('No results found for: ' . $query);
+    // Try to find as address
+    try {
+        error_log("Trying to find as address...");
+        $address = getAddressInfo($pdo, $network, $query);
+        error_log("Address result: " . json_encode($address));
+        
+        if ($address && $address['success']) {
+            error_log("Found address, returning result");
+            return [
+                'type' => 'address',
+                'result' => $address['data']
+            ];
+        }
+    } catch (Exception $e) {
+        error_log("Address search failed: " . $e->getMessage());
+        // Not an address
     }
     
-    return ['results' => $results];
+    error_log("No results found for query: '$query'");
+    throw new Exception('No results found for: ' . $query);
+}
+
+/**
+ * Get address information including balance and transaction count
+ */
+function getAddressInfo(PDO $pdo, string $network, string $address): array {
+    try {
+        // Normalize address
+        $address = strtolower(trim($address));
+        if (!str_starts_with($address, '0x')) {
+            $address = '0x' . $address;
+        }
+        
+        // Get address balance and transaction count
+        $stmt = $pdo->prepare("
+            SELECT 
+                SUM(CASE WHEN to_address = ? AND status = 'confirmed' THEN amount ELSE 0 END) as received,
+                SUM(CASE WHEN from_address = ? AND status = 'confirmed' THEN amount + fee ELSE 0 END) as sent,
+                COUNT(*) as tx_count
+            FROM transactions 
+            WHERE (from_address = ? OR to_address = ?) AND status = 'confirmed'
+        ");
+        $stmt->execute([$address, $address, $address, $address]);
+        $stats = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        $balance = ($stats['received'] ?? 0) - ($stats['sent'] ?? 0);
+        $txCount = $stats['tx_count'] ?? 0;
+        
+        // Get recent transactions for this address
+        $stmt = $pdo->prepare("
+            SELECT * FROM transactions 
+            WHERE (from_address = ? OR to_address = ?) AND status = 'confirmed'
+            ORDER BY timestamp DESC 
+            LIMIT 10
+        ");
+        $stmt->execute([$address, $address]);
+        $transactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        return [
+            'success' => true,
+            'data' => [
+                'address' => $address,
+                'balance' => $balance,
+                'transaction_count' => $txCount,
+                'sent_count' => count(array_filter($transactions, fn($tx) => $tx['from_address'] === $address)),
+                'received_count' => count(array_filter($transactions, fn($tx) => $tx['to_address'] === $address)),
+                'transactions' => $transactions
+            ]
+        ];
+        
+    } catch (Exception $e) {
+        return [
+            'success' => false,
+            'error' => $e->getMessage()
+        ];
+    }
 }
 
 /**

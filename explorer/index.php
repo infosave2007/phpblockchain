@@ -4,6 +4,36 @@
  * Multi-language support with beautiful UI
  */
 
+require_once 'config_helper.php';
+$__net = getNetworkConfig();
+$cryptoName = $__net['name'];
+$cryptoSymbol = $__net['token_symbol'];
+
+// Simple routing for explorer URLs
+$request_uri = $_SERVER['REQUEST_URI'];
+$path = parse_url($request_uri, PHP_URL_PATH);
+
+// Remove base path and clean up
+$path = str_replace('/explorer', '', $path);
+$path = trim($path, '/');
+
+// Route handling
+if (preg_match('/^tx\/([a-fA-F0-9x]+)$/', $path, $matches)) {
+    $hash = $matches[1];
+    include 'tx.php';
+    exit;
+} elseif (preg_match('/^block\/(\d+|[a-fA-F0-9x]+)$/', $path, $matches)) {
+            $blockIdentifier = $matches[1];
+    include 'block.php';
+    exit;
+} elseif (preg_match('/^address\/([a-fA-F0-9x]+)$/', $path, $matches)) {
+    $address = $matches[1];
+    include 'address.php';
+    exit;
+}
+
+// Default route: show explorer homepage
+
 // Language detection and setting
 $supportedLanguages = ['en', 'ru'];
 $defaultLanguage = 'en';
@@ -20,10 +50,10 @@ if (!in_array($language, $supportedLanguages)) {
 $_SESSION['language'] = $language;
 
 // Load language strings
-function loadLanguage($lang) {
+function loadLanguage($lang, $cryptoName = 'Blockchain') {
     $translations = [
         'en' => [
-            'title' => 'Blockchain Explorer',
+            'title' => $cryptoName . ' Explorer',
             'subtitle' => 'Explore blocks, transactions and addresses',
             'search_placeholder' => 'Enter block hash, transaction or address...',
             'smart_contracts' => 'Smart Contracts',
@@ -88,7 +118,7 @@ function loadLanguage($lang) {
             'height' => 'Height'
         ],
         'ru' => [
-            'title' => 'Блокчейн Эксплорер',
+            'title' => $cryptoName . ' Эксплорер',
             'subtitle' => 'Исследуйте блоки, транзакции и адреса в блокчейне',
             'search_placeholder' => 'Введите хеш блока, транзакции или адрес...',
             'smart_contracts' => 'Смарт‑контракты',
@@ -157,7 +187,7 @@ function loadLanguage($lang) {
     return $translations[$lang] ?? $translations['en'];
 }
 
-$t = loadLanguage($language);
+$t = loadLanguage($language, $cryptoName);
 
 // Get available languages for selector
 function getLanguageOptions($currentLang) {
@@ -175,29 +205,7 @@ function getLanguageOptions($currentLang) {
     return $options;
 }
 
-// Currency configuration
-try {
-    // Default values
-    $cryptoSymbol = 'COIN';
-    $cryptoName = 'Blockchain';
-    
-    // Try to load from main config first
-    $configFile = dirname(__DIR__) . '/config/config.php';
-    if (file_exists($configFile)) {
-        $config = include $configFile;
-        if (isset($config['network']['token_symbol'])) {
-            $cryptoSymbol = $config['network']['token_symbol'];
-        }
-        if (isset($config['network']['token_name'])) {
-            $cryptoName = $config['network']['token_name'];
-        }
-    }
-    
-} catch (Exception $e) {
-    // Fallback values if configuration couldn't be loaded
-    $cryptoSymbol = 'COIN';
-    $cryptoName = 'Blockchain';
-}
+// Currency configuration already sourced from DB (generic defaults in helper)
 ?>
 <!DOCTYPE html>
 <html lang="<?php echo $language; ?>">
@@ -213,22 +221,15 @@ try {
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark navbar-custom fixed-top">
         <div class="container">
-            <a class="navbar-brand" href="#">
-                <i class="fas fa-cubes me-2"></i><?php echo htmlspecialchars($cryptoName); ?> <?php echo htmlspecialchars($t['title']); ?>
+            <a class="navbar-brand d-flex align-items-center" href="/explorer/">
+                <img src="/assets/network-icon.svg" alt="Logo" style="height:28px" class="me-2"> <?php echo htmlspecialchars($t['title']); ?>
             </a>
             <div class="navbar-nav ms-auto d-flex align-items-center">
-                <!-- Language Selector -->
                 <div class="language-selector me-3">
                     <select class="form-select form-select-sm" onchange="changeLanguage(this.value)">
                         <?php echo getLanguageOptions($language); ?>
                     </select>
                 </div>
-                <!-- Network Selector -->
-                <select class="form-select form-select-sm" id="networkSelect">
-                    <option value="mainnet">Mainnet</option>
-                    <option value="testnet">Testnet</option>
-                    <option value="devnet">Devnet</option>
-                </select>
             </div>
         </div>
     </nav>
@@ -334,7 +335,7 @@ try {
                                 <button class="pagination-btn" id="prevBlocksBtn" onclick="loadBlocks('prev')" disabled>
                                     <i class="fas fa-chevron-left me-1"></i> <?php echo htmlspecialchars($t['back']); ?>
                                 </button>
-                                <span class="pagination-info mx-3" id="blocksPageInfo"><?php echo htmlspecialchars($t['page']); ?> 1</span>
+                                <span class="pagination-info mx-3" id="blocksPageInfo"><?php echo htmlspecialchars($t['page']); ?> 1 из 20</span>
                                 <button class="pagination-btn" id="nextBlocksBtn" onclick="loadBlocks('next')">
                                     <?php echo htmlspecialchars($t['next']); ?> <i class="fas fa-chevron-right ms-1"></i>
                                 </button>
@@ -367,7 +368,7 @@ try {
                                 <button class="pagination-btn" id="prevTxBtn" onclick="loadTransactions('prev')" disabled>
                                     <i class="fas fa-chevron-left me-1"></i> <?php echo htmlspecialchars($t['back']); ?>
                                 </button>
-                                <span class="pagination-info mx-3" id="transactionsPageInfo"><?php echo htmlspecialchars($t['page']); ?> 1</span>
+                                <span class="pagination-info mx-3" id="transactionsPageInfo"><?php echo htmlspecialchars($t['page']); ?> 1 из 45</span>
                                 <button class="pagination-btn" id="nextTxBtn" onclick="loadTransactions('next')">
                                     <?php echo htmlspecialchars($t['next']); ?> <i class="fas fa-chevron-right ms-1"></i>
                                 </button>

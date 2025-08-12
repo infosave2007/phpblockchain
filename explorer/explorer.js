@@ -1,89 +1,84 @@
+console.log('Explorer.js loaded successfully');
+
+// Simple test to ensure JavaScript is working
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('DOM loaded - JavaScript is working!');
+    
+    // Test if we can find elements
+    const testElement = document.getElementById('blockHeight');
+    if (testElement) {
+        console.log('Found blockHeight element:', testElement);
+        testElement.textContent = 'TEST - JavaScript is working!';
+    } else {
+        console.error('blockHeight element not found!');
+    }
+});
+
 class BlockchainExplorer {
     constructor() {
+        console.log('BlockchainExplorer constructor called');
+        
         this.currentNetwork = 'mainnet';
-        this.apiEndpoint = '../api/explorer';
+        this.apiEndpoint = '/api/explorer';
         this.currentBlockPage = 1;
         this.currentTxPage = 1;
-    this.currentContractPage = 1;
+        this.currentContractPage = 1;
         this.pageSize = 5; // Reduced for better UX
         this.totalBlocks = 0;
         this.totalTransactions = 0;
         
+        console.log('Constructor completed, calling initializeExplorer...');
         this.initializeExplorer();
     }
 
     async initializeExplorer() {
+        console.log('Initializing explorer...');
+        
         this.bindEvents();
         
         // Load configuration first
+        console.log('Loading config...');
         await this.loadConfig();
         
         // Load initial data
+        console.log('Loading network stats...');
         await this.loadNetworkStats();
+        
+        console.log('Loading latest blocks...');
         await this.loadLatestBlocks();
+        
+        console.log('Loading latest transactions...');
         await this.loadLatestTransactions();
-    await this.loadLatestContracts();
+        
+        console.log('Loading latest contracts...');
+        await this.loadLatestContracts();
+        
+        console.log('Explorer initialization complete');
         
         // Auto-refresh every 30 seconds
         setInterval(() => {
+            console.log('Auto-refreshing data...');
             this.refreshData();
         }, 30000);
     }
 
     async loadConfig() {
         try {
-            // First try to load from wallet API
-            const response = await fetch('../wallet/wallet_api.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'get_config' })
+            // Use PHP variables passed from the page
+            if (typeof CRYPTO_SYMBOL !== 'undefined') {
+                window.CRYPTO_SYMBOL = CRYPTO_SYMBOL;
+            }
+            if (typeof CRYPTO_NAME !== 'undefined') {
+                window.CRYPTO_NAME = CRYPTO_NAME;
+            }
+            
+            console.log('Explorer config loaded from PHP variables:', {
+                symbol: window.CRYPTO_SYMBOL,
+                name: window.CRYPTO_NAME
             });
-            
-            const data = await response.json();
-            if (data.success && data.config) {
-                // Update global symbols
-                if (typeof CRYPTO_SYMBOL !== 'undefined') {
-                    window.CRYPTO_SYMBOL = data.config.crypto_symbol || CRYPTO_SYMBOL;
-                }
-                if (typeof CRYPTO_NAME !== 'undefined') {
-                    window.CRYPTO_NAME = data.config.crypto_name || CRYPTO_NAME;
-                }
-                console.log('Explorer config loaded from wallet API:', data.config);
-                return;
-            }
         } catch (error) {
-            console.log('Wallet API config load failed:', error);
+            console.log('Config load failed:', error);
         }
-
-        // Fallback: try to get token symbol from blockchain data
-        try {
-            const response = await fetch(`${this.apiEndpoint}/blocks?limit=1&network=${this.currentNetwork}`);
-            const data = await response.json();
-            
-            if (data && data.blocks && data.blocks.length > 0) {
-                // Get the genesis block to extract token info
-                const blockResponse = await fetch(`${this.apiEndpoint}/block?id=${data.blocks[0].hash}&network=${this.currentNetwork}`);
-                const blockData = await blockResponse.json();
-                
-                if (blockData && blockData.block && blockData.block.transactions) {
-                    // Look for genesis transaction with token info
-                    const genesisTx = blockData.block.transactions.find(tx => tx.type === 'genesis');
-                    if (genesisTx && genesisTx.token_symbol) {
-                        window.CRYPTO_SYMBOL = genesisTx.token_symbol;
-                        console.log('Token symbol loaded from genesis:', genesisTx.token_symbol);
-                        
-                        if (genesisTx.network_name) {
-                            window.CRYPTO_NAME = genesisTx.network_name;
-                        }
-                        return;
-                    }
-                }
-            }
-        } catch (error) {
-            console.log('Blockchain config load failed:', error);
-        }
-
-        console.log('Using default token symbols');
     }
 
     refreshData() {
@@ -94,30 +89,51 @@ class BlockchainExplorer {
     }
 
     bindEvents() {
-        // Network selection
-        document.getElementById('networkSelect').addEventListener('change', (e) => {
-            this.currentNetwork = e.target.value;
-            this.currentBlockPage = 1;
-            this.currentTxPage = 1;
-            this.refreshData();
-        });
+        console.log('Binding events...');
+        
+        // Network selection (only if element exists)
+        const networkSelect = document.getElementById('networkSelect');
+        if (networkSelect) {
+            console.log('Found networkSelect, binding change event');
+            networkSelect.addEventListener('change', (e) => {
+                this.currentNetwork = e.target.value;
+                this.currentBlockPage = 1;
+                this.currentTxPage = 1;
+                this.refreshData();
+            });
+        } else {
+            console.log('networkSelect element not found, skipping');
+        }
 
-        // Search on Enter key
-        document.getElementById('searchInput').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                this.performSearch();
-            }
-        });
+        // Search on Enter key (only if element exists)
+        const searchInput = document.getElementById('searchInput');
+        if (searchInput) {
+            console.log('Found searchInput, binding keypress event');
+            searchInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    this.performSearch();
+                }
+            });
+        } else {
+            console.log('searchInput element not found, skipping');
+        }
+        
+        console.log('Events binding completed');
     }
 
     // New methods for pagination
     async loadBlocks(direction = 'current') {
+        console.log('loadBlocks called with direction:', direction, 'current page:', this.currentBlockPage);
+        
         if (direction === 'prev' && this.currentBlockPage > 1) {
             this.currentBlockPage--;
+            console.log('Going to previous page, new page:', this.currentBlockPage);
         } else if (direction === 'next') {
             this.currentBlockPage++;
+            console.log('Going to next page, new page:', this.currentBlockPage);
         }
         
+        console.log('Loading blocks for page:', this.currentBlockPage);
         await this.loadLatestBlocks();
         this.updateBlocksPagination();
     }
@@ -160,20 +176,57 @@ class BlockchainExplorer {
     }
 
     updateBlocksPagination() {
+        console.log('updateBlocksPagination called, current page:', this.currentBlockPage);
+        
         const prevBtn = document.getElementById('prevBlocksBtn');
         const nextBtn = document.getElementById('nextBlocksBtn');
         const pageInfo = document.getElementById('blocksPageInfo');
         
-        prevBtn.disabled = this.currentBlockPage <= 1;
+        console.log('Pagination elements found:', {
+            prevBtn: !!prevBtn,
+            nextBtn: !!nextBtn,
+            pageInfo: !!pageInfo
+        });
+        
+        if (prevBtn) {
+            prevBtn.disabled = this.currentBlockPage <= 1;
+            console.log('Prev button disabled:', prevBtn.disabled);
+        }
         
         // Get page text from translations or fallback
         const pageText = (typeof t !== 'undefined' && t.page) ? t.page : 'Page';
-        pageInfo.textContent = `${pageText} ${this.currentBlockPage}`;
+        if (pageInfo) {
+            // Get total blocks from network stats or use default
+            const totalBlocks = window.totalBlocks || 99;
+            const totalPages = Math.ceil(totalBlocks / this.pageSize);
+            let pageDisplay = `${pageText} ${this.currentBlockPage}`;
+            
+            if (totalPages > 10) {
+                // Show range for many pages
+                if (this.currentBlockPage <= 5) {
+                    pageDisplay = `${pageText} ${this.currentBlockPage} из 1...${totalPages}`;
+                } else if (this.currentBlockPage >= totalPages - 4) {
+                    pageDisplay = `${pageText} ${this.currentBlockPage} из 1...${totalPages}`;
+                } else {
+                    pageDisplay = `${pageText} ${this.currentBlockPage} из 1...${this.currentBlockPage}...${totalPages}`;
+                }
+            } else {
+                pageDisplay = `${pageText} ${this.currentBlockPage} из ${totalPages}`;
+            }
+            
+            pageInfo.textContent = pageDisplay;
+            console.log('Page info updated:', pageInfo.textContent);
+        }
         
         // Show "Next" button only if there's data on current page
         const blocksContainer = document.getElementById('latestBlocks');
-        const hasBlocks = blocksContainer.children.length > 0;
-        nextBtn.disabled = !hasBlocks;
+        const hasBlocks = blocksContainer && blocksContainer.children.length > 0;
+        if (nextBtn) {
+            nextBtn.disabled = !hasBlocks;
+            console.log('Next button disabled:', nextBtn.disabled, 'hasBlocks:', hasBlocks);
+        }
+        
+        console.log('Pagination update completed');
     }
 
     updateTransactionsPagination() {
@@ -185,22 +238,45 @@ class BlockchainExplorer {
         
         // Get page text from translations or fallback
         const pageText = (typeof t !== 'undefined' && t.page) ? t.page : 'Page';
-        pageInfo.textContent = `${pageText} ${this.currentTxPage}`;
+        
+        // Get total transactions from network stats or use default
+        const totalTransactions = window.totalTransactions || 222;
+        const totalPages = Math.ceil(totalTransactions / this.pageSize);
+        let pageDisplay = `${pageText} ${this.currentTxPage}`;
+        
+        if (totalPages > 10) {
+            // Show range for many pages
+            if (this.currentTxPage <= 5) {
+                pageDisplay = `${pageText} ${this.currentTxPage} из 1...${totalPages}`;
+            } else if (this.currentTxPage >= totalPages - 4) {
+                pageDisplay = `${pageText} ${this.currentTxPage} из 1...${totalPages}`;
+            } else {
+                pageDisplay = `${pageText} ${this.currentTxPage} из 1...${this.currentTxPage}...${totalPages}`;
+            }
+        } else {
+            pageDisplay = `${pageText} ${this.currentTxPage} из ${totalPages}`;
+        }
+        
+        pageInfo.textContent = pageDisplay;
         
         // Show "Next" button only if there's data on current page
         const txContainer = document.getElementById('latestTransactions');
-        const hasTx = txContainer.children.length > 0;
+        const hasTx = txContainer && txContainer.children.length > 0;
         nextBtn.disabled = !hasTx;
     }
 
     async refreshBlocks() {
         this.showLoading(true);
+        // Reset to first page when manually refreshing
+        this.currentBlockPage = 1;
         await this.loadLatestBlocks();
         this.showLoading(false);
     }
 
     async refreshTransactions() {
         this.showLoading(true);
+        // Reset to first page when manually refreshing
+        this.currentTxPage = 1;
         await this.loadLatestTransactions();
         this.showLoading(false);
     }
@@ -218,22 +294,29 @@ class BlockchainExplorer {
         this.showLoading(true);
         
         try {
-            const response = await fetch(`${this.apiEndpoint}/search`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    query: query,
-                    network: this.currentNetwork
-                })
-            });
+            console.log('Searching for:', query);
+            const url = `${this.apiEndpoint}/search?query=${encodeURIComponent(query)}&network=${this.currentNetwork}`;
+            console.log('Search URL:', url);
+            
+            const response = await fetch(url);
+            console.log('Response status:', response.status);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
 
             const data = await response.json();
+            console.log('Search response:', data);
+            
+            if (data.error) {
+                this.showError(data.error);
+                return;
+            }
+            
             this.displaySearchResults(data);
         } catch (error) {
             console.error('Search failed:', error);
-            this.showError('Search failed. Please try again.');
+            this.showError(`Search failed: ${error.message}`);
         } finally {
             this.showLoading(false);
         }
@@ -241,13 +324,60 @@ class BlockchainExplorer {
 
     async loadNetworkStats() {
         try {
-            const response = await fetch(`${this.apiEndpoint}/stats?network=${this.currentNetwork}`);
-            const stats = await response.json();
+            console.log('Fetching network stats from:', `${this.apiEndpoint}/index.php?action=get_network_stats&network=${this.currentNetwork}`);
             
-            document.getElementById('blockHeight').textContent = (stats.current_height || 0).toLocaleString();
-            document.getElementById('totalTx').textContent = (stats.total_transactions || 0).toLocaleString();
-            document.getElementById('hashRate').textContent = stats.hash_rate || '0 H/s';
-            document.getElementById('activeNodes').textContent = stats.active_nodes || 0;
+            // Test if fetch is available
+            if (typeof fetch === 'undefined') {
+                console.error('Fetch is not available!');
+                return;
+            }
+            
+            const response = await fetch(`${this.apiEndpoint}/index.php?action=get_network_stats&network=${this.currentNetwork}`);
+            console.log('Response status:', response.status);
+            
+            if (!response.ok) {
+                console.error('Response not ok:', response.status, response.statusText);
+                return;
+            }
+            
+            const stats = await response.json();
+            console.log('Stats data received:', stats);
+            
+            const blockHeightEl = document.getElementById('blockHeight');
+            const totalTxEl = document.getElementById('totalTx');
+            const hashRateEl = document.getElementById('hashRate');
+            const activeNodesEl = document.getElementById('activeNodes');
+            
+            console.log('DOM elements found:', {
+                blockHeight: !!blockHeightEl,
+                totalTx: !!totalTxEl,
+                hashRate: !!hashRateEl,
+                activeNodes: !!activeNodesEl
+            });
+            
+            if (blockHeightEl) {
+                blockHeightEl.textContent = (stats.current_height || 0).toLocaleString();
+                console.log('Updated blockHeight with:', stats.current_height);
+            }
+            if (totalTxEl) {
+                totalTxEl.textContent = (stats.total_transactions || 0).toLocaleString();
+                console.log('Updated totalTx with:', stats.total_transactions);
+            }
+            if (hashRateEl) {
+                hashRateEl.textContent = stats.hash_rate || '0 H/s';
+                console.log('Updated hashRate with:', stats.hash_rate);
+            }
+            if (activeNodesEl) {
+                activeNodesEl.textContent = stats.active_nodes || 0;
+                console.log('Updated activeNodes with:', stats.active_nodes);
+            }
+            
+            // Save stats to global variables for pagination
+            window.totalBlocks = stats.current_height || 0;
+            window.totalTransactions = stats.total_transactions || 0;
+            console.log('Saved global stats:', { totalBlocks: window.totalBlocks, totalTransactions: window.totalTransactions });
+            
+            console.log('Network stats loaded and updated successfully');
         } catch (error) {
             console.error('Failed to load network stats:', error);
         }
@@ -255,12 +385,34 @@ class BlockchainExplorer {
 
     async loadLatestBlocks() {
         try {
-            const offset = (this.currentBlockPage - 1) * this.pageSize;
-            const response = await fetch(`${this.apiEndpoint}/blocks?network=${this.currentNetwork}&offset=${offset}&limit=${this.pageSize}`);
+            const page = this.currentBlockPage - 1; // API uses 0-based indexing
+            const url = `${this.apiEndpoint}/index.php?action=get_all_blocks&network=${this.currentNetwork}&page=${page}&limit=${this.pageSize}`;
+            console.log('Loading blocks from URL:', url, 'page:', this.currentBlockPage);
+            
+            const response = await fetch(url);
+            console.log('Blocks response status:', response.status);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
             const data = await response.json();
-            const blocks = data.blocks || [];
+            console.log('Blocks response data:', data);
+            
+            if (data.error) {
+                console.error('API returned error:', data.error);
+                throw new Error(data.error);
+            }
+            
+            const blocks = data.data || [];
+            console.log('Blocks array:', blocks);
             
             const container = document.getElementById('latestBlocks');
+            if (!container) {
+                console.error('Container latestBlocks not found');
+                return;
+            }
+            
             container.innerHTML = '';
             
             if (blocks.length === 0) {
@@ -273,12 +425,19 @@ class BlockchainExplorer {
                     </div>
                 `;
             } else {
-                blocks.forEach(block => {
+                blocks.length > 0 && blocks.forEach(block => {
                     container.appendChild(this.createBlockCard(block));
                 });
             }
             
+            // Update pagination based on API response
+            if (data.pagination) {
+                window.totalBlocks = data.pagination.total;
+                console.log('Total blocks from API:', data.pagination.total);
+            }
+            
             this.updateBlocksPagination();
+            console.log('Blocks loaded:', blocks.length);
         } catch (error) {
             console.error('Failed to load blocks:', error);
             this.showErrorInContainer('latestBlocks', this.getTranslation('error_loading_blocks', 'Error loading blocks'));
@@ -287,12 +446,24 @@ class BlockchainExplorer {
 
     async loadLatestTransactions() {
         try {
-            const offset = (this.currentTxPage - 1) * this.pageSize;
-            const response = await fetch(`${this.apiEndpoint}/transactions?network=${this.currentNetwork}&offset=${offset}&limit=${this.pageSize}`);
+            const page = this.currentTxPage - 1; // API uses 0-based indexing
+            const response = await fetch(`${this.apiEndpoint}/index.php?action=get_all_transactions&network=${this.currentNetwork}&page=${page}&limit=${this.pageSize}`);
             const data = await response.json();
-            const transactions = data.transactions || [];
+            console.log('Transactions response data:', data);
+            
+            if (data.error) {
+                console.error('API returned error:', data.error);
+                throw new Error(data.error);
+            }
+            
+            const transactions = data.data || [];
             
             const container = document.getElementById('latestTransactions');
+            if (!container) {
+                console.error('Container latestTransactions not found');
+                return;
+            }
+            
             container.innerHTML = '';
             
             if (transactions.length === 0) {
@@ -310,7 +481,14 @@ class BlockchainExplorer {
                 });
             }
             
+            // Update pagination based on API response
+            if (data.pagination) {
+                window.totalTransactions = data.pagination.total;
+                console.log('Total transactions from API:', data.pagination.total);
+            }
+            
             this.updateTransactionsPagination();
+            console.log('Transactions loaded:', transactions.length);
         } catch (error) {
             console.error('Failed to load transactions:', error);
             this.showErrorInContainer('latestTransactions', this.getTranslation('error_loading_transactions', 'Error loading transactions'));
@@ -320,7 +498,7 @@ class BlockchainExplorer {
     async loadLatestContracts() {
         try {
             const offset = (this.currentContractPage - 1) * this.pageSize;
-            // Explorer API is PHP router under ../api/explorer/index.php?action=get_smart_contracts
+            // Explorer API endpoint for smart contracts
             const response = await fetch(`${this.apiEndpoint}/index.php?action=get_smart_contracts&page=${this.currentContractPage - 1}&limit=${this.pageSize}&network=${this.currentNetwork}`);
             const data = await response.json();
             const contracts = data.data || [];
@@ -500,7 +678,7 @@ class BlockchainExplorer {
                         <div class="stat-icon" style="width: 30px; height: 30px; font-size: 0.9rem; margin-right: 0.75rem;">
                             <i class="fas fa-cube"></i>
                         </div>
-                        <h6 class="mb-0 fw-bold">${blockText} #${block.index || block.height || '?'}</h6>
+                        <h6 class="mb-0 fw-bold">${blockText} #${block.height || block.index || '?'}</h6>
                     </div>
                     <div class="d-flex gap-3 text-muted small">
                         <span><i class="fas fa-clock me-1"></i>${ageText}</span>
@@ -577,11 +755,11 @@ class BlockchainExplorer {
             <div class="row g-2 mb-3">
                 <div class="col-6">
                     <small class="text-muted d-block">${fromText}</small>
-                    <div class="hash-display small">${this.truncateHash(tx.from, 16)}</div>
+                    <div class="hash-display small">${this.truncateHash(tx.from_address || tx.from, 16)}</div>
                 </div>
                 <div class="col-6">
                     <small class="text-muted d-block">${toText}</small>
-                    <div class="hash-display small">${this.truncateHash(tx.to, 16)}</div>
+                    <div class="hash-display small">${this.truncateHash(tx.to_address || tx.to, 16)}</div>
                 </div>
             </div>
             
@@ -595,7 +773,7 @@ class BlockchainExplorer {
             <div class="d-flex justify-content-between align-items-center">
                 <small class="text-muted">
                     <i class="fas fa-layer-group me-1"></i>
-                    ${blockText}: #${tx.block_index !== undefined ? tx.block_index : (tx.block_height || pendingText)}
+                    ${blockText}: #${tx.block_height || tx.block_index || pendingText}
                 </small>
                 <button class="btn btn-outline-primary btn-sm" onclick="explorer.viewTransaction('${tx.hash}')">
                     <i class="fas fa-eye me-1"></i>${detailsText}
@@ -673,10 +851,14 @@ class BlockchainExplorer {
         
         try {
             const response = await fetch(`${this.apiEndpoint}/block/${hash}?network=${this.currentNetwork}`);
-            const block = await response.json();
+            const data = await response.json();
             
-            // Create detailed block view modal or navigate to block page
-            this.showBlockDetails(block);
+            if (data.success && data.data) {
+                // Create detailed block view modal or navigate to block page
+                this.showBlockDetails(data.data);
+            } else {
+                this.showError('Failed to load block details');
+            }
         } catch (error) {
             console.error('Failed to load block details:', error);
             this.showError('Failed to load block details');
@@ -690,9 +872,13 @@ class BlockchainExplorer {
         
         try {
             const response = await fetch(`${this.apiEndpoint}/transaction/${hash}?network=${this.currentNetwork}`);
-            const transaction = await response.json();
+            const data = await response.json();
             
-            this.showTransactionDetails(transaction);
+            if (data.success && data.data) {
+                this.showTransactionDetails(data.data);
+            } else {
+                this.showError('Failed to load transaction details');
+            }
         } catch (error) {
             console.error('Failed to load transaction details:', error);
             this.showError('Failed to load transaction details');
@@ -703,7 +889,7 @@ class BlockchainExplorer {
 
     showBlockDetails(block) {
         // Create modal or detailed view for block
-        alert(`Block #${block.index}\nHash: ${block.hash}\nTime: ${new Date(block.timestamp * 1000).toLocaleString()}`);
+        alert(`Block #${block.height || block.index}\nHash: ${block.hash}\nTime: ${new Date(block.timestamp * 1000).toLocaleString()}`);
     }
 
     showTransactionDetails(tx) {
@@ -722,8 +908,9 @@ class BlockchainExplorer {
     }
 
     async refreshData() {
-        this.currentBlockPage = 0;
-        this.currentTxPage = 0;
+        // Don't reset pagination pages during auto-refresh
+        // this.currentBlockPage = 0;
+        // this.currentTxPage = 0;
         
         await Promise.all([
             this.loadNetworkStats(),
@@ -1124,7 +1311,34 @@ let explorer;
 
 // Initialize explorer when page loads
 document.addEventListener('DOMContentLoaded', function() {
-    explorer = new BlockchainExplorer();
+    console.log('DOM loaded, initializing explorer...');
+    console.log('Checking if required elements exist...');
+    
+    // Check if required elements exist
+    const requiredElements = ['blockHeight', 'totalTx', 'hashRate', 'activeNodes', 'latestBlocks', 'latestTransactions'];
+    const missingElements = [];
+    
+    requiredElements.forEach(id => {
+        const element = document.getElementById(id);
+        if (!element) {
+            missingElements.push(id);
+            console.error(`Required element with id '${id}' not found`);
+        } else {
+            console.log(`Element '${id}' found:`, element);
+        }
+    });
+    
+    if (missingElements.length > 0) {
+        console.error('Missing required elements:', missingElements);
+        return;
+    }
+    
+    try {
+        explorer = new BlockchainExplorer();
+        console.log('Explorer instance created successfully');
+    } catch (error) {
+        console.error('Failed to create explorer instance:', error);
+    }
 });
 
 // Global functions for button clicks
@@ -1133,11 +1347,21 @@ function performSearch() {
 }
 
 function loadBlocks(direction) {
-    explorer.loadBlocks(direction);
+    console.log('Global loadBlocks called with direction:', direction);
+    if (explorer) {
+        explorer.loadBlocks(direction);
+    } else {
+        console.error('Explorer instance not found!');
+    }
 }
 
 function loadTransactions(direction) {
-    explorer.loadTransactions(direction);
+    console.log('Global loadTransactions called with direction:', direction);
+    if (explorer) {
+        explorer.loadTransactions(direction);
+    } else {
+        console.error('Explorer instance not found!');
+    }
 }
 
 function refreshBlocks() {

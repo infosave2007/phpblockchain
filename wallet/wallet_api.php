@@ -154,11 +154,13 @@ try {
     writeLog("Database connection successful");
     
     // Include Wallet classes
-    require_once $baseDir . '/wallet/WalletManager.php';
-    require_once $baseDir . '/wallet/WalletBlockchainManager.php';
-    require_once $baseDir . '/core/Config/NetworkConfig.php';
-    require_once $baseDir . '/core/Cryptography/MessageEncryption.php';
-    require_once $baseDir . '/core/Cryptography/KeyPair.php';
+require_once $baseDir . '/wallet/WalletManager.php';
+require_once $baseDir . '/wallet/WalletBlockchainManager.php';
+require_once $baseDir . '/core/Config/NetworkConfig.php';
+require_once $baseDir . '/core/Cryptography/MessageEncryption.php';
+require_once $baseDir . '/core/Cryptography/KeyPair.php';
+require_once $baseDir . '/core/Transaction/Transaction.php';
+require_once $baseDir . '/core/Transaction/MempoolManager.php';
     
     // Instantiate WalletManager with full config
     $fullConfig = array_merge($config, ['database' => $dbConfig]);
@@ -661,6 +663,18 @@ try {
                 throw new Exception('Wallet address is required');
             }
             $result = deleteWallet($walletManager, $address);
+            break;
+            
+        case 'broadcast_transaction':
+            $transaction = $input['transaction'] ?? null;
+            $sourceNode = $input['source_node'] ?? '';
+            $timestamp = $input['timestamp'] ?? time();
+            
+            if (!$transaction) {
+                throw new Exception('Transaction data is required');
+            }
+            
+            $result = receiveBroadcastedTransaction($walletManager, $transaction, $sourceNode, $timestamp);
             break;
 
         case 'rpc':
@@ -1610,11 +1624,24 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
         // 8. Update transaction status
         $transferTx['status'] = 'confirmed';
         
+        // 9. Broadcast transaction to all network nodes via multi_curl
+        $networkResult = broadcastTransactionToNetwork($transferTx, $pdo);
+        
+        // 10. Auto-mine blocks if enabled
+        $config = getNetworkConfigFromDatabase($pdo);
+        $autoMineResult = null;
+        
+        if ($config['auto_mine.enabled'] ?? true) {
+            $autoMineResult = autoMineBlocks($walletManager, $config);
+        }
+        
         writeLog("Token transfer completed successfully", 'INFO');
         
         return [
             'transaction' => $transferTx,
             'blockchain' => $blockchainResult,
+            'network_broadcast' => $networkResult,
+            'auto_mine' => $autoMineResult,
             'new_balances' => [
                 'sender' => $walletManager->getBalance($fromAddress),
                 'recipient' => $walletManager->getBalance($toAddress)
@@ -4131,6 +4158,509 @@ function getOrDeployStakingContract(PDO $pdo, string $deployerAddress): string {
 
     // If still not available
     return '';
+}
+
+/**
+ * Get network nodes from database
+ */
+function getNetworkNodesFromDatabase(PDO $pdo): array {
+    try {
+        $stmt = $pdo->prepare("
+            SELECT 
+                node_id,
+                ip_address,
+                port,
+                public_key,
+                version,
+                status,
+                metadata,
+                reputation_score,
+                ping_time
+            FROM nodes 
+            WHERE status = 'active' 
+            AND reputation_score > 50
+            ORDER BY reputation_score DESC, ping_time ASC
+        ");
+        $stmt->execute();
+        $nodes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        $networkNodes = [];
+        foreach ($nodes as $node) {
+            $metadata = json_decode($node['metadata'], true) ?: [];
+            $protocol = $metadata['protocol'] ?? 'https';
+            $domain = $metadata['domain'] ?? $node['ip_address'];
+            
+            // Build API URL
+            $baseUrl = $protocol . '://' . $domain;
+            if ($node['port'] !== 80 && $node['port'] !== 443) {
+                $baseUrl .= ':' . $node['port'];
+            }
+            
+            $networkNodes[$node['node_id']] = [
+                'node_id' => $node['node_id'],
+                'url' => $baseUrl,
+                'ip_address' => $node['ip_address'],
+                'port' => $node['port'],
+                'protocol' => $protocol,
+                'domain' => $domain,
+                'version' => $node['version'],
+                'reputation_score' => $node['reputation_score'],
+                'ping_time' => $node['ping_time'],
+                'metadata' => $metadata
+            ];
+        }
+        
+        return $networkNodes;
+        
+    } catch (Exception $e) {
+        writeLog("Error getting network nodes from database: " . $e->getMessage(), 'ERROR');
+        return [];
+    }
+}
+
+/**
+ * Get network configuration from database
+ */
+function getNetworkConfigFromDatabase(PDO $pdo): array {
+    try {
+        $stmt = $pdo->prepare("
+            SELECT key_name, value, description 
+            FROM config 
+            WHERE key_name LIKE 'network.%' 
+            OR key_name LIKE 'broadcast.%' 
+            OR key_name LIKE 'auto_mine.%'
+        ");
+        $stmt->execute();
+        $configRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        $config = [];
+        foreach ($configRows as $row) {
+            $key = $row['key_name'];
+            $value = $row['value'];
+            
+            // Convert string values to appropriate types
+            if (is_numeric($value)) {
+                if (strpos($value, '.') !== false) {
+                    $value = (float)$value;
+                } else {
+                    $value = (int)$value;
+                }
+            } elseif ($value === 'true' || $value === 'false') {
+                $value = $value === 'true';
+            }
+            
+            $config[$key] = $value;
+        }
+        
+        // Add default values if not in database
+        $defaults = [
+            'broadcast.enabled' => true,
+            'broadcast.timeout' => 10,
+            'broadcast.max_retries' => 3,
+            'broadcast.min_success_rate' => 50,
+            'auto_mine.enabled' => true,
+            'auto_mine.min_transactions' => 10,
+            'auto_mine.max_transactions_per_block' => 100,
+            'auto_mine.max_blocks_per_minute' => 2,
+            'network.max_peers' => 50,
+            'network.sync_batch_size' => 100
+        ];
+        
+        foreach ($defaults as $key => $defaultValue) {
+            if (!isset($config[$key])) {
+                $config[$key] = $defaultValue;
+            }
+        }
+        
+        return $config;
+        
+    } catch (Exception $e) {
+        writeLog("Error getting network config from database: " . $e->getMessage(), 'ERROR');
+        return [];
+    }
+}
+
+/**
+ * Get current node ID
+ */
+function getCurrentNodeId(PDO $pdo): string {
+    try {
+        $stmt = $pdo->prepare("SELECT value FROM config WHERE key_name = 'node.id' LIMIT 1");
+        $stmt->execute();
+        $nodeId = $stmt->fetchColumn();
+        
+        if ($nodeId) {
+            return $nodeId;
+        }
+        
+        // Generate new node ID if not found
+        $newNodeId = hash('sha256', uniqid() . time());
+        
+        $stmt = $pdo->prepare("
+            INSERT INTO config (key_name, value, description, is_system) 
+            VALUES ('node.id', ?, 'Current node ID', 1)
+            ON DUPLICATE KEY UPDATE value = VALUES(value)
+        ");
+        $stmt->execute([$newNodeId]);
+        
+        return $newNodeId;
+        
+    } catch (Exception $e) {
+        writeLog("Error getting current node ID: " . $e->getMessage(), 'ERROR');
+        return hash('sha256', 'fallback_node_' . time());
+    }
+}
+
+/**
+ * Update node statistics
+ */
+function updateNodeStats(PDO $pdo, string $nodeId, bool $success, float $responseTime): void {
+    try {
+        if ($success) {
+            // Successful attempt - increase reputation, update ping_time
+            $stmt = $pdo->prepare("
+                UPDATE nodes 
+                SET 
+                    reputation_score = LEAST(reputation_score + 1, 100),
+                    ping_time = ?,
+                    last_seen = NOW(),
+                    updated_at = NOW()
+                WHERE node_id = ?
+            ");
+            $stmt->execute([(int)$responseTime, $nodeId]);
+        } else {
+            // Failed attempt - decrease reputation
+            $stmt = $pdo->prepare("
+                UPDATE nodes 
+                SET 
+                    reputation_score = GREATEST(reputation_score - 5, 0),
+                    updated_at = NOW()
+                WHERE node_id = ?
+            ");
+            $stmt->execute([$nodeId]);
+        }
+    } catch (Exception $e) {
+        writeLog("Error updating node stats: " . $e->getMessage(), 'ERROR');
+    }
+}
+
+/**
+ * Broadcast transaction to all network nodes via multi_curl
+ */
+function broadcastTransactionToNetwork(array $transaction, PDO $pdo): array {
+    try {
+        // Get nodes from database
+        $networkNodes = getNetworkNodesFromDatabase($pdo);
+        
+        if (empty($networkNodes)) {
+            return [
+                'success' => false,
+                'message' => 'No active network nodes found',
+                'nodes_contacted' => 0,
+                'successful_broadcasts' => 0
+            ];
+        }
+        
+        // Get configuration
+        $config = getNetworkConfigFromDatabase($pdo);
+        $timeout = $config['broadcast.timeout'] ?? 10;
+        $maxRetries = $config['broadcast.max_retries'] ?? 3;
+        
+        // Create MultiCurl for parallel broadcasting
+        $multiCurl = new \Blockchain\Core\Network\MultiCurl(50, $timeout, 3);
+        
+        // Prepare requests for all nodes
+        $requests = [];
+        foreach ($networkNodes as $nodeId => $nodeInfo) {
+            $requests[$nodeId] = [
+                'url' => rtrim($nodeInfo['url'], '/') . '/wallet/wallet_api.php',
+                'method' => 'POST',
+                'data' => json_encode([
+                    'action' => 'broadcast_transaction',
+                    'transaction' => $transaction,
+                    'source_node' => getCurrentNodeId($pdo),
+                    'timestamp' => time()
+                ]),
+                'headers' => [
+                    'Content-Type: application/json',
+                    'User-Agent: BlockchainNode/2.0',
+                    'X-Node-Id: ' . getCurrentNodeId($pdo)
+                ],
+                'timeout' => $timeout,
+                'connect_timeout' => 3
+            ];
+        }
+        
+        // Execute parallel broadcasting
+        $results = $multiCurl->executeRequests($requests);
+        
+        // Analyze results
+        $successful = 0;
+        $failed = 0;
+        $nodeResults = [];
+        
+        foreach ($results as $nodeId => $result) {
+            if ($result['success'] && $result['http_code'] === 200) {
+                $successful++;
+                $nodeResults[$nodeId] = [
+                    'status' => 'success',
+                    'response_time' => $result['time'],
+                    'response' => $result['data'] ?? null,
+                    'node_info' => $networkNodes[$nodeId] ?? null
+                ];
+                
+                // Update node statistics
+                updateNodeStats($pdo, $nodeId, true, $result['time']);
+                
+            } else {
+                $failed++;
+                $nodeResults[$nodeId] = [
+                    'status' => 'failed',
+                    'error' => $result['error'] ?? 'HTTP ' . $result['http_code'],
+                    'response_time' => $result['time'],
+                    'node_info' => $networkNodes[$nodeId] ?? null
+                ];
+                
+                // Update node statistics (failed attempt)
+                updateNodeStats($pdo, $nodeId, false, $result['time']);
+            }
+        }
+        
+        // Check minimum success rate
+        $minSuccessRate = $config['broadcast.min_success_rate'] ?? 50;
+        $successRate = count($networkNodes) > 0 ? round(($successful / count($networkNodes)) * 100, 2) : 0;
+        
+        return [
+            'success' => $successful > 0 && $successRate >= $minSuccessRate,
+            'nodes_contacted' => count($networkNodes),
+            'successful_broadcasts' => $successful,
+            'failed_broadcasts' => $failed,
+            'success_rate' => $successRate,
+            'min_success_rate' => $minSuccessRate,
+            'node_results' => $nodeResults,
+            'stats' => $multiCurl->getStats()
+        ];
+        
+    } catch (Exception $e) {
+        writeLog("Error broadcasting transaction to network: " . $e->getMessage(), 'ERROR');
+        return [
+            'success' => false,
+            'error' => $e->getMessage(),
+            'nodes_contacted' => 0,
+            'successful_broadcasts' => 0
+        ];
+    }
+}
+
+/**
+ * Receive transaction broadcasted from another node
+ */
+function receiveBroadcastedTransaction($walletManager, array $transaction, string $sourceNode, int $timestamp): array {
+    try {
+        // Check if transaction is not too old (e.g., not older than 5 minutes)
+        if (time() - $timestamp > 300) {
+            return [
+                'success' => false,
+                'error' => 'Transaction too old',
+                'age_seconds' => time() - $timestamp
+            ];
+        }
+        
+        // Check if transaction doesn't already exist in our database
+        $existingTx = $walletManager->getTransactionByHash($transaction['hash']);
+        if ($existingTx) {
+            return [
+                'success' => true,
+                'message' => 'Transaction already exists',
+                'status' => 'duplicate'
+            ];
+        }
+        
+        // Check mempool for duplicates
+        $pdo = $walletManager->getDatabase();
+        $stmt = $pdo->prepare("SELECT 1 FROM mempool WHERE tx_hash = ? LIMIT 1");
+        $stmt->execute([$transaction['hash']]);
+        if ($stmt->fetchColumn()) {
+            return [
+                'success' => true,
+                'message' => 'Transaction already in mempool',
+                'status' => 'duplicate'
+            ];
+        }
+        
+        // Create transaction object and add to mempool
+        $tx = new \Blockchain\Core\Transaction\Transaction(
+            $transaction['from'],
+            $transaction['to'],
+            $transaction['amount'],
+            $transaction['fee'],
+            0, // nonce
+            null, // data
+            21000, // gas limit
+            0 // gas price
+        );
+        $tx->forceHash($transaction['hash']);
+        $tx->setSignature($transaction['signature'] ?? 'broadcasted');
+        
+        $mempool = new \Blockchain\Core\Transaction\MempoolManager($pdo, ['min_fee' => 0.001]);
+        $added = $mempool->addTransaction($tx);
+        
+        if ($added) {
+            return [
+                'success' => true,
+                'message' => 'Transaction added to mempool',
+                'status' => 'added',
+                'transaction_hash' => $transaction['hash']
+            ];
+        } else {
+            return [
+                'success' => false,
+                'error' => 'Failed to add transaction to mempool',
+                'status' => 'failed'
+            ];
+        }
+        
+    } catch (Exception $e) {
+        return [
+            'success' => false,
+            'error' => $e->getMessage(),
+            'status' => 'error'
+        ];
+    }
+}
+
+/**
+ * Automatically mine blocks if there are enough transactions in mempool
+ */
+function autoMineBlocks($walletManager, array $config): array {
+    try {
+        $pdo = $walletManager->getDatabase();
+        
+        // Check number of transactions in mempool
+        $stmt = $pdo->query("SELECT COUNT(*) FROM mempool");
+        $mempoolCount = $stmt->fetchColumn();
+        
+        // If transactions are less than threshold, don't mine
+        $minTransactions = $config['auto_mine.min_transactions'] ?? 10;
+        if ($mempoolCount < $minTransactions) {
+            return [
+                'mined' => false,
+                'reason' => 'Not enough transactions',
+                'mempool_count' => $mempoolCount,
+                'min_required' => $minTransactions
+            ];
+        }
+        
+        // Get transactions for block
+        $maxTransactions = $config['auto_mine.max_transactions_per_block'] ?? 100;
+        $mempool = new \Blockchain\Core\Transaction\MempoolManager($pdo, ['min_fee' => 0.001]);
+        $transactions = $mempool->getTransactionsForBlock($maxTransactions);
+        
+        if (empty($transactions)) {
+            return [
+                'mined' => false,
+                'reason' => 'No valid transactions to mine'
+            ];
+        }
+        
+        // Mine block
+        $blockResult = mineBlock($transactions, $pdo, $config);
+        
+        return [
+            'mined' => true,
+            'block_height' => $blockResult['height'],
+            'block_hash' => $blockResult['hash'],
+            'transactions_processed' => count($transactions),
+            'mempool_remaining' => $mempoolCount - count($transactions)
+        ];
+        
+    } catch (Exception $e) {
+        return [
+            'mined' => false,
+            'error' => $e->getMessage()
+        ];
+    }
+}
+
+/**
+ * Mine a single block with given transactions
+ */
+function mineBlock(array $transactions, PDO $pdo, array $config): array {
+    try {
+        // Determine next block height
+        $prevHash = 'GENESIS';
+        $height = 0;
+        $stmt = $pdo->query("SELECT hash, height FROM blocks ORDER BY height DESC LIMIT 1");
+        if ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $prevHash = $row['hash'];
+            $height = (int)$row['height'] + 1;
+        }
+        
+        writeLog("Mining block height $height with " . count($transactions) . " transactions", 'INFO');
+        
+        // Get original hashes for cleanup
+        $stmt = $pdo->prepare("
+            SELECT tx_hash FROM mempool 
+            ORDER BY priority_score DESC, created_at ASC 
+            LIMIT :max_count
+        ");
+        $stmt->bindParam(':max_count', count($transactions), PDO::PARAM_INT);
+        $stmt->execute();
+        $originalHashes = [];
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $originalHashes[] = $row['tx_hash'];
+        }
+        
+        // Initialize mining components
+        require_once dirname(__DIR__) . '/core/Consensus/ValidatorManager.php';
+        require_once dirname(__DIR__) . '/core/Consensus/ProofOfStake.php';
+        require_once dirname(__DIR__) . '/core/Blockchain/Block.php';
+        require_once dirname(__DIR__) . '/core/Storage/BlockStorage.php';
+        
+        $validatorManager = new \Blockchain\Core\Consensus\ValidatorManager($pdo, $config);
+        
+        require_once dirname(__DIR__) . '/core/Logging/NullLogger.php';
+        $logger = new \Blockchain\Core\Logging\NullLogger();
+        
+        $pos = new \Blockchain\Core\Consensus\ProofOfStake($logger);
+        $pos->setValidatorManager($validatorManager);
+        
+        $block = new \Blockchain\Core\Blockchain\Block($height, $transactions, $prevHash, [], []);
+        
+        // Sign block
+        try { 
+            $pos->signBlock($block); 
+        } catch (Throwable $e) { 
+            writeLog('Block signing failed: ' . $e->getMessage(), 'ERROR'); 
+        }
+        
+        // Save block
+        $storage = new \Blockchain\Core\Storage\BlockStorage(dirname(__DIR__) . '/storage/blockchain_runtime.json', $pdo, $validatorManager);
+        $ok = $storage->saveBlock($block);
+        
+        if (!$ok) {
+            throw new Exception('Failed to save block');
+        }
+        
+        // Clean up mempool
+        $removed = 0;
+        $del = $pdo->prepare('DELETE FROM mempool WHERE tx_hash = ?');
+        foreach ($originalHashes as $originalHash) {
+            $del->execute([$originalHash]);
+            $removed += $del->rowCount();
+        }
+        
+        return [
+            'height' => $height,
+            'hash' => $block->getHash(),
+            'transactions_count' => count($transactions),
+            'mempool_cleaned' => $removed
+        ];
+        
+    } catch (Exception $e) {
+        writeLog("Error mining block: " . $e->getMessage(), 'ERROR');
+        throw $e;
+    }
 }
 
 
