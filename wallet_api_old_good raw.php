@@ -21,21 +21,7 @@ require_once __DIR__ . '/WalletLogger.php';
  * Log helper wrapper (kept for backward compatibility)
  */
 function writeLog($message, $level = 'DEBUG') {
-    try {
-        // Try to use WalletLogger first
     \Blockchain\Wallet\WalletLogger::log($message, $level);
-    } catch (\Throwable $e) {
-        // Fallback to direct file logging if WalletLogger fails
-        $baseDir = dirname(__DIR__);
-        $logDir = $baseDir . '/logs';
-        if (!is_dir($logDir)) {
-            @mkdir($logDir, 0755, true);
-        }
-        $logFile = $logDir . '/wallet_api_direct.log';
-        $timestamp = date('Y-m-d H:i:s');
-        $logLine = "[{$timestamp}] [{$level}] {$message}" . PHP_EOL;
-        @file_put_contents($logFile, $logLine, FILE_APPEND | LOCK_EX);
-    }
 }
 
 // Early, dependency-free request logging to guarantee request traces even if later init fails
@@ -168,11 +154,11 @@ try {
     writeLog("Database connection successful");
     
     // Include Wallet classes
-    require_once $baseDir . '/wallet/WalletManager.php';
-    require_once $baseDir . '/wallet/WalletBlockchainManager.php';
-    require_once $baseDir . '/core/Config/NetworkConfig.php';
-    require_once $baseDir . '/core/Cryptography/MessageEncryption.php';
-    require_once $baseDir . '/core/Cryptography/KeyPair.php';
+require_once $baseDir . '/wallet/WalletManager.php';
+require_once $baseDir . '/wallet/WalletBlockchainManager.php';
+require_once $baseDir . '/core/Config/NetworkConfig.php';
+require_once $baseDir . '/core/Cryptography/MessageEncryption.php';
+require_once $baseDir . '/core/Cryptography/KeyPair.php';
 require_once $baseDir . '/core/Transaction/Transaction.php';
 require_once $baseDir . '/core/Transaction/MempoolManager.php';
     
@@ -248,7 +234,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
         return [
             'web3_clientVersion','web3_sha3',
             'net_version','net_listening','net_peerCount',
-            'eth_chainId','eth_blockNumber','eth_getBalance','eth_coinbase','eth_getTransactionCount','eth_gasPrice','eth_maxPriorityFeePerGas','eth_estimateGas','eth_call','eth_getTransactionByHash','eth_getTransactionReceipt','eth_sendRawTransaction','eth_sendTransaction','eth_getBlockByNumber','eth_getBlockByHash','eth_getStorageAt','eth_getCode','eth_getLogs','eth_getBlockTransactionCountByNumber','eth_getTransactionByBlockNumberAndIndex','eth_feeHistory','eth_syncing','eth_mining',
+            'eth_chainId','eth_blockNumber','eth_getBalance','eth_coinbase','eth_getTransactionCount','eth_gasPrice','eth_maxPriorityFeePerGas','eth_estimateGas','eth_getTransactionByHash','eth_getTransactionReceipt','eth_sendRawTransaction','eth_sendTransaction','eth_getBlockByNumber','eth_getBlockByHash','eth_getStorageAt','eth_getCode','eth_getLogs','eth_getBlockTransactionCountByNumber','eth_getTransactionByBlockNumberAndIndex','eth_feeHistory','eth_syncing','eth_mining',
             'eth_accounts','eth_requestAccounts',
             'personal_listAccounts','personal_newAccount','personal_unlockAccount','personal_lockAccount','personal_sign','eth_sign',
             'wallet_addEthereumChain','wallet_switchEthereumChain','wallet_requestPermissions','wallet_getPermissions','wallet_watchAsset'
@@ -2736,112 +2722,28 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
 
             case 'eth_sendRawTransaction': {
                 // Accept raw Ethereum transaction, queue for processing, return tx hash
-                writeLog('Processing eth_sendRawTransaction request', 'INFO');
                 $raw = $params[0] ?? '';
                 if (!is_string($raw) || strlen($raw) < 4 || !str_starts_with($raw, '0x')) {
-                    writeLog('Invalid raw transaction format: ' . substr($raw, 0, 50), 'ERROR');
                     return rpcError(-32602, 'Invalid raw transaction');
                 }
 
                 $rawHex = strtolower($raw);
-                writeLog('Raw transaction hex: ' . substr($rawHex, 0, 100) . '...', 'DEBUG');
-                
                 $bin = @hex2bin(substr($rawHex, 2));
                 if ($bin === false) {
-                    writeLog('Raw transaction hex decode failed for: ' . substr($rawHex, 0, 50), 'ERROR');
                     return rpcError(-32602, 'Raw transaction hex decode failed');
                 }
 
                 // Compute tx hash as keccak256 of raw bytes (Ethereum-style)
                 $txHash = '0x' . \Blockchain\Core\Crypto\Hash::keccak256($bin);
-                writeLog('Computed transaction hash: ' . $txHash, 'INFO');
 
                 // Try to parse minimal fields from RLP for visibility (best-effort)
                 $parsed = parseEthRawTransaction($rawHex);
-                writeLog('Parsed transaction data: ' . json_encode($parsed), 'DEBUG');
 
                 // Persist raw tx to local queue for asynchronous processing
                 $queued = queueRawTransaction($txHash, $rawHex, $parsed);
                 if (!$queued) {
                     // Still return hash so dApps have a handle; log the issue
                     writeLog('Failed to persist raw tx queue for ' . $txHash, 'ERROR');
-                } else {
-                    writeLog('Queued raw tx ' . $txHash . ' (from MetaMask)', 'INFO');
-                }
-
-                // Best-effort: normalize minimal fields and accept locally + broadcast immediately
-                try {
-                    writeLog('Starting transaction normalization and processing', 'INFO');
-                    $pdo = $walletManager->getDatabase();
-                    $decimals = getTokenDecimals($networkConfig);
-                    // Convert value (wei-like) from hex to a decimal amount using chain decimals with 8-digit scale
-                    $amountDecimal = 0.0;
-                    if (isset($parsed['value']) && is_string($parsed['value'])) {
-                        $vHex = strtolower($parsed['value']);
-                        if (str_starts_with($vHex, '0x')) { $vHex = substr($vHex, 2); }
-                        if ($vHex === '' || !ctype_xdigit($vHex)) { $vHex = '0'; }
-                        $weiDec = hexToDecStringSafe($vHex);
-                        $amountStr = scaleDownByDecimals($weiDec, max(0, (int)$decimals), 8);
-                        $amountDecimal = (float)$amountStr;
-                    }
-                    $normalized = [
-                        'hash' => $txHash, // keep 0x prefix to match mempool storage
-                        'from_address' => normalizeHexAddress($parsed['from'] ?? ''),
-                        'to_address' => normalizeHexAddress($parsed['to'] ?? ''),
-                        'amount' => $amountDecimal,
-                        'fee' => 0.0,
-                        'nonce' => isset($parsed['nonce']) ? (is_string($parsed['nonce']) && str_starts_with(strtolower($parsed['nonce']), '0x') ? (int)hexdec($parsed['nonce']) : (int)$parsed['nonce']) : 0,
-                        'gas_limit' => isset($parsed['gas']) ? (is_string($parsed['gas']) && str_starts_with(strtolower($parsed['gas']), '0x') ? (int)hexdec($parsed['gas']) : (int)$parsed['gas']) : 21000,
-                        'gas_price' => isset($parsed['gasPrice']) ? (is_string($parsed['gasPrice']) && str_starts_with(strtolower($parsed['gasPrice']), '0x') ? (int)hexdec($parsed['gasPrice']) : (int)$parsed['gasPrice']) : 0,
-                        'data' => is_string($parsed['input'] ?? null) ? ($parsed['input'] ?: '0x') : '0x',
-                        'signature' => 'raw',
-                        'status' => 'pending',
-                        'timestamp' => time(),
-                    ];
-                    writeLog('Normalized transaction data: ' . json_encode($normalized), 'DEBUG');
-
-                    // Accept locally into mempool (idempotent if already present)
-                    try {
-                        writeLog('Attempting to add transaction to local mempool', 'INFO');
-                        $result = receiveBroadcastedTransaction($walletManager, $normalized, $_SERVER['HTTP_HOST'] ?? 'self', time());
-                        writeLog('Local mempool result: ' . json_encode($result), 'INFO');
-                        
-                        // Simple direct logging to debug
-                        $debugLog = __DIR__ . '/../logs/debug.log';
-                        $timestamp = date('Y-m-d H:i:s');
-                        $debugMsg = "[{$timestamp}] receiveBroadcastedTransaction result: " . json_encode($result) . PHP_EOL;
-                        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
-                        
-                    } catch (\Throwable $e) {
-                        writeLog('Local accept of raw tx failed: ' . $e->getMessage(), 'WARNING');
-                        
-                        // Simple direct logging to debug
-                        $debugLog = __DIR__ . '/../logs/debug.log';
-                        $timestamp = date('Y-m-d H:i:s');
-                        $debugMsg = "[{$timestamp}] receiveBroadcastedTransaction ERROR: " . $e->getMessage() . PHP_EOL;
-                        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
-                    }
-
-                    // Broadcast to peer nodes (non-blocking via multi_curl)
-                    try {
-                        $broadcastResult = broadcastTransactionToNetwork($normalized, $pdo);
-                        writeLog('Broadcasted raw tx to network: ' . json_encode($broadcastResult), 'INFO');
-                    } catch (\Throwable $e) {
-                        writeLog('Broadcast of raw tx failed: ' . $e->getMessage(), 'ERROR');
-                    }
-
-                    // Optional: attempt auto-mining on this node if enabled in config
-                    try {
-                        $config = getNetworkConfigFromDatabase($pdo);
-                        if (!empty($config['auto_mine.enabled'])) {
-                            $am = autoMineBlocks($walletManager, $config);
-                            writeLog('Auto-mine after raw tx: ' . json_encode($am), 'INFO');
-                        }
-                    } catch (\Throwable $e) {
-                        writeLog('Auto-mine after raw tx failed: ' . $e->getMessage(), 'WARNING');
-                    }
-                } catch (\Throwable $e) {
-                    writeLog('Normalization/broadcast pipeline for raw tx failed: ' . $e->getMessage(), 'WARNING');
                 }
 
                 return $txHash;
@@ -2943,49 +2845,6 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                     $result = str_starts_with($txHash, '0x') ? $txHash : ('0x' . $txHash);
                     
                     writeLog("Transaction submitted: $result from $from to $to amount $amount", 'INFO');
-
-                    // Best-effort network broadcast for MetaMask-style sendTransaction as well
-                    try {
-                        $pdo = $walletManager->getDatabase();
-                        $normalized = [
-                            'hash' => $result, // keep 0x prefix
-                            'from_address' => normalizeHexAddress($from),
-                            'to_address' => normalizeHexAddress($to),
-                            'amount' => $amount,
-                            'fee' => max(0.001, 0.0),
-                            'nonce' => $nonce ?? 0,
-                            'gas_limit' => $gasLimit,
-                            'gas_price' => $gasPrice,
-                            'data' => $data ?? '0x',
-                            'signature' => 'local',
-                            'status' => 'pending',
-                            'timestamp' => time(),
-                        ];
-
-                        // Accept locally via same path to unify behavior
-                        try {
-                            receiveBroadcastedTransaction($walletManager, $normalized, $_SERVER['HTTP_HOST'] ?? 'self', time());
-                        } catch (\Throwable $e) {
-                            writeLog('Local accept of sendTransaction failed: ' . $e->getMessage(), 'WARNING');
-                        }
-
-                        $broadcastResult = broadcastTransactionToNetwork($normalized, $pdo);
-                        writeLog('Broadcasted sendTransaction to network: ' . json_encode($broadcastResult), 'INFO');
-
-                        // Optional: attempt auto-mining on this node if enabled
-                        try {
-                            $config = getNetworkConfigFromDatabase($pdo);
-                            if (!empty($config['auto_mine.enabled'])) {
-                                $am = autoMineBlocks($walletManager, $config);
-                                writeLog('Auto-mine after sendTransaction: ' . json_encode($am), 'INFO');
-                            }
-                        } catch (\Throwable $e) {
-                            writeLog('Auto-mine after sendTransaction failed: ' . $e->getMessage(), 'WARNING');
-                        }
-                    } catch (\Throwable $e) {
-                        writeLog('Broadcast pipeline for sendTransaction failed: ' . $e->getMessage(), 'WARNING');
-                    }
-
                     return $result;
                     
                 } catch (\Throwable $e) {
@@ -3147,9 +3006,6 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                     writeLog('eth_call missing/invalid to address', 'WARNING');
                     return rpcError(-32602, 'Invalid to address');
                 }
-                
-                // Get PDO connection from walletManager
-                $pdo = $walletManager->getDatabase();
                 $code = getContractCodeHex($pdo, $norm);
                 if (!$code || $code === '0x') return '0x';
 
@@ -3831,15 +3687,11 @@ function loadKeystoreDecrypted(string $address, string $password): string {
 function queueRawTransaction(string $txHash, string $rawHex, array $parsed = []): bool
 {
     try {
-        writeLog('queueRawTransaction called for hash: ' . $txHash, 'INFO');
         $dir = dirname(__DIR__) . '/storage/raw_mempool';
         if (!is_dir($dir)) {
             @mkdir($dir, 0755, true);
-            writeLog('Created raw_mempool directory: ' . $dir, 'INFO');
         }
         $path = $dir . '/' . str_replace('0x', '', $txHash) . '.json';
-        writeLog('Raw transaction file path: ' . $path, 'DEBUG');
-        
         $payload = [
             'hash' => $txHash,
             'raw' => $rawHex,
@@ -3851,7 +3703,7 @@ function queueRawTransaction(string $txHash, string $rawHex, array $parsed = [])
             // Debug log to trace raw queueing (helps diagnose missing mempool entries)
             $toDbg = isset($parsed['to']) ? $parsed['to'] : '(none)';
             $valDbg = isset($parsed['value']) ? $parsed['value'] : '(none)';
-            writeLog("Queued raw tx $txHash to=$toDbg value=$valDbg", 'INFO');
+            writeLog("Queued raw tx $txHash to=$toDbg value=$valDbg", 'DEBUG');
         } else {
             writeLog("Failed writing raw tx file for $txHash (path=$path)", 'ERROR');
         }
@@ -3914,24 +3766,22 @@ function recoverEIP1559FromAddress($chainIdHex, $nonceHex, $maxPriorityFeePerGas
         $rHex = bin2hex($rBin);
         $sHex = bin2hex($sBin);
         
-        // Use secp256k1 recovery (if available and constants defined)
-        if (
-            function_exists('secp256k1_ecdsa_recover') &&
-            function_exists('secp256k1_ecdsa_recoverable_signature_parse_compact') &&
-            function_exists('secp256k1_ec_pubkey_serialize') &&
-            function_exists('secp256k1_context_create') &&
-            defined('SECP256K1_CONTEXT_SIGN') &&
-            defined('SECP256K1_CONTEXT_VERIFY') &&
-            defined('SECP256K1_EC_UNCOMPRESSED')
-        ) {
-            $flags = constant('SECP256K1_CONTEXT_SIGN') | constant('SECP256K1_CONTEXT_VERIFY');
-            $context = secp256k1_context_create($flags);
+        // Use secp256k1 recovery (if available)
+        if (function_exists('secp256k1_ecdsa_recover')) {
+            $context = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+            
+            // Create recoverable signature
             $signature = pack('H*', $rHex . $sHex);
             $recoverableSignature = secp256k1_ecdsa_recoverable_signature_parse_compact($context, $signature, $recoveryId);
+            
+            // Recover public key
             $publicKey = secp256k1_ecdsa_recover($context, $recoverableSignature, hex2bin($messageHash));
-            $publicKeySerialize = secp256k1_ec_pubkey_serialize($context, $publicKey, constant('SECP256K1_EC_UNCOMPRESSED'));
-            $publicKeyHash = \Blockchain\Core\Crypto\Hash::keccak256(substr($publicKeySerialize, 1));
+            $publicKeySerialize = secp256k1_ec_pubkey_serialize($context, $publicKey, SECP256K1_EC_UNCOMPRESSED);
+            
+            // Extract address from public key (last 20 bytes of keccak256 hash)
+            $publicKeyHash = \Blockchain\Core\Crypto\Hash::keccak256(substr($publicKeySerialize, 1)); // Remove 0x04 prefix
             $address = '0x' . substr($publicKeyHash, -40);
+            
             return strtolower($address);
         }
         
@@ -4001,36 +3851,6 @@ function rlpEncode($data): string {
 }
 
 /**
- * Convert hex (big) integer to decimal string safely
- */
-function hexToDecStringSafe(string $hex): string {
-    $hex = ltrim(strtolower($hex), '0');
-    if ($hex === '') return '0';
-    $dec = '0';
-    // Process each hex digit: dec = dec*16 + digit
-    for ($i = 0, $n = strlen($hex); $i < $n; $i++) {
-        $digit = hexdec($hex[$i]);
-        // dec = dec*16
-        $dec = bcmul($dec, '16', 0);
-        // dec = dec + digit
-        $dec = bcadd($dec, (string)$digit, 0);
-    }
-    return $dec;
-}
-
-/**
- * Scale down big integer decimal string by decimals, return string with fixed scale
- */
-function scaleDownByDecimals(string $integerStr, int $decimals, int $scale = 8): string {
-    if ($decimals <= 0) {
-        return bcadd($integerStr, '0', $scale);
-    }
-    // integerStr / (10^decimals)
-    $divisor = '1' . str_repeat('0', $decimals);
-    return bcdiv($integerStr, $divisor, $scale);
-}
-
-/**
  * Minimal RLP decoding for Ethereum legacy txs to extract from/to/value/nonce (best-effort).
  * This is intentionally permissive and does not validate chain IDs or signatures.
  */
@@ -4053,62 +3873,124 @@ function parseEthRawTransaction(string $rawHex): array
             }
         }
 
-        // Simplified parsing to avoid memory issues
+        $offset = 0;
+        $read = function() use ($bin, &$offset) {
+            $len = strlen($bin);
+            if ($offset >= $len) return null;
+            $b0 = ord($bin[$offset]);
+            if ($b0 <= 0x7f) { // single byte string
+                $offset += 1;
+                return $bin[$offset-1];
+            } elseif ($b0 <= 0xb7) { // short string
+                $l = $b0 - 0x80;
+                $offset += 1;
+                $val = substr($bin, $offset, $l);
+                $offset += $l;
+                return $val;
+            } elseif ($b0 <= 0xbf) { // long string
+                $ll = $b0 - 0xb7;
+                $offset += 1;
+                $lBytes = substr($bin, $offset, $ll);
+                $offset += $ll;
+                $l = intval(bin2hex($lBytes), 16);
+                $val = substr($bin, $offset, $l);
+                $offset += $l;
+                return $val;
+            } elseif ($b0 <= 0xf7) { // short list
+                $l = $b0 - 0xc0;
+                $offset += 1;
+                $end = $offset + $l;
+                $items = [];
+                while ($offset < $end) $items[] = $this->readItem($bin, $offset);
+                return $items;
+            } else { // long list
+                $ll = $b0 - 0xf7;
+                $offset += 1;
+                $lBytes = substr($bin, $offset, $ll);
+                $offset += $ll;
+                $l = intval(bin2hex($lBytes), 16);
+                $end = $offset + $l;
+                $items = [];
+                while ($offset < $end) $items[] = $this->readItem($bin, $offset);
+                return $items;
+            }
+        };
 
-        // Simplified parsing to avoid memory issues
-        // Simple output structure with basic field extraction
-        $out = [
-            'type' => $isTyped ? '0x' . dechex($typeByte) : '0x0',
-            'nonce' => '0x0',
-            'gasPrice' => '0x0',
-            'gas' => '0x0',
-            'to' => '0x',
-            'value' => '0x0',
-            'input' => '0x'
-        ];
-        
-        // EIP-1559: Extract using robust pattern approach
+        // Local helper to read one item (closure-compatible)
+        $readItem = function() use (&$read) { return $read(); };
+
+        // Patch closures to call nested safely
+        $reflect = function($bin, &$offset) use (&$reflect) {
+            $len = strlen($bin);
+            if ($offset >= $len) return null;
+            $b0 = ord($bin[$offset]);
+            if ($b0 <= 0x7f) { $offset += 1; return $bin[$offset-1]; }
+            if ($b0 <= 0xb7) { $l = $b0 - 0x80; $offset += 1; $v = substr($bin, $offset, $l); $offset += $l; return $v; }
+            if ($b0 <= 0xbf) { $ll = $b0 - 0xb7; $offset += 1; $lBytes = substr($bin, $offset, $ll); $offset += $ll; $l = intval(bin2hex($lBytes), 16); $v = substr($bin, $offset, $l); $offset += $l; return $v; }
+            if ($b0 <= 0xf7) { $l = $b0 - 0xc0; $offset += 1; $end = $offset + $l; $arr = []; while ($offset < $end) { $arr[] = $reflect($bin, $offset); } return $arr; }
+            $ll = $b0 - 0xf7; $offset += 1; $lBytes = substr($bin, $offset, $ll); $offset += $ll; $l = intval(bin2hex($lBytes), 16); $end = $offset + $l; $arr = []; while ($offset < $end) { $arr[] = $reflect($bin, $offset); } return $arr;
+        };
+
+        $list = $reflect($bin, $offset);
+        if (!is_array($list)) return [];
+
+        $hex = function($v) { return '0x' . bin2hex($v ?? ''); };
+        $numHex = function($v) { $h = bin2hex($v ?? ''); $h = ltrim($h, '0'); return '0x' . ($h === '' ? '0' : $h); };
+        $toHex40 = function($v) use ($hex) {
+            $h = substr($hex($v), 2);
+            if ($h === '') return '0x';
+            $h = ltrim($h, '0');
+            $h = str_pad($h, 40, '0', STR_PAD_LEFT);
+            return '0x' . $h;
+        };
+
         if ($isTyped && $typeByte === 0x02) {
-            // Nonce: find after chainId. Look for '840135' (chainId with RLP short-len prefix) then take next 8 hex
-            $cidPos = strpos($rawHex, '840135');
-            if ($cidPos !== false && strlen($rawHex) >= $cidPos + 6 + 8) {
-                $nonceHex = substr($rawHex, $cidPos + 6, 8);
-                if (ctype_xdigit($nonceHex)) {
-                    $out['nonce'] = '0x' . $nonceHex;
+            // EIP-1559 fields: [chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data, accessList, v, r, s]
+            $chainId = $numHex($list[0] ?? '');
+            $nonce = $numHex($list[1] ?? '');
+            $maxPriorityFeePerGas = $numHex($list[2] ?? '');
+            $maxFeePerGas = $numHex($list[3] ?? '');
+            $gas = $numHex($list[4] ?? '');
+            $to = $toHex40($list[5] ?? '');
+            $value = $numHex($list[6] ?? '');
+            $input = $hex($list[7] ?? '');
+            $accessList = $list[8] ?? [];
+            $v = $list[9] ?? '';
+            $r = $list[10] ?? '';
+            $s = $list[11] ?? '';
+            
+            $out = [
+                'chainId' => $chainId,
+                'nonce' => $nonce,
+                'maxPriorityFeePerGas' => $maxPriorityFeePerGas,
+                'maxFeePerGas' => $maxFeePerGas,
+                'gas' => $gas,
+                'to' => $to,
+                'value' => $value,
+                'input' => $input,
+                'type' => '0x2'
+            ];
+            
+            // Try to recover 'from' address from signature
+            try {
+                $fromAddress = recoverEIP1559FromAddress($chainId, $nonce, $maxPriorityFeePerGas, $maxFeePerGas, $gas, $to, $value, $input, $accessList, $v, $r, $s);
+                if ($fromAddress) {
+                    $out['from'] = $fromAddress;
                 }
+            } catch (\Throwable $e) {
+                // Ignore signature recovery errors
             }
-
-            // To address: find RLP '94' then 40 hex chars
-            $toMarker = '94';
-            $toPos = strpos($rawHex, $toMarker);
-            if ($toPos !== false && $toPos + 42 <= strlen($rawHex)) {
-                $toHex = substr($rawHex, $toPos + 2, 40);
-                if (ctype_xdigit($toHex)) {
-                    $out['to'] = '0x' . $toHex;
-                }
-            }
-
-            // Value: search for 0x88..0x8f length prefixes after the 'to' address
-            $scanStart = $toPos !== false ? $toPos + 42 : 0;
-            if ($scanStart > 0 && $scanStart + 2 <= strlen($rawHex)) {
-                for ($i = $scanStart; $i + 2 <= strlen($rawHex); $i += 2) {
-                    $prefix = substr($rawHex, $i, 2);
-                    if (preg_match('/^8[0-9a-f]$/i', $prefix)) {
-                        $lenNibble = hexdec(substr($prefix, 1, 1));
-                        // handle only up to 0x8f (15 bytes) safely
-                        if ($lenNibble >= 0 && $lenNibble <= 0x0f) {
-                            $valLen = $lenNibble; // bytes
-                            if ($i + 2 + ($valLen * 2) <= strlen($rawHex) && $valLen > 0) {
-                                $valHex = substr($rawHex, $i + 2, $valLen * 2);
-                                if (ctype_xdigit($valHex)) {
-                                    $out['value'] = '0x' . $valHex;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        } else {
+            // Legacy tx fields: [nonce, gasPrice, gasLimit, to, value, data, v, r, s]
+            $out = [
+                'nonce' => $numHex($list[0] ?? ''),
+                'gasPrice' => $numHex($list[1] ?? ''),
+                'gas' => $numHex($list[2] ?? ''),
+                'to' => $toHex40($list[3] ?? ''),
+                'value' => $numHex($list[4] ?? ''),
+                'input' => $hex($list[5] ?? ''),
+                'type' => '0x0'
+            ];
         }
         
         // Use EthereumTx::recoverAddress to get the 'from' address
@@ -4120,13 +4002,6 @@ function parseEthRawTransaction(string $rawHex): array
             }
         } catch (\Throwable $e) {
             // Ignore signature recovery errors
-        }
-        
-        // Fallback: if no 'from' address recovered, use a default one for testing
-        if (empty($out['from'])) {
-            // For testing purposes, use a known address
-            $out['from'] = '0x0000000000000000000000000000000000000001';
-            writeLog('Using fallback from address: ' . $out['from'], 'DEBUG');
         }
         
         return $out;
@@ -4582,12 +4457,8 @@ function broadcastTransactionToNetwork(array $transaction, PDO $pdo): array {
  */
 function receiveBroadcastedTransaction($walletManager, array $transaction, string $sourceNode, int $timestamp): array {
     try {
-        writeLog('receiveBroadcastedTransaction called with hash: ' . ($transaction['hash'] ?? 'unknown'), 'INFO');
-        writeLog('Transaction data: ' . json_encode($transaction), 'DEBUG');
-        
         // Check if transaction is not too old (e.g., not older than 5 minutes)
         if (time() - $timestamp > 300) {
-            writeLog('Transaction too old: ' . (time() - $timestamp) . ' seconds', 'WARNING');
             return [
                 'success' => false,
                 'error' => 'Transaction too old',
@@ -4598,7 +4469,6 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
         // Check if transaction doesn't already exist in our database
         $existingTx = $walletManager->getTransactionByHash($transaction['hash']);
         if ($existingTx) {
-            writeLog('Transaction already exists in database: ' . $transaction['hash'], 'INFO');
             return [
                 'success' => true,
                 'message' => 'Transaction already exists',
@@ -4611,7 +4481,6 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
         $stmt = $pdo->prepare("SELECT 1 FROM mempool WHERE tx_hash = ? LIMIT 1");
         $stmt->execute([$transaction['hash']]);
         if ($stmt->fetchColumn()) {
-            writeLog('Transaction already in mempool: ' . $transaction['hash'], 'INFO');
             return [
                 'success' => true,
                 'message' => 'Transaction already in mempool',
@@ -4619,50 +4488,22 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
             ];
         }
         
-        // Normalize incoming structure (support both from/to and from_address/to_address)
-        $from = $transaction['from_address'] ?? $transaction['from'] ?? '';
-        $to = $transaction['to_address'] ?? $transaction['to'] ?? '';
-        $amount = (float)($transaction['amount'] ?? 0);
-        $fee = (float)($transaction['fee'] ?? 0);
-        $nonce = (int)($transaction['nonce'] ?? 0);
-        $gasLimit = (int)($transaction['gas_limit'] ?? ($transaction['gas'] ?? 21000));
-        $gasPrice = (float)($transaction['gas_price'] ?? ($transaction['gasPrice'] ?? 0));
-        $dataHex = $transaction['data'] ?? ($transaction['input'] ?? null);
-        if ($dataHex === '') { $dataHex = null; }
-        // Ensure minimal fee to satisfy mempool policy
-        if ($fee < 0.001) { $fee = 0.001; }
-
         // Create transaction object and add to mempool
-        writeLog('Creating Transaction object with: from=' . $from . ', to=' . $to . ', amount=' . $amount . ', nonce=' . $nonce, 'DEBUG');
         $tx = new \Blockchain\Core\Transaction\Transaction(
-            $from,
-            $to,
-            $amount,
-            $fee,
-            $nonce,
-            is_string($dataHex) ? $dataHex : null,
-            $gasLimit,
-            $gasPrice
+            $transaction['from'],
+            $transaction['to'],
+            $transaction['amount'],
+            $transaction['fee'],
+            0, // nonce
+            null, // data
+            21000, // gas limit
+            0 // gas price
         );
-        $tx->forceHash($transaction['hash'] ?? '');
-        // Mark as externally validated raw/broadcasted tx to bypass local hash/signature checks
-        $tx->setSignature('external_raw');
-        
-        writeLog('Attempting to add transaction to mempool via MempoolManager', 'INFO');
-        
-        // Debug: log transaction object details
-        $debugLog = __DIR__ . '/../logs/debug.log';
-        $timestamp = date('Y-m-d H:i:s');
-        $debugMsg = "[{$timestamp}] Transaction object details: hash=" . $tx->getHash() . ", from=" . $tx->getFrom() . ", to=" . $tx->getTo() . ", amount=" . $tx->getAmount() . ", nonce=" . $tx->getNonce() . PHP_EOL;
-        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+        $tx->forceHash($transaction['hash']);
+        $tx->setSignature($transaction['signature'] ?? 'broadcasted');
         
         $mempool = new \Blockchain\Core\Transaction\MempoolManager($pdo, ['min_fee' => 0.001]);
         $added = $mempool->addTransaction($tx);
-        writeLog('MempoolManager.addTransaction result: ' . ($added ? 'true' : 'false'), 'INFO');
-        
-        // Debug: log mempool result
-        $debugMsg = "[{$timestamp}] MempoolManager.addTransaction result: " . ($added ? 'true' : 'false') . PHP_EOL;
-        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         
         if ($added) {
             return [

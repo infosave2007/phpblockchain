@@ -177,6 +177,73 @@ function showMempoolStatus($syncManager, $verbose = false) {
     }
 }
 
+/**
+ * Force mining of pending mempool transactions now (bypasses auto-mine thresholds).
+ * Uses NetworkSyncManager internals via reflection to call mineNewBlock directly.
+ */
+function minePendingNow($syncManager, int $maxTx = 100, bool $verbose = false)
+{
+    $result = ['success' => false, 'reason' => 'unknown'];
+    try {
+        $reflection = new ReflectionClass($syncManager);
+        // Access PDO
+        if (!$reflection->hasProperty('pdo')) {
+            return ['success' => false, 'reason' => 'pdo_unavailable'];
+        }
+        $pdoProp = $reflection->getProperty('pdo');
+        $pdoProp->setAccessible(true);
+        $pdo = $pdoProp->getValue($syncManager);
+        if (!$pdo) {
+            return ['success' => false, 'reason' => 'pdo_null'];
+        }
+
+        // Count pending
+        $pending = (int)$pdo->query("SELECT COUNT(*) FROM mempool WHERE status='pending'")->fetchColumn();
+        if ($verbose) echo "Pending in mempool: {$pending}\n";
+        if ($pending <= 0) {
+            return ['success' => false, 'reason' => 'mempool_empty'];
+        }
+
+        // If available, check whether this node can mine
+        $canMine = true;
+        if ($reflection->hasMethod('shouldThisNodeMine')) {
+            $shouldMineMethod = $reflection->getMethod('shouldThisNodeMine');
+            $shouldMineMethod->setAccessible(true);
+            try { $canMine = (bool)$shouldMineMethod->invoke($syncManager); } catch (Throwable $e) { $canMine = true; }
+        }
+        if ($verbose) echo "shouldThisNodeMine: " . ($canMine ? 'yes' : 'no') . "\n";
+
+        // Invoke mineNewBlock(maxTx)
+        if ($reflection->hasMethod('mineNewBlock')) {
+            $mineMethod = $reflection->getMethod('mineNewBlock');
+            $mineMethod->setAccessible(true);
+            $mineRes = $mineMethod->invoke($syncManager, min($pending, $maxTx));
+            if ($verbose) echo "mineNewBlock result: " . json_encode($mineRes) . "\n";
+            if (is_array($mineRes) && !empty($mineRes['success'])) {
+                // Optional broadcast if enhanced method exists
+                if ($reflection->hasMethod('enhancedBlockBroadcast') && isset($mineRes['block'])) {
+                    $bb = $reflection->getMethod('enhancedBlockBroadcast');
+                    $bb->setAccessible(true);
+                    try { $bb->invoke($syncManager, $mineRes['block']); } catch (Throwable $e) {}
+                }
+                return [
+                    'success' => true,
+                    'block_height' => $mineRes['block_height'] ?? null,
+                    'transactions_count' => $mineRes['transactions_count'] ?? null,
+                ];
+            }
+            return ['success' => false, 'reason' => 'mine_failed', 'details' => $mineRes];
+        }
+
+        return ['success' => false, 'reason' => 'mine_method_missing'];
+    } catch (Throwable $e) {
+        if ($verbose) echo "minePendingNow error: {$e->getMessage()}\n";
+        $result['reason'] = 'exception';
+        $result['error'] = $e->getMessage();
+    }
+    return $result;
+}
+
 function checkConnectivity($syncManager) {
     echo "🌐 Network Connectivity Check\n";
     echo "=============================\n\n";
@@ -621,6 +688,10 @@ function processRawQueueInline($syncManager, $quiet = false, $verbose = false) {
         }
         try {
             $tx = new Transaction($from, $to, $amount, $fee, $nonceInt, null, $gasLimit > 0 ? $gasLimit : 21000, $gasPriceToken);
+            // Preserve original 0x-based network hash for consistency across mempool and transactions
+            if (is_string($hash) && $hash !== '') {
+                $tx->forceHash($hash);
+            }
             $ref = new ReflectionClass($tx);
             if ($ref->hasProperty('signature')) { $p = $ref->getProperty('signature'); $p->setAccessible(true); $p->setValue($tx, 'external_raw'); }
             $addedOk = $mempool->addTransaction($tx);
@@ -895,6 +966,15 @@ try {
         case 'mempool-status':
             $verbose = in_array('--verbose', $options);
             showMempoolStatus($syncManager, $verbose);
+            break;
+        case 'mine-now':
+            $verbose = in_array('--verbose', $options);
+            $res = minePendingNow($syncManager, 100, $verbose);
+            if (php_sapi_name() === 'cli') {
+                echo json_encode($res, JSON_UNESCAPED_UNICODE) . "\n";
+            } else {
+                echo json_encode(['success' => true, 'result' => $res], JSON_UNESCAPED_UNICODE);
+            }
             break;
             
         case 'check':

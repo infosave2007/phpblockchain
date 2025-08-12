@@ -848,17 +848,13 @@ class BlockchainExplorer {
 
     async viewBlock(hash) {
         this.showLoading(true);
-        
         try {
-            const response = await fetch(`${this.apiEndpoint}/block/${hash}?network=${this.currentNetwork}`);
+            const response = await fetch(`${this.apiEndpoint}/block?id=${hash}&network=${this.currentNetwork}`);
+            if (!response.ok) throw new Error('Block not found');
             const data = await response.json();
-            
-            if (data.success && data.data) {
-                // Create detailed block view modal or navigate to block page
-                this.showBlockDetails(data.data);
-            } else {
-                this.showError('Failed to load block details');
-            }
+            const block = data.data || data.block || null;
+            if (!block) throw new Error('Invalid block response');
+            this.showBlockDetails(block);
         } catch (error) {
             console.error('Failed to load block details:', error);
             this.showError('Failed to load block details');
@@ -1152,12 +1148,13 @@ class BlockchainExplorer {
             if (!response.ok) throw new Error('Block not found');
             
             const data = await response.json();
+            console.log('Block API response:', data); // Debug log
             if (!data || data.error) {
                 throw new Error(data.error || 'Block not found');
             }
 
-            // API returns {block: {...}, transaction_count: ..., size: ...}
-            const block = data.block || data;
+            // API returns {data: {...}} - block is nested in data.data
+            const block = data.data || data.block || data;
             const txCount = data.transaction_count || block.transaction_count || (block.transactions ? block.transactions.length : 0);
             const blockSize = data.size || block.size || JSON.stringify(block).length;
             const date = new Date((block.timestamp || 0) * 1000);
@@ -1219,8 +1216,8 @@ class BlockchainExplorer {
                     <div class="col-md-6">
                         <label class="form-label fw-bold">${this.getTranslation('previous_hash', 'Previous Hash')}:</label>
                         <div class="input-group">
-                            <input type="text" class="form-control font-monospace" value="${block.previous_hash || 'N/A'}" readonly>
-                            ${block.previous_hash && block.previous_hash !== '0' ? `<button class="btn btn-outline-secondary" onclick="copyToClipboard('${block.previous_hash}')">
+                            <input type="text" class="form-control font-monospace" value="${block.parent_hash || block.previous_hash || 'N/A'}" readonly>
+                            ${(block.parent_hash || block.previous_hash) && (block.parent_hash || block.previous_hash) !== '0' ? `<button class="btn btn-outline-secondary" onclick="copyToClipboard('${block.parent_hash || block.previous_hash}')">
                                 <i class="fas fa-copy"></i>
                             </button>` : ''}
                         </div>
