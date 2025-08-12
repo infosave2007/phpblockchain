@@ -128,3 +128,4 @@ storage/trustwallet/tokenlist.json
 blockchain.json
 storage/trustwallet/network.json
 storage/trustwallet/tokenlist.json
+scripts_archive/deploy_safe.sh

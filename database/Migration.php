@@ -300,6 +300,8 @@ class Migration
                 INDEX idx_node_id (node_id),
                 INDEX idx_status (status),
                 INDEX idx_last_seen (last_seen),
+                INDEX idx_status_reputation (status, reputation_score),
+                INDEX idx_ping_time (ping_time),
                 UNIQUE KEY unique_node (ip_address, port)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             
@@ -332,7 +334,10 @@ class Migration
                 INDEX idx_created_at (created_at),
                 INDEX idx_status (status),
                 INDEX idx_expires_at (expires_at),
-                INDEX idx_nonce_from (from_address, nonce)
+                INDEX idx_nonce_from (from_address, nonce),
+                INDEX idx_status_created (status, created_at),
+                INDEX idx_priority_score (priority_score),
+                INDEX idx_broadcast_count (broadcast_count)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             
             -- Configuration table
@@ -344,7 +349,8 @@ class Migration
                 is_system TINYINT(1) NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                INDEX idx_key_name (key_name)
+                INDEX idx_key_name (key_name),
+                INDEX idx_key_pattern (key_name(20))
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             
             -- Logs table
@@ -386,7 +392,27 @@ class Migration
             ('network.initial_supply', '1000000', 'Initial token supply', 0),
             ('network.decimals', '8', 'Token decimal places', 0),
             ('network.chain_id', '1', 'Network chain ID', 1),
-            ('network.protocol_version', '1.0.0', 'Protocol version', 1);
+            ('network.protocol_version', '1.0.0', 'Protocol version', 1),
+            
+            -- Parameters for transaction broadcasting
+            ('broadcast.enabled', '1', 'Enable transaction broadcasting to network nodes', 0),
+            ('broadcast.timeout', '10', 'Timeout for broadcast requests in seconds', 0),
+            ('broadcast.max_retries', '3', 'Maximum retry attempts for failed broadcasts', 0),
+            ('broadcast.min_success_rate', '50', 'Minimum success rate percentage for broadcast', 0),
+            
+            -- Parameters for automatic block mining
+            ('auto_mine.enabled', '1', 'Enable automatic block mining', 0),
+            ('auto_mine.min_transactions', '10', 'Minimum transactions required to start mining', 0),
+            ('auto_mine.max_transactions_per_block', '100', 'Maximum transactions per block', 0),
+            ('auto_mine.max_blocks_per_minute', '2', 'Maximum blocks to mine per minute', 0),
+            
+            -- Parameters for multi_curl optimization
+            ('network.multi_curl.max_concurrent', '50', 'Maximum concurrent connections for multi_curl', 0),
+            ('network.multi_curl.timeout', '30', 'Timeout for multi_curl requests', 0),
+            ('network.multi_curl.connect_timeout', '5', 'Connection timeout for multi_curl', 0),
+            
+            -- Current node ID (will be auto-generated)
+            ('node.id', '', 'Current node ID (will be auto-generated)', 1);
         ";
     }
 }
