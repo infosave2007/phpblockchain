@@ -442,6 +442,35 @@ class Migration
                 expires_at TIMESTAMP NOT NULL,
                 INDEX idx_expires (expires_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            
+            -- Broadcast tracking table (anti-loop system)
+            CREATE TABLE IF NOT EXISTS broadcast_tracking (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                transaction_hash VARCHAR(66) NOT NULL,
+                source_node_id VARCHAR(64) NOT NULL,
+                current_node_id VARCHAR(64) NOT NULL,
+                hop_count INT NOT NULL DEFAULT 0,
+                broadcast_path TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_tx_hash (transaction_hash),
+                INDEX idx_source_node (source_node_id),
+                INDEX idx_current_node (current_node_id),
+                INDEX idx_hop_count (hop_count),
+                INDEX idx_expires (expires_at),
+                UNIQUE KEY unique_tx_source_current (transaction_hash, source_node_id, current_node_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            
+            -- Broadcast statistics table
+            CREATE TABLE IF NOT EXISTS broadcast_stats (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                node_id VARCHAR(64) NOT NULL,
+                metric_type VARCHAR(50) NOT NULL,
+                metric_value INT NOT NULL DEFAULT 1,
+                recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_node_metric (node_id, metric_type),
+                INDEX idx_recorded (recorded_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         ";
     }
 }

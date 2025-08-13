@@ -4824,11 +4824,38 @@ function getSuggestedFeesWei(PDO $pdo): array {
  */
 function broadcastTransactionToNetwork(array $transaction, PDO $pdo): array {
     try {
+        // Periodically clean up expired broadcast tracking records (every ~10th call)
+        if (mt_rand(1, 10) === 1) {
+            cleanupExpiredBroadcastTracking($pdo);
+        }
+        
         // Get configuration
         $config = getNetworkConfigFromDatabase($pdo);
         $batchSize = (int)($config['network.broadcast_batch_size'] ?? 10);
         $timeout = $config['broadcast.timeout'] ?? 10;
         $maxRetries = $config['broadcast.max_retries'] ?? 3;
+        $currentNodeId = getCurrentNodeId($pdo);
+        
+        // Debug logging
+        $debugLog = __DIR__ . '/../logs/debug.log';
+        $timestamp = date('Y-m-d H:i:s');
+        $debugMsg = "[{$timestamp}] broadcastTransactionToNetwork: Starting broadcast for tx {$transaction['hash']}" . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+        
+        // Check if this transaction was recently broadcasted to avoid loops
+        $broadcastCacheKey = 'broadcast_' . $transaction['hash'];
+        $stmt = $pdo->prepare("SELECT cache_data FROM network_topology_cache WHERE cache_key = ? AND expires_at > NOW()");
+        $stmt->execute([$broadcastCacheKey]);
+        $existingBroadcast = $stmt->fetchColumn();
+        
+        if ($existingBroadcast) {
+            $broadcastData = json_decode($existingBroadcast, true);
+            $recentBroadcasts = $broadcastData['broadcasted_to'] ?? [];
+            $debugMsg = "[{$timestamp}] Transaction {$transaction['hash']} already broadcasted to: " . implode(', ', $recentBroadcasts) . PHP_EOL;
+            @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+        } else {
+            $recentBroadcasts = [];
+        }
         
         // Get optimal nodes for broadcasting based on network topology
         $walletManager = new \Blockchain\Wallet\WalletManager($pdo);
@@ -4848,16 +4875,46 @@ function broadcastTransactionToNetwork(array $transaction, PDO $pdo): array {
             return broadcastTransactionToNetworkTraditional($transaction, $pdo);
         }
         
-        writeLog('Selected ' . count($optimalNodes['selected_nodes']) . ' optimal nodes for broadcasting', 'INFO');
+        // Filter out nodes we already broadcasted to recently
+        $filteredNodes = [];
+        foreach ($optimalNodes['selected_nodes'] as $node) {
+            if (!in_array($node['id'], $recentBroadcasts)) {
+                $filteredNodes[] = $node;
+            } else {
+                $debugMsg = "[{$timestamp}] Skipping node {$node['id']} - already broadcasted recently" . PHP_EOL;
+                @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+            }
+        }
+        
+        if (empty($filteredNodes)) {
+            $debugMsg = "[{$timestamp}] All optimal nodes already received broadcast for {$transaction['hash']}" . PHP_EOL;
+            @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+            return [
+                'success' => true,
+                'message' => 'Transaction already broadcasted to all optimal nodes',
+                'skipped_duplicates' => count($optimalNodes['selected_nodes'])
+            ];
+        }
+        
+        writeLog('Selected ' . count($filteredNodes) . ' optimal nodes for broadcasting (after duplicate filtering)', 'INFO');
+        $debugMsg = "[{$timestamp}] Broadcasting to " . count($filteredNodes) . " nodes (filtered from " . count($optimalNodes['selected_nodes']) . ")" . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         
         // Create MultiCurl for parallel broadcasting
         $multiCurl = new \Blockchain\Core\Network\MultiCurl(50, $timeout, 3);
         
-        // Prepare requests for optimal nodes with specific broadcast instructions
+        // Prepare requests for filtered optimal nodes with specific broadcast instructions
         $requests = [];
-        foreach ($optimalNodes['selected_nodes'] as $node) {
+        $broadcastingTo = [];
+        foreach ($filteredNodes as $node) {
             $nodeId = $node['id'];
             $broadcastInstructions = $optimalNodes['broadcast_instructions'][$nodeId] ?? [];
+            $broadcastingTo[] = $nodeId;
+            
+            // Add anti-loop instructions
+            $broadcastInstructions['source_node'] = $currentNodeId;
+            $broadcastInstructions['broadcast_chain'] = array_merge($recentBroadcasts, [$currentNodeId]);
+            $broadcastInstructions['max_hops'] = 2; // Limit broadcast chain length
             
             $requests[$nodeId] = [
                 'url' => rtrim($node['url'], '/') . '/wallet/wallet_api.php',
@@ -4865,20 +4922,42 @@ function broadcastTransactionToNetwork(array $transaction, PDO $pdo): array {
                 'data' => json_encode([
                     'action' => 'broadcast_transaction',
                     'transaction' => $transaction,
-                    'source_node' => getCurrentNodeId($pdo),
+                    'source_node' => $currentNodeId,
                     'timestamp' => time(),
                     'broadcast_instructions' => $broadcastInstructions,
-                    'network_topology' => true
+                    'network_topology' => true,
+                    'hop_count' => ($transaction['hop_count'] ?? 0) + 1
                 ]),
                 'headers' => [
                     'Content-Type: application/json',
                     'User-Agent: BlockchainNode/2.0',
-                    'X-Node-Id: ' . getCurrentNodeId($pdo)
+                    'X-Node-Id: ' . $currentNodeId
                 ],
                 'timeout' => $timeout,
                 'connect_timeout' => 3
             ];
+            
+            $debugMsg = "[{$timestamp}] Preparing broadcast to node {$nodeId} at {$node['url']}" . PHP_EOL;
+            @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         }
+        
+        // Cache broadcast information to prevent loops
+        $broadcastCacheData = [
+            'transaction_hash' => $transaction['hash'],
+            'broadcasted_to' => array_merge($recentBroadcasts, $broadcastingTo),
+            'source_node' => $currentNodeId,
+            'timestamp' => time()
+        ];
+        
+        $stmt = $pdo->prepare("
+            INSERT INTO network_topology_cache (cache_key, cache_data, expires_at) 
+            VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 60 SECOND))
+            ON DUPLICATE KEY UPDATE cache_data = VALUES(cache_data), expires_at = VALUES(expires_at)
+        ");
+        $stmt->execute([$broadcastCacheKey, json_encode($broadcastCacheData)]);
+        
+        $debugMsg = "[{$timestamp}] Cached broadcast info for {$transaction['hash']}" . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         
         // Execute parallel broadcasting
         $results = $multiCurl->executeRequests($requests);
@@ -4891,11 +4970,39 @@ function broadcastTransactionToNetwork(array $transaction, PDO $pdo): array {
         foreach ($results as $nodeId => $result) {
             if ($result['success'] && $result['http_code'] === 200) {
                 $successful++;
+                $debugMsg = "[{$timestamp}] Broadcast to node {$nodeId} SUCCESS" . PHP_EOL;
+                @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
                 $nodeResults[$nodeId] = [
                     'status' => 'success',
                     'response_time' => $result['time'],
                     'response' => $result['data'] ?? null,
-                    'node_info' => $optimalNodes['selected_nodes'][array_search($nodeId, array_column($optimalNodes['selected_nodes'], 'id'))] ?? null,
+                    'node_info' => $filteredNodes[array_search($nodeId, array_column($filteredNodes, 'id'))] ?? null,
+                    'broadcast_instructions' => $optimalNodes['broadcast_instructions'][$nodeId] ?? []
+                ];
+            } else {
+                $failed++;
+                $debugMsg = "[{$timestamp}] Broadcast to node {$nodeId} FAILED: HTTP {$result['http_code']}" . PHP_EOL;
+                @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+                $nodeResults[$nodeId] = [
+                    'status' => 'failed',
+                    'error' => $result['error'] ?? 'Unknown error',
+                    'http_code' => $result['http_code'] ?? 0
+                ];
+            }
+        }
+        
+        $debugMsg = "[{$timestamp}] Broadcast completed: {$successful} success, {$failed} failed" . PHP_EOL;
+        
+        foreach ($results as $nodeId => $result) {
+            if ($result['success'] && $result['http_code'] === 200) {
+                $successful++;
+                $debugMsg = "[{$timestamp}] Broadcast to node {$nodeId} SUCCESS" . PHP_EOL;
+                @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+                $nodeResults[$nodeId] = [
+                    'status' => 'success',
+                    'response_time' => $result['time'],
+                    'response' => $result['data'] ?? null,
+                    'node_info' => $filteredNodes[array_search($nodeId, array_column($filteredNodes, 'id'))] ?? null,
                     'broadcast_instructions' => $optimalNodes['broadcast_instructions'][$nodeId] ?? []
                 ];
                 
@@ -4904,11 +5011,12 @@ function broadcastTransactionToNetwork(array $transaction, PDO $pdo): array {
                 
             } else {
                 $failed++;
+                $debugMsg = "[{$timestamp}] Broadcast to node {$nodeId} FAILED: HTTP {$result['http_code']}" . PHP_EOL;
+                @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
                 $nodeResults[$nodeId] = [
                     'status' => 'failed',
-                    'error' => $result['error'] ?? 'HTTP ' . $result['http_code'],
-                    'response_time' => $result['time'],
-                    'node_info' => $optimalNodes['selected_nodes'][array_search($nodeId, array_column($optimalNodes['selected_nodes'], 'id'))] ?? null
+                    'error' => $result['error'] ?? 'Unknown error',
+                    'http_code' => $result['http_code'] ?? 0
                 ];
                 
                 // Update node statistics (failed attempt)
@@ -4919,6 +5027,15 @@ function broadcastTransactionToNetwork(array $transaction, PDO $pdo): array {
         // Check minimum success rate
         $minSuccessRate = $config['broadcast.min_success_rate'] ?? 50;
         $successRate = count($optimalNodes['selected_nodes']) > 0 ? round(($successful / count($optimalNodes['selected_nodes'])) * 100, 2) : 0;
+        
+        // Record broadcast statistics
+        updateBroadcastStats($pdo, 'transaction_sent', $currentNodeId);
+        if ($successful > 0) {
+            updateBroadcastStats($pdo, 'broadcast_successful', $currentNodeId);
+        }
+        if ($failed > 0) {
+            updateBroadcastStats($pdo, 'broadcast_failed', $currentNodeId);
+        }
         
         return [
             'success' => $successful > 0 && $successRate >= $minSuccessRate,
@@ -5057,8 +5174,61 @@ function broadcastTransactionToNetworkTraditional(array $transaction, PDO $pdo):
  */
 function receiveBroadcastedTransaction($walletManager, array $transaction, string $sourceNode, int $timestamp): array {
     try {
-        writeLog('receiveBroadcastedTransaction called with hash: ' . ($transaction['hash'] ?? 'unknown'), 'INFO');
+        $txHash = $transaction['hash'] ?? 'unknown';
+        $hopCount = (int)($transaction['hop_count'] ?? 0);
+        $maxHops = 3; // Maximum hops to prevent infinite loops
+        $pdo = $walletManager->getDatabase();
+        $currentNodeId = getCurrentNodeId($pdo);
+        
+        // Debug logging
+        $debugLog = __DIR__ . '/../logs/debug.log';
+        $logTimestamp = date('Y-m-d H:i:s');
+        $debugMsg = "[{$logTimestamp}] receiveBroadcastedTransaction: hash={$txHash}, source={$sourceNode}, hops={$hopCount}" . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+        
+        writeLog('receiveBroadcastedTransaction called with hash: ' . $txHash, 'INFO');
         writeLog('Transaction data: ' . json_encode($transaction), 'DEBUG');
+        
+        // Check broadcast tracking table to prevent duplicate processing
+        try {
+            $stmt = $pdo->prepare("SELECT source_node_id, hop_count, created_at FROM broadcast_tracking WHERE transaction_hash = ? AND source_node_id = ? LIMIT 1");
+            $stmt->execute([$txHash, $sourceNode]);
+            $existingBroadcast = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($existingBroadcast) {
+                $debugMsg = "[{$logTimestamp}] Transaction {$txHash} already tracked from source {$sourceNode}" . PHP_EOL;
+                @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+                
+                // Update broadcast stats
+                updateBroadcastStats($pdo, 'duplicate_prevented', $currentNodeId);
+                
+                return [
+                    'success' => true,
+                    'message' => 'Transaction already processed from this source',
+                    'status' => 'duplicate_source',
+                    'previous_hop_count' => $existingBroadcast['hop_count']
+                ];
+            }
+        } catch (Exception $e) {
+            writeLog('Error checking broadcast tracking: ' . $e->getMessage(), 'ERROR');
+        }
+        
+        // Check hop count to prevent loops
+        if ($hopCount >= $maxHops) {
+            $debugMsg = "[{$logTimestamp}] Transaction {$txHash} exceeded max hops ({$hopCount} >= {$maxHops})" . PHP_EOL;
+            @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+            writeLog('Transaction exceeded maximum hop count: ' . $hopCount, 'WARNING');
+            
+            // Update broadcast stats
+            updateBroadcastStats($pdo, 'hop_limit_exceeded', $currentNodeId);
+            
+            return [
+                'success' => false,
+                'error' => 'Maximum hop count exceeded',
+                'hop_count' => $hopCount,
+                'max_hops' => $maxHops
+            ];
+        }
         
         // Check if transaction is not too old (e.g., not older than 5 minutes)
         if (time() - $timestamp > 300) {
@@ -5070,10 +5240,27 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
             ];
         }
         
+        // Check broadcast chain to prevent loops
+        $broadcastInstructions = $transaction['broadcast_instructions'] ?? [];
+        $broadcastChain = $broadcastInstructions['broadcast_chain'] ?? [];
+        $currentNodeId = getCurrentNodeId($walletManager->getDatabase());
+        
+        if (in_array($currentNodeId, $broadcastChain)) {
+            $debugMsg = "[{$logTimestamp}] Transaction {$txHash} already seen by this node (in broadcast chain)" . PHP_EOL;
+            @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+            return [
+                'success' => true,
+                'message' => 'Transaction already processed by this node',
+                'status' => 'loop_detected'
+            ];
+        }
+        
         // Check if transaction doesn't already exist in our database
-        $existingTx = $walletManager->getTransactionByHash($transaction['hash']);
+        $existingTx = $walletManager->getTransactionByHash($txHash);
         if ($existingTx) {
-            writeLog('Transaction already exists in database: ' . $transaction['hash'], 'INFO');
+            $debugMsg = "[{$logTimestamp}] Transaction {$txHash} already exists in database" . PHP_EOL;
+            @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+            writeLog('Transaction already exists in database: ' . $txHash, 'INFO');
             return [
                 'success' => true,
                 'message' => 'Transaction already exists',
@@ -5084,14 +5271,53 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
         // Check mempool for duplicates
         $pdo = $walletManager->getDatabase();
         $stmt = $pdo->prepare("SELECT 1 FROM mempool WHERE tx_hash = ? LIMIT 1");
-        $stmt->execute([$transaction['hash']]);
+        $stmt->execute([$txHash]);
         if ($stmt->fetchColumn()) {
-            writeLog('Transaction already in mempool: ' . $transaction['hash'], 'INFO');
+            $debugMsg = "[{$logTimestamp}] Transaction {$txHash} already in mempool" . PHP_EOL;
+            @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+            writeLog('Transaction already in mempool: ' . $txHash, 'INFO');
             return [
                 'success' => true,
                 'message' => 'Transaction already in mempool',
                 'status' => 'duplicate'
             ];
+        }
+        
+        // Re-broadcast to other nodes (with hop count increment)
+        if ($hopCount < $maxHops - 1) {
+            try {
+                $newHopCount = $hopCount + 1;
+                $debugMsg = "[{$logTimestamp}] Re-broadcasting {$txHash} with hop_count={$newHopCount}" . PHP_EOL;
+                @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+                
+                // Update broadcast chain
+                $newBroadcastChain = $broadcastChain;
+                $newBroadcastChain[] = $currentNodeId;
+                
+                // Prepare transaction for re-broadcast
+                $rebroadcastTx = $transaction;
+                $rebroadcastTx['hop_count'] = $newHopCount;
+                $rebroadcastTx['broadcast_instructions'] = [
+                    'broadcast_chain' => $newBroadcastChain,
+                    'max_hops' => $maxHops,
+                    'origin_timestamp' => $timestamp
+                ];
+                
+                // Get fresh topology and re-broadcast
+                ensureFreshTopology($pdo);
+                $result = broadcastTransactionToNetwork($rebroadcastTx, $newHopCount);
+                
+                $debugMsg = "[{$logTimestamp}] Re-broadcast result for {$txHash}: " . json_encode($result) . PHP_EOL;
+                @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+                
+            } catch (Exception $e) {
+                $debugMsg = "[{$logTimestamp}] Re-broadcast failed for {$txHash}: " . $e->getMessage() . PHP_EOL;
+                @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+                writeLog('Re-broadcast failed: ' . $e->getMessage(), 'ERROR');
+            }
+        } else {
+            $debugMsg = "[{$logTimestamp}] Skip re-broadcast for {$txHash} - max hops reached" . PHP_EOL;
+            @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         }
         
         // Check if this is a smart topology broadcast with instructions
@@ -5154,6 +5380,13 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
         @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         
         if ($added) {
+            // Record broadcast tracking
+            $broadcastPath = implode('->', $broadcastChain ?: []);
+            recordBroadcastTracking($pdo, $txHash, $sourceNode, $hopCount, $broadcastPath);
+            
+            // Update broadcast stats
+            updateBroadcastStats($pdo, 'transaction_received', $currentNodeId);
+            
             // Update cached balances for involved addresses
             try { upsertWalletBalance($pdo, strtolower($from)); } catch (Throwable $e) {}
             try { if (!empty($to)) upsertWalletBalance($pdo, strtolower($to)); } catch (Throwable $e) {}
@@ -5415,6 +5648,12 @@ function getNetworkTopology($walletManager): array {
  */
 function updateNetworkTopology($walletManager): array {
     try {
+        // Debug logging start
+        $debugLog = __DIR__ . '/../logs/debug.log';
+        $timestamp = date('Y-m-d H:i:s');
+        $debugMsg = "[{$timestamp}] === TOPOLOGY UPDATE STARTED ===" . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+        
         $pdo = $walletManager->getDatabase();
         
         // Check if topology update is needed
@@ -5422,12 +5661,20 @@ function updateNetworkTopology($walletManager): array {
         $updateInterval = (int)($config['network.topology_update_interval'] ?? 60);
         $ttl = (int)($config['network.topology_ttl'] ?? 300);
         
+        $debugMsg = "[{$timestamp}] Topology config: update_interval={$updateInterval}s, ttl={$ttl}s" . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+        
         // Check last update time
         $stmt = $pdo->prepare("SELECT MAX(created_at) as last_update FROM network_topology_cache WHERE cache_key = 'topology_update'");
         $stmt->execute();
         $lastUpdate = $stmt->fetchColumn();
         
+        $debugMsg = "[{$timestamp}] Last topology update: {$lastUpdate}" . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+        
         if ($lastUpdate && (time() - strtotime($lastUpdate)) < $updateInterval) {
+            $debugMsg = "[{$timestamp}] Topology update not needed yet (last update: {$lastUpdate})" . PHP_EOL;
+            @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
             return [
                 'success' => true,
                 'message' => 'Topology update not needed yet',
@@ -5435,11 +5682,17 @@ function updateNetworkTopology($walletManager): array {
             ];
         }
         
+        $debugMsg = "[{$timestamp}] Topology update needed, proceeding..." . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+        
         // Get active nodes from existing nodes table
         $stmt = $pdo->prepare("SELECT node_id as id, ip_address, port, metadata FROM nodes WHERE status = 'active' AND node_id != ?");
         $currentNodeId = getCurrentNodeId($pdo);
         $stmt->execute([$currentNodeId]);
         $nodes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        $debugMsg = "[{$timestamp}] Found " . count($nodes) . " active nodes to query (excluding current node: {$currentNodeId})" . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         
         // Process nodes to build URLs from metadata
         foreach ($nodes as &$node) {
@@ -5451,9 +5704,14 @@ function updateNetworkTopology($walletManager): array {
             if ($node['port'] !== 80 && $node['port'] !== 443) {
                 $node['url'] .= ':' . $node['port'];
             }
+            
+            $debugMsg = "[{$timestamp}] Node {$node['id']}: URL={$node['url']}" . PHP_EOL;
+            @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         }
         
         if (empty($nodes)) {
+            $debugMsg = "[{$timestamp}] No active nodes to query, returning success" . PHP_EOL;
+            @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
             return [
                 'success' => true,
                 'message' => 'No active nodes to query',
@@ -5465,21 +5723,39 @@ function updateNetworkTopology($walletManager): array {
         $topologyData = [];
         $successfulQueries = 0;
         
+        $debugMsg = "[{$timestamp}] Starting topology queries for " . count($nodes) . " nodes..." . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+        
         foreach ($nodes as $node) {
             try {
+                $debugMsg = "[{$timestamp}] Querying node {$node['id']} at {$node['url']}..." . PHP_EOL;
+                @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+                
                 $response = queryNodeForTopology($node['url'], $node['id']);
                 if ($response['success']) {
                     $topologyData[$node['id']] = $response['data'];
                     $successfulQueries++;
+                    $debugMsg = "[{$timestamp}] Node {$node['id']} query SUCCESS" . PHP_EOL;
+                    @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+                } else {
+                    $debugMsg = "[{$timestamp}] Node {$node['id']} query FAILED: " . ($response['error'] ?? 'unknown error') . PHP_EOL;
+                    @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
                 }
             } catch (Exception $e) {
+                $debugMsg = "[{$timestamp}] Node {$node['id']} query EXCEPTION: " . $e->getMessage() . PHP_EOL;
+                @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
                 writeLog("Failed to query node {$node['id']}: " . $e->getMessage(), 'WARNING');
             }
         }
         
         // Update topology database
         if (!empty($topologyData)) {
+            $debugMsg = "[{$timestamp}] Updating topology database with data from {$successfulQueries} nodes..." . PHP_EOL;
+            @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
             updateTopologyDatabase($pdo, $topologyData, $ttl);
+        } else {
+            $debugMsg = "[{$timestamp}] No topology data to update database" . PHP_EOL;
+            @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         }
         
         // Cache the update
@@ -5490,12 +5766,18 @@ function updateNetworkTopology($walletManager): array {
             'timestamp' => time()
         ];
         
+        $debugMsg = "[{$timestamp}] Caching topology update result: " . json_encode($cacheData) . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+        
         $stmt = $pdo->prepare("
             INSERT INTO network_topology_cache (cache_key, cache_data, expires_at) 
             VALUES ('topology_update', ?, DATE_ADD(NOW(), INTERVAL ? SECOND))
             ON DUPLICATE KEY UPDATE cache_data = VALUES(cache_data), expires_at = VALUES(expires_at)
         ");
         $stmt->execute([json_encode($cacheData), $ttl]);
+        
+        $debugMsg = "[{$timestamp}] === TOPOLOGY UPDATE COMPLETED === (queried: " . count($nodes) . ", successful: {$successfulQueries})" . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         
         return [
             'success' => true,
@@ -5519,33 +5801,59 @@ function updateNetworkTopology($walletManager): array {
  */
 function ensureFreshTopology($walletManager): array {
     try {
+        // Debug logging
+        $debugLog = __DIR__ . '/../logs/debug.log';
+        $timestamp = date('Y-m-d H:i:s');
+        $debugMsg = "[{$timestamp}] ensureFreshTopology: CHECKING topology freshness..." . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+        
         $pdo = $walletManager->getDatabase();
         $config = getNetworkConfigFromDatabase($pdo);
         $ttl = (int)($config['network.topology_ttl'] ?? 300); // seconds
         $now = time();
 
+        $debugMsg = "[{$timestamp}] ensureFreshTopology: TTL={$ttl}s, current_time={$now}" . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+
         // Read cache entry
-        $stmt = $pdo->prepare("SELECT cache_data, expires_at, updated_at FROM network_topology_cache WHERE cache_key = 'topology_update' LIMIT 1");
+        $stmt = $pdo->prepare("SELECT cache_data, expires_at, created_at FROM network_topology_cache WHERE cache_key = 'topology_update' LIMIT 1");
         $stmt->execute();
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($row) {
             $expiresAt = strtotime($row['expires_at'] ?? '') ?: 0;
+            $debugMsg = "[{$timestamp}] ensureFreshTopology: Found cache entry - expires_at={$row['expires_at']}, expires_unix={$expiresAt}, now={$now}" . PHP_EOL;
+            @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+            
             if ($expiresAt > $now) {
                 // Still valid
+                $debugMsg = "[{$timestamp}] ensureFreshTopology: Cache is VALID (expires in " . ($expiresAt - $now) . "s)" . PHP_EOL;
+                @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
                 return [
                     'success' => true,
                     'fresh' => true,
                     'updated' => false,
-                    'last_update' => $row['updated_at'] ?? null,
+                    'last_update' => $row['created_at'] ?? null,
                     'reason' => 'cache_valid'
                 ];
+            } else {
+                $debugMsg = "[{$timestamp}] ensureFreshTopology: Cache is EXPIRED (expired " . ($now - $expiresAt) . "s ago)" . PHP_EOL;
+                @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
             }
+        } else {
+            $debugMsg = "[{$timestamp}] ensureFreshTopology: No cache entry found" . PHP_EOL;
+            @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         }
 
         // Expired or missing -> update
+        $debugMsg = "[{$timestamp}] ensureFreshTopology: Triggering topology update..." . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         writeLog('Topology cache stale or missing, performing update before broadcast', 'INFO');
         $res = updateNetworkTopology($walletManager);
+        
+        $debugMsg = "[{$timestamp}] ensureFreshTopology: Update result: " . json_encode($res) . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+        
         return [
             'success' => $res['success'] ?? false,
             'fresh' => true,
@@ -5554,6 +5862,8 @@ function ensureFreshTopology($walletManager): array {
             'reason' => 'cache_refreshed'
         ];
     } catch (Throwable $e) {
+        $debugMsg = "[{$timestamp}] ensureFreshTopology: ERROR - " . $e->getMessage() . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         writeLog('ensureFreshTopology error: ' . $e->getMessage(), 'ERROR');
         return [
             'success' => false,
@@ -5910,6 +6220,66 @@ function processBroadcastInstructions(PDO $pdo, array $transaction, array $broad
             'error' => $e->getMessage(),
             'nodes_contacted' => 0
         ];
+    }
+}
+
+/**
+ * Update broadcast statistics
+ */
+function updateBroadcastStats(PDO $pdo, string $metricType, string $nodeId): void {
+    try {
+        $stmt = $pdo->prepare("
+            INSERT INTO broadcast_stats (node_id, metric_type, metric_value, recorded_at)
+            VALUES (?, ?, 1, NOW())
+            ON DUPLICATE KEY UPDATE
+                metric_value = metric_value + 1,
+                recorded_at = NOW()
+        ");
+        $stmt->execute([$nodeId, $metricType]);
+    } catch (Exception $e) {
+        writeLog('Error updating broadcast stats: ' . $e->getMessage(), 'ERROR');
+    }
+}
+
+/**
+ * Record broadcast tracking
+ */
+function recordBroadcastTracking(PDO $pdo, string $txHash, string $sourceNodeId, int $hopCount, string $broadcastPath): void {
+    try {
+        $currentNodeId = getCurrentNodeId($pdo);
+        $stmt = $pdo->prepare("
+            INSERT INTO broadcast_tracking 
+            (transaction_hash, source_node_id, current_node_id, hop_count, broadcast_path, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 1 HOUR))
+            ON DUPLICATE KEY UPDATE
+                hop_count = VALUES(hop_count),
+                broadcast_path = VALUES(broadcast_path),
+                created_at = NOW(),
+                expires_at = DATE_ADD(NOW(), INTERVAL 1 HOUR)
+        ");
+        $stmt->execute([$txHash, $sourceNodeId, $currentNodeId, $hopCount, $broadcastPath]);
+    } catch (Exception $e) {
+        writeLog('Error recording broadcast tracking: ' . $e->getMessage(), 'ERROR');
+    }
+}
+
+/**
+ * Clean up expired broadcast tracking records
+ */
+function cleanupExpiredBroadcastTracking(PDO $pdo): int {
+    try {
+        $stmt = $pdo->prepare("DELETE FROM broadcast_tracking WHERE expires_at < NOW()");
+        $stmt->execute();
+        $deletedCount = $stmt->rowCount();
+        
+        if ($deletedCount > 0) {
+            writeLog("Cleaned up $deletedCount expired broadcast tracking records", 'DEBUG');
+        }
+        
+        return $deletedCount;
+    } catch (Exception $e) {
+        writeLog('Error cleaning up expired broadcast tracking: ' . $e->getMessage(), 'ERROR');
+        return 0;
     }
 }
 
