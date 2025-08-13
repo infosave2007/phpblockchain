@@ -412,7 +412,36 @@ class Migration
             ('network.multi_curl.connect_timeout', '5', 'Connection timeout for multi_curl', 0),
             
             -- Current node ID (will be auto-generated)
-            ('node.id', '', 'Current node ID (will be auto-generated)', 1);
+            ('node.id', '', 'Current node ID (will be auto-generated)', 1),
+            
+            -- Network topology parameters
+            ('network.topology_ttl', '300', 'Network topology TTL in seconds', 0),
+            ('network.broadcast_batch_size', '10', 'Number of nodes per broadcast batch', 0),
+            ('network.max_connections_per_node', '20', 'Maximum connections per node', 0),
+            ('network.topology_update_interval', '60', 'Topology update interval in seconds', 0);
+            
+            -- Create network topology tables
+            CREATE TABLE IF NOT EXISTS network_topology (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                source_node_id VARCHAR(64) NOT NULL,
+                target_node_id VARCHAR(64) NOT NULL,
+                connection_strength INT DEFAULT 1,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                ttl_expires_at TIMESTAMP NULL,
+                INDEX idx_source (source_node_id),
+                INDEX idx_target (target_node_id),
+                INDEX idx_ttl (ttl_expires_at),
+                UNIQUE KEY unique_connection (source_node_id, target_node_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            
+            CREATE TABLE IF NOT EXISTS network_topology_cache (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                cache_key VARCHAR(255) NOT NULL UNIQUE,
+                cache_data LONGTEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP NOT NULL,
+                INDEX idx_expires (expires_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         ";
     }
 }
