@@ -153,8 +153,11 @@ try {
             }
 
             // Check if transaction already exists in mempool
-            $existing = $pdo->prepare("SELECT COUNT(*) as count FROM mempool WHERE tx_hash = ?");
-            $existing->execute([$txHash]);
+            $h = strtolower(trim((string)$txHash));
+            $h0 = str_starts_with($h,'0x') ? $h : ('0x'.$h);
+            $h1 = str_starts_with($h,'0x') ? substr($h,2) : $h;
+            $existing = $pdo->prepare("SELECT COUNT(*) as count FROM mempool WHERE tx_hash = ? OR tx_hash = ?");
+            $existing->execute([$h0, $h1]);
             if ($existing->fetchColumn() > 0) {
                 out("Transaction already in mempool: $txHash");
                 $skipped++;

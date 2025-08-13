@@ -829,9 +829,12 @@ class SyncManager {
             }
             
             foreach ($mempoolTxs as $tx) {
-                // Check if transaction already exists in mempool
-                $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM mempool WHERE tx_hash = ?");
-                $stmt->execute([$tx['tx_hash']]);
+                // Check if transaction already exists in mempool (handle 0x and non-0x)
+                $h = strtolower(trim((string)($tx['tx_hash'] ?? '')));
+                $h0 = str_starts_with($h,'0x') ? $h : ('0x'.$h);
+                $h1 = str_starts_with($h,'0x') ? substr($h,2) : $h;
+                $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM mempool WHERE tx_hash = ? OR tx_hash = ?");
+                $stmt->execute([$h0, $h1]);
                 if ($stmt->fetchColumn() > 0) continue;
                 
                 $stmt = $this->pdo->prepare("
@@ -839,7 +842,7 @@ class SyncManager {
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ");
                 $stmt->execute([
-                    $tx['tx_hash'],
+                    $h0,
                     $tx['from_address'],
                     $tx['to_address'],
                     $tx['amount'] ?? '0.00000000',

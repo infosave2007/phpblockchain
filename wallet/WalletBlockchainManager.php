@@ -426,9 +426,12 @@ class WalletBlockchainManager
             try {
                 \WalletLogger::debug("WalletBlockchainManager::addToPendingTransactions - Saving to database mempool");
                 
-                // Check if transaction already exists in mempool
-                $checkStmt = $this->database->prepare("SELECT id FROM mempool WHERE tx_hash = ?");
-                $checkStmt->execute([$transaction['hash']]);
+                // Check if transaction already exists in mempool (handle 0x and non-0x)
+                $h = strtolower(trim((string)$transaction['hash']));
+                $h0 = str_starts_with($h,'0x') ? $h : ('0x'.$h);
+                $h1 = str_starts_with($h,'0x') ? substr($h,2) : $h;
+                $checkStmt = $this->database->prepare("SELECT id FROM mempool WHERE tx_hash = ? OR tx_hash = ?");
+                $checkStmt->execute([$h0, $h1]);
                 
                 if ($checkStmt->fetch()) {
                     \WalletLogger::debug("WalletBlockchainManager::addToPendingTransactions - Transaction already exists in mempool, skipping");
@@ -441,7 +444,7 @@ class WalletBlockchainManager
                 ");
                 
                 $stmt->execute([
-                    $transaction['hash'],
+                    $h0,
                     $transaction['from'],
                     $transaction['to'],
                     $transaction['amount'],

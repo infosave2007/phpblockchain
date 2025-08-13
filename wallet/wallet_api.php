@@ -61,7 +61,7 @@ if (!defined('WALLET_API_EARLY_LOGGED')) {
         $line1 = "[{$timestamp}] [REQUEST] [{$reqId}] {$method} {$uri} from {$ip}";
         @file_put_contents($logFile, $line1 . PHP_EOL, FILE_APPEND | LOCK_EX);
         if ($method === 'POST' && !empty($rawBodyEarly)) {
-            $bodyPreview = substr($rawBodyEarly, 0, 200);
+            $bodyPreview = substr($rawBodyEarly, 0, 1000); // Increased from 200 to 1000
             $line2 = "[{$timestamp}] [REQUEST] [{$reqId}] body: {$bodyPreview}";
             @file_put_contents($logFile, $line2 . PHP_EOL, FILE_APPEND | LOCK_EX);
         }
@@ -319,7 +319,17 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
     if ($isRpcAlias || $isJsonRpcSingle || $isJsonRpcBatch || ($_SERVER['REQUEST_METHOD'] === 'POST' && $rawBody !== '' && $jsonError !== JSON_ERROR_NONE)) {
         // If JSON parse failed
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && $rawBody !== '' && $jsonError !== JSON_ERROR_NONE) {
-            echo json_encode($jsonRpcErrorResponse(null, -32700, 'Parse error'));
+            $parseErrorResponse = $jsonRpcErrorResponse(null, -32700, 'Parse error');
+            
+            // Log parse error response
+            try {
+                $reqId = $GLOBALS['__REQ_ID'] ?? 'unknown';
+                writeLog("RPC $reqId: PARSE_ERROR: " . json_encode($parseErrorResponse), 'ERROR');
+            } catch (\Throwable $e) {
+                // Don't break response sending due to logging issues
+            }
+            
+            echo json_encode($parseErrorResponse);
             exit;
         }
 
@@ -330,6 +340,16 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             foreach ($input as $req) {
                 $responses[] = $processJsonRpc($req);
             }
+            
+            // Log batch response
+            try {
+                $reqId = $GLOBALS['__REQ_ID'] ?? 'unknown';
+                $responsePreview = substr(json_encode($responses), 0, 500);
+                writeLog("RPC $reqId: BATCH_RESPONSE: $responsePreview", 'INFO');
+            } catch (\Throwable $e) {
+                // Don't break response sending due to logging issues
+            }
+            
             echo json_encode($responses);
             exit;
         }
@@ -347,7 +367,19 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             }
             $req = ['jsonrpc' => '2.0', 'id' => ($_GET['id'] ?? 1), 'method' => $rpcMethod, 'params' => $params];
             try { \Blockchain\Wallet\WalletLogger::info("RPC $requestId: alias method=$rpcMethod"); } catch (Throwable $e) {}
-            echo json_encode($processJsonRpc($req));
+            
+            $aliasResponse = $processJsonRpc($req);
+            
+            // Log alias response
+            try {
+                $reqId = $GLOBALS['__REQ_ID'] ?? 'unknown';
+                $responsePreview = substr(json_encode($aliasResponse), 0, 500);
+                writeLog("RPC $reqId: ALIAS_RESPONSE: $responsePreview", 'INFO');
+            } catch (\Throwable $e) {
+                // Don't break response sending due to logging issues
+            }
+            
+            echo json_encode($aliasResponse);
             exit;
         }
 
@@ -371,6 +403,21 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             } catch (Exception $e2) {
                 writeLog("Failed to rollback before JSON-RPC response: " . $e2->getMessage(), 'ERROR');
             }
+        }
+        
+        // Log the response before sending
+        try {
+            $reqId = $GLOBALS['__REQ_ID'] ?? 'unknown';
+            $responsePreview = substr(json_encode($response), 0, 500);
+            // Direct logging to guarantee response logging
+            $baseDir = dirname(__DIR__);
+            $logDir = $baseDir . '/logs';
+            $logFile = $logDir . '/wallet_api.log';
+            $timestamp = date('Y-m-d H:i:s');
+            $logLine = "[{$timestamp}] [RESPONSE] [$reqId] {$responsePreview}" . PHP_EOL;
+            @file_put_contents($logFile, $logLine, FILE_APPEND | LOCK_EX);
+        } catch (\Throwable $e) {
+            // Don't break response sending due to logging issues
         }
         
         echo json_encode($response);
@@ -837,8 +884,8 @@ function listWallets($walletManager) {
  */
 function getBalance($walletManager, $address) {
     try {
-        $availableBalance = $walletManager->getAvailableBalance($address);
-        $stakedBalance = $walletManager->getStakedBalance($address);
+    $availableBalance = $walletManager->getAvailableBalance($address);
+    $stakedBalance = $walletManager->getStakedBalance($address);
         $totalBalance = $availableBalance + $stakedBalance;
         
         return [
@@ -858,8 +905,8 @@ function getBalance($walletManager, $address) {
  */
 function getWalletInfo($walletManager, $address) {
     try {
-        $walletInfo = $walletManager->getWalletInfo($address);
-        $stats = $walletManager->getWalletStats($address);
+    $walletInfo = $walletManager->getWalletInfo($address);
+    $stats = $walletManager->getWalletStats($address);
         
         return [
             'wallet' => $walletInfo,
@@ -2726,13 +2773,16 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
             case 'eth_getTransactionByHash': {
                 $hash = $params[0] ?? '';
                 if (!$hash) return null;
-                $tx = $walletManager->getTransactionByHash($hash);
+        $tx = $walletManager->getTransactionByHash($hash);
                 if (!$tx) {
                     // Fallback to mempool for pending transactions
                     try {
                         $pdo = $walletManager->getDatabase();
-                        $stmt = $pdo->prepare("SELECT tx_hash as hash, from_address, to_address, amount, fee, nonce, gas_limit, gas_price, data, signature, created_at as timestamp FROM mempool WHERE tx_hash = ? LIMIT 1");
-                        $stmt->execute([$hash]);
+            $h = strtolower(trim((string)$hash));
+            $h0 = str_starts_with($h,'0x') ? $h : ('0x'.$h);
+            $h1 = str_starts_with($h,'0x') ? substr($h,2) : $h;
+            $stmt = $pdo->prepare("SELECT tx_hash as hash, from_address, to_address, amount, fee, nonce, gas_limit, gas_price, data, signature, created_at as timestamp FROM mempool WHERE tx_hash = ? OR tx_hash = ? LIMIT 1");
+            $stmt->execute([$h0, $h1]);
                         $mp = $stmt->fetch(PDO::FETCH_ASSOC);
                         if ($mp) {
                             $decimals = getTokenDecimals($networkConfig);
@@ -2740,8 +2790,10 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                             $valueHex = '0x' . dechex((int)floor(((float)($mp['amount'] ?? 0)) * $multiplier));
                             $chainInfo = method_exists($networkConfig, 'getNetworkInfo') ? $networkConfig->getNetworkInfo() : [];
                             $chainIdHex = '0x' . dechex((int)($chainInfo['chain_id'] ?? 0));
-                            return [
-                                'hash' => $mp['hash'],
+                                $retHash = strtolower((string)($mp['hash'] ?? ''));
+                                if ($retHash !== '' && !str_starts_with($retHash, '0x')) { $retHash = '0x' . $retHash; }
+                                return [
+                                    'hash' => $retHash,
                                 'nonce' => '0x' . dechex((int)($mp['nonce'] ?? 0)),
                                 'blockHash' => null,
                                 'blockNumber' => null,
@@ -2870,6 +2922,52 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                 $txHash = '0x' . \Blockchain\Core\Crypto\Hash::keccak256($bin);
                 writeLog('Computed transaction hash: ' . $txHash, 'INFO');
 
+                // ANTI-LOOP CHECK: Check if this transaction was already processed recently
+                try {
+                    $pdo = $walletManager->getDatabase();
+                    $currentNodeId = getCurrentNodeId($pdo);
+                    
+                    // Check in mempool (already processed)
+                    $h = strtolower($txHash);
+                    $h0 = str_starts_with($h,'0x') ? $h : ('0x'.$h);
+                    $h1 = str_starts_with($h,'0x') ? substr($h,2) : $h;
+                    $stmt = $pdo->prepare("SELECT COUNT(*) FROM mempool WHERE tx_hash = ? OR tx_hash = ?");
+                    $stmt->execute([$h0, $h1]);
+                    $inMempool = $stmt->fetchColumn() > 0;
+                    
+                    // Check in transactions (already confirmed)
+                    $stmt = $pdo->prepare("SELECT COUNT(*) FROM transactions WHERE hash = ?");
+                    $stmt->execute([$txHash]);
+                    $inTransactions = $stmt->fetchColumn() > 0;
+                    
+                    // Check in broadcast_tracking (already broadcasted recently)
+                    $stmt = $pdo->prepare("
+                        SELECT COUNT(*) FROM broadcast_tracking 
+                        WHERE transaction_hash = ? AND expires_at > NOW()
+                    ");
+                    $stmt->execute([$txHash]);
+                    $recentlyBroadcasted = $stmt->fetchColumn() > 0;
+                    
+                    if ($inMempool || $inTransactions || $recentlyBroadcasted) {
+                        writeLog("DUPLICATE DETECTED: Transaction $txHash already processed (mempool: $inMempool, confirmed: $inTransactions, recent: $recentlyBroadcasted)", 'WARNING');
+                        
+                        // Update duplicate prevention stats
+                        updateBroadcastStats($pdo, 'duplicate_prevented', $currentNodeId);
+                        
+                        // Return the existing transaction hash (MetaMask expects this)
+                        return $txHash;
+                    }
+                    
+                    // Record this transaction in broadcast_tracking to prevent future duplicates
+                    recordBroadcastTracking($pdo, $txHash, $currentNodeId, 0, "eth_sendRawTransaction");
+                    
+                    writeLog("Transaction $txHash passed anti-loop check, proceeding with processing", 'INFO');
+                    
+                } catch (\Throwable $e) {
+                    writeLog('Anti-loop check failed: ' . $e->getMessage(), 'ERROR');
+                    // Continue processing even if anti-loop check fails
+                }
+
                 // Try to parse minimal fields from RLP for visibility (best-effort)
                 $parsed = parseEthRawTransaction($rawHex);
                 writeLog('Parsed transaction data: ' . json_encode($parsed), 'DEBUG');
@@ -2969,7 +3067,7 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                     // Accept locally into mempool (idempotent if already present)
                     try {
                         writeLog('Attempting to add transaction to local mempool', 'INFO');
-                        $result = receiveBroadcastedTransaction($walletManager, $normalized, $_SERVER['HTTP_HOST'] ?? 'self', time());
+                        $result = receiveBroadcastedTransaction($walletManager, $normalized, 'self', time());
                         writeLog('Local mempool result: ' . json_encode($result), 'INFO');
                         
                         // Simple direct logging to debug
@@ -3130,7 +3228,7 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
 
                         // Accept locally via same path to unify behavior
                         try {
-                            receiveBroadcastedTransaction($walletManager, $normalized, $_SERVER['HTTP_HOST'] ?? 'self', time());
+                            receiveBroadcastedTransaction($walletManager, $normalized, 'self', time());
                         } catch (\Throwable $e) {
                             writeLog('Local accept of sendTransaction failed: ' . $e->getMessage(), 'WARNING');
                         }
@@ -3597,14 +3695,34 @@ function getBlockByHash($walletManager, string $hash): ?array
 
 function getTransactionReceipt($walletManager, string $hash): ?array
 {
+    // Enhanced debug logging
+    $debugLog = __DIR__ . '/../logs/debug.log';
+    $timestamp = date('Y-m-d H:i:s');
+    $debugMsg = "[{$timestamp}] getTransactionReceipt called for hash: {$hash}" . PHP_EOL;
+    @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+    
+    writeLog("getTransactionReceipt called for hash: $hash", 'DEBUG');
     try {
         $tx = $walletManager->getTransactionByHash($hash);
+        $debugMsg = "[{$timestamp}] getTransactionByHash result: " . ($tx ? 'FOUND' : 'NOT_FOUND') . PHP_EOL;
+        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+        
+        writeLog("getTransactionByHash result: " . ($tx ? 'FOUND' : 'NOT_FOUND'), 'DEBUG');
+        if ($tx) {
+            $debugMsg = "[{$timestamp}] Transaction details: " . json_encode($tx) . PHP_EOL;
+            @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+            writeLog("Transaction details: " . json_encode($tx), 'DEBUG');
+        }
+        
         if (!$tx) {
             // If not confirmed yet, check mempool; auto-confirm no-op self-transfers
             try {
                 $pdo = $walletManager->getDatabase();
-                $stmt = $pdo->prepare("SELECT tx_hash as hash, from_address, to_address, amount, fee, nonce, gas_limit, gas_price, data, signature, created_at as timestamp FROM mempool WHERE tx_hash = ? LIMIT 1");
-                $stmt->execute([$hash]);
+                $h = strtolower(trim((string)$hash));
+                $h0 = str_starts_with($h,'0x') ? $h : ('0x'.$h);
+                $h1 = str_starts_with($h,'0x') ? substr($h,2) : $h;
+                $stmt = $pdo->prepare("SELECT tx_hash as hash, from_address, to_address, amount, fee, nonce, gas_limit, gas_price, data, signature, created_at as timestamp FROM mempool WHERE tx_hash = ? OR tx_hash = ? LIMIT 1");
+                $stmt->execute([$h0, $h1]);
                 $mp = $stmt->fetch(PDO::FETCH_ASSOC);
                 if ($mp) {
                     $from = strtolower((string)($mp['from_address'] ?? ''));
@@ -3621,8 +3739,12 @@ function getTransactionReceipt($walletManager, string $hash): ?array
                         try {
                             $ins = $pdo->prepare("INSERT INTO transactions (hash, from_address, to_address, amount, fee, nonce, gas_limit, gas_price, data, signature, timestamp, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed') ON DUPLICATE KEY UPDATE status='confirmed'");
                             $ins->execute([$hash, $from, $to, $amount, (float)($mp['fee'] ?? 0), (int)($mp['nonce'] ?? 0), (int)($mp['gas_limit'] ?? 21000), (int)($mp['gas_price'] ?? 0), (string)($mp['data'] ?? ''), (string)($mp['signature'] ?? ''), (int)($mp['timestamp'] ?? time())]);
-                            $del = $pdo->prepare("DELETE FROM mempool WHERE hash = ?");
-                            $del->execute([$hash]);
+                            // Remove from mempool by tx_hash (handle 0x and non-0x)
+                            $dh = strtolower(trim((string)$hash));
+                            $dh0 = str_starts_with($dh,'0x') ? $dh : ('0x'.$dh);
+                            $dh1 = str_starts_with($dh,'0x') ? substr($dh,2) : $dh;
+                            $del = $pdo->prepare("DELETE FROM mempool WHERE tx_hash = ? OR tx_hash = ?");
+                            $del->execute([$dh0, $dh1]);
                             if ($started) { $pdo->commit(); }
                         } catch (Throwable $e) {
                             if ($started && method_exists($pdo, 'inTransaction') && $pdo->inTransaction()) { $pdo->rollBack(); }
@@ -5174,19 +5296,57 @@ function broadcastTransactionToNetworkTraditional(array $transaction, PDO $pdo):
  */
 function receiveBroadcastedTransaction($walletManager, array $transaction, string $sourceNode, int $timestamp): array {
     try {
-        $txHash = $transaction['hash'] ?? 'unknown';
+        // CRITICAL FIX: Don't use broadcast hash! Create Transaction object to get REAL hash
+        
+        // Normalize incoming structure first 
+        $from = $transaction['from_address'] ?? $transaction['from'] ?? '';
+        $to = $transaction['to_address'] ?? $transaction['to'] ?? '';
+        $amount = (float)($transaction['amount'] ?? 0);
+        $fee = (float)($transaction['fee'] ?? 0);
+        $nonce = (int)($transaction['nonce'] ?? 0);
+        $gasLimit = (int)($transaction['gas_limit'] ?? ($transaction['gas'] ?? 21000));
+        $gasPrice = (float)($transaction['gas_price'] ?? ($transaction['gasPrice'] ?? 0));
+        $dataHex = $transaction['data'] ?? ($transaction['input'] ?? null);
+        if ($dataHex === '') { $dataHex = null; }
+        
+        // Create Transaction object to get the REAL transaction hash
+        $tx = new \Blockchain\Core\Transaction\Transaction(
+            $from,
+            $to,
+            $amount,
+            $fee,
+            $nonce,
+            is_string($dataHex) ? $dataHex : null,
+            $gasLimit,
+            $gasPrice
+        );
+        
+    // Base hash from Transaction object (may be overridden for local source below)
+    $txHash = $tx->getHash();
+        
         $hopCount = (int)($transaction['hop_count'] ?? 0);
         $maxHops = 3; // Maximum hops to prevent infinite loops
         $pdo = $walletManager->getDatabase();
         $currentNodeId = getCurrentNodeId($pdo);
         
+        // If this is a local submission (self), and external tx hash is provided, force it
+        $isLocalSource = ($sourceNode === 'self');
+        if ($isLocalSource && !empty($transaction['hash']) && is_string($transaction['hash'])) {
+            $ext = strtolower(trim($transaction['hash']));
+            if (!str_starts_with($ext, '0x')) { $ext = '0x' . $ext; }
+            if (preg_match('/^0x[a-f0-9]{64}$/', $ext)) {
+                if (method_exists($tx, 'forceHash')) { $tx->forceHash($ext); }
+                $txHash = $ext;
+            }
+        }
+
         // Debug logging
         $debugLog = __DIR__ . '/../logs/debug.log';
         $logTimestamp = date('Y-m-d H:i:s');
-        $debugMsg = "[{$logTimestamp}] receiveBroadcastedTransaction: hash={$txHash}, source={$sourceNode}, hops={$hopCount}" . PHP_EOL;
+        $debugMsg = "[{$logTimestamp}] receiveBroadcastedTransaction: REAL_hash={$txHash}, IGNORED_broadcast_hash=" . ($transaction['hash'] ?? 'none') . ", source={$sourceNode}, hops={$hopCount}" . PHP_EOL;
         @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         
-        writeLog('receiveBroadcastedTransaction called with hash: ' . $txHash, 'INFO');
+        writeLog('receiveBroadcastedTransaction: Using REAL hash ' . $txHash . ' (IGNORED broadcast hash: ' . ($transaction['hash'] ?? 'none') . ')', 'INFO');
         writeLog('Transaction data: ' . json_encode($transaction), 'DEBUG');
         
         // Check broadcast tracking table to prevent duplicate processing
@@ -5268,10 +5428,13 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
             ];
         }
         
-        // Check mempool for duplicates
-        $pdo = $walletManager->getDatabase();
-        $stmt = $pdo->prepare("SELECT 1 FROM mempool WHERE tx_hash = ? LIMIT 1");
-        $stmt->execute([$txHash]);
+    // Check mempool for duplicates (handle 0x and non-0x variants)
+    $pdo = $walletManager->getDatabase();
+    $h = strtolower(trim((string)$txHash));
+    $h0 = str_starts_with($h,'0x') ? $h : ('0x'.$h);
+    $h1 = str_starts_with($h,'0x') ? substr($h,2) : $h;
+    $stmt = $pdo->prepare("SELECT 1 FROM mempool WHERE tx_hash = ? OR tx_hash = ? LIMIT 1");
+    $stmt->execute([$h0, $h1]);
         if ($stmt->fetchColumn()) {
             $debugMsg = "[{$logTimestamp}] Transaction {$txHash} already in mempool" . PHP_EOL;
             @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
@@ -5303,9 +5466,9 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
                     'origin_timestamp' => $timestamp
                 ];
                 
-                // Get fresh topology and re-broadcast
-                ensureFreshTopology($pdo);
-                $result = broadcastTransactionToNetwork($rebroadcastTx, $newHopCount);
+            // Get fresh topology and re-broadcast (fix wrong arguments)
+            ensureFreshTopology($walletManager);
+            $result = broadcastTransactionToNetwork($rebroadcastTx, $pdo);
                 
                 $debugMsg = "[{$logTimestamp}] Re-broadcast result for {$txHash}: " . json_encode($result) . PHP_EOL;
                 @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
@@ -5335,40 +5498,47 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
         }
         
         // Normalize incoming structure (support both from/to and from_address/to_address)
-        $from = $transaction['from_address'] ?? $transaction['from'] ?? '';
-        $to = $transaction['to_address'] ?? $transaction['to'] ?? '';
-        $amount = (float)($transaction['amount'] ?? 0);
-        $fee = (float)($transaction['fee'] ?? 0);
-        $nonce = (int)($transaction['nonce'] ?? 0);
-        $gasLimit = (int)($transaction['gas_limit'] ?? ($transaction['gas'] ?? 21000));
-        $gasPrice = (float)($transaction['gas_price'] ?? ($transaction['gasPrice'] ?? 0));
-        $dataHex = $transaction['data'] ?? ($transaction['input'] ?? null);
-        if ($dataHex === '') { $dataHex = null; }
+        // NOTE: We already normalized these values above and created Transaction object
         // Ensure minimal fee to satisfy mempool policy
-        if ($fee < 0.001) { $fee = 0.001; }
+        if ($fee < 0.001) { 
+            $fee = 0.001; 
+            // Need to recreate Transaction with updated fee
+            $tx = new \Blockchain\Core\Transaction\Transaction(
+                $from,
+                $to,
+                $amount,
+                $fee,
+                $nonce,
+                is_string($dataHex) ? $dataHex : null,
+                $gasLimit,
+                $gasPrice
+            );
+            // Preserve external/local hash if local source provided it; else use computed
+            if ($isLocalSource && !empty($transaction['hash']) && preg_match('/^0x[a-f0-9]{64}$/', strtolower($transaction['hash'])) && method_exists($tx, 'forceHash')) {
+                $forced = strtolower($transaction['hash']);
+                $tx->forceHash($forced);
+                $txHash = str_starts_with($forced, '0x') ? $forced : ('0x' . $forced);
+            } else {
+                $txHash = $tx->getHash();
+            }
+        }
 
-        // Create transaction object and add to mempool
-        writeLog('Creating Transaction object with: from=' . $from . ', to=' . $to . ', amount=' . $amount . ', nonce=' . $nonce, 'DEBUG');
-        $tx = new \Blockchain\Core\Transaction\Transaction(
-            $from,
-            $to,
-            $amount,
-            $fee,
-            $nonce,
-            is_string($dataHex) ? $dataHex : null,
-            $gasLimit,
-            $gasPrice
-        );
-        $tx->forceHash($transaction['hash'] ?? '');
+        // Transaction object already created above - use existing $tx
+        writeLog('Using Transaction object with hash: ' . $tx->getHash() . ', from=' . $from . ', to=' . $to . ', amount=' . $amount . ', nonce=' . $nonce, 'DEBUG');
+        
+        // CRITICAL FIX: DO NOT force hash from broadcast! Let Transaction compute its own hash
+        // The Transaction constructor will compute the correct hash from the actual transaction data
+        // $tx->forceHash($transaction['hash'] ?? ''); // REMOVED - this was corrupting with node hash!
+        
         // Mark as externally validated raw/broadcasted tx to bypass local hash/signature checks
         $tx->setSignature('external_raw');
         
         writeLog('Attempting to add transaction to mempool via MempoolManager', 'INFO');
         
-        // Debug: log transaction object details
+        // Debug: log transaction object details with REAL hash
         $debugLog = __DIR__ . '/../logs/debug.log';
         $timestamp = date('Y-m-d H:i:s');
-        $debugMsg = "[{$timestamp}] Transaction object details: hash=" . $tx->getHash() . ", from=" . $tx->getFrom() . ", to=" . $tx->getTo() . ", amount=" . $tx->getAmount() . ", nonce=" . $tx->getNonce() . PHP_EOL;
+    $debugMsg = "[{$timestamp}] Transaction object details: REAL_hash=" . $tx->getHash() . ", chosen_hash={$txHash}, from=" . $tx->getFrom() . ", to=" . $tx->getTo() . ", amount=" . $tx->getAmount() . ", nonce=" . $tx->getNonce() . PHP_EOL;
         @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         
         $mempool = new \Blockchain\Core\Transaction\MempoolManager($pdo, ['min_fee' => 0.001]);
@@ -5394,7 +5564,7 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
             try {
                 $dir = dirname(__DIR__) . '/storage/raw_mempool';
                 if (!is_dir($dir)) { @mkdir($dir, 0755, true); }
-                $path = $dir . '/' . str_replace('0x','', strtolower($transaction['hash'])) . '.json';
+        $path = $dir . '/' . str_replace('0x','', strtolower($txHash)) . '.json';
                 if (!is_file($path)) {
                     $parsed = [
                         'from' => strtolower($from),
@@ -5406,7 +5576,7 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
                         'input' => is_string($dataHex) ? $dataHex : '0x'
                     ];
                     @file_put_contents($path, json_encode([
-                        'hash' => $transaction['hash'],
+            'hash' => $txHash,
                         'raw' => null,
                         'parsed' => $parsed,
                         'received_at' => time()
@@ -5417,7 +5587,7 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
                 'success' => true,
                 'message' => 'Transaction added to mempool',
                 'status' => 'added',
-                'transaction_hash' => $transaction['hash']
+        'transaction_hash' => $txHash
             ];
         } else {
             return [
@@ -5572,9 +5742,12 @@ function mineBlock(array $transactions, PDO $pdo, array $config): array {
         
         // Clean up mempool
         $removed = 0;
-        $del = $pdo->prepare('DELETE FROM mempool WHERE tx_hash = ?');
+        $del = $pdo->prepare('DELETE FROM mempool WHERE tx_hash = ? OR tx_hash = ?');
         foreach ($originalHashes as $originalHash) {
-            $del->execute([$originalHash]);
+            $dh = strtolower(trim((string)$originalHash));
+            $dh0 = str_starts_with($dh,'0x') ? $dh : ('0x'.$dh);
+            $dh1 = str_starts_with($dh,'0x') ? substr($dh,2) : $dh;
+            $del->execute([$dh0, $dh1]);
             $removed += $del->rowCount();
         }
         

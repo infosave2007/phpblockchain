@@ -140,9 +140,12 @@ try {
 
     // Remove mined tx from mempool using original hashes
     $removed = 0;
-    $del = $pdo->prepare('DELETE FROM mempool WHERE tx_hash = ?');
+    $del = $pdo->prepare('DELETE FROM mempool WHERE tx_hash = ? OR tx_hash = ?');
     foreach ($originalHashes as $originalHash) {
-        $del->execute([$originalHash]);
+        $dh = strtolower(trim((string)$originalHash));
+        $dh0 = str_starts_with($dh,'0x') ? $dh : ('0x'.$dh);
+        $dh1 = str_starts_with($dh,'0x') ? substr($dh,2) : $dh;
+        $del->execute([$dh0, $dh1]);
         $removed += $del->rowCount();
     }
 

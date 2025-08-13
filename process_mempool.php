@@ -287,8 +287,11 @@ try {
                 if ($hashDupT->fetchColumn()) {
                     return ['success' => false, 'error' => 'Hash already confirmed'];
                 }
-                $hashDupM = $pdo->prepare("SELECT 1 FROM mempool WHERE tx_hash = ? LIMIT 1");
-                $hashDupM->execute([$hash]);
+                $h = strtolower(trim((string)$hash));
+                $h0 = str_starts_with($h,'0x') ? $h : ('0x'.$h);
+                $h1 = str_starts_with($h,'0x') ? substr($h,2) : $h;
+                $hashDupM = $pdo->prepare("SELECT 1 FROM mempool WHERE tx_hash = ? OR tx_hash = ? LIMIT 1");
+                $hashDupM->execute([$h0, $h1]);
                 if ($hashDupM->fetchColumn()) {
                     return ['success' => false, 'error' => 'Hash already in mempool'];
                 }

@@ -19,6 +19,38 @@ class MempoolManager
     private int $maxSize;
     private float $minFee;
     
+    /**
+     * Normalize transaction hash to lowercase with 0x prefix if it's hex.
+     * Does NOT modify non-hex strings. Used for inserts and comparisons.
+     */
+    private function normalizeHash(string $hash): string
+    {
+        $h = strtolower(trim($hash));
+        if (str_starts_with($h, '0x')) {
+            $h = substr($h, 2);
+        }
+        if (preg_match('/^[0-9a-f]{32,}$/', $h)) {
+            return '0x' . $h;
+        }
+        return strtolower(trim($hash));
+    }
+
+    /**
+     * Return both variants of a hash for DB lookups: [0x-prefixed, non-prefixed].
+     * If not a hex hash, returns the original twice to keep SQL placeholders aligned.
+     */
+    private function hashVariants(string $hash): array
+    {
+        $norm = $this->normalizeHash($hash);
+        $noPrefix = str_starts_with($norm, '0x') ? substr($norm, 2) : $norm;
+        if (!preg_match('/^[0-9a-f]{32,}$/', $noPrefix)) {
+            // Not a hex-like hash, return identical placeholders
+            $orig = strtolower(trim($hash));
+            return [$orig, $orig];
+        }
+        return [$norm, $noPrefix];
+    }
+    
     public function __construct(PDO $database, array $config = [])
     {
         $this->database = $database;
@@ -76,8 +108,10 @@ class MempoolManager
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
             
+            // Normalize hash on insert for consistency going forward
+            $normHash = $this->normalizeHash($transaction->getHash());
             return $stmt->execute([
-                $transaction->getHash(),
+                $normHash,
                 $transaction->getFromAddress(),
                 $transaction->getToAddress(),
                 $transaction->getAmount(),
@@ -101,8 +135,9 @@ class MempoolManager
      */
     public function removeTransaction(string $txHash): bool
     {
-        $stmt = $this->database->prepare("DELETE FROM mempool WHERE tx_hash = ?");
-        return $stmt->execute([$txHash]);
+    [$h0, $h1] = $this->hashVariants($txHash);
+    $stmt = $this->database->prepare("DELETE FROM mempool WHERE tx_hash = ? OR tx_hash = ?");
+    return $stmt->execute([$h0, $h1]);
     }
     
     /**
@@ -110,11 +145,12 @@ class MempoolManager
      */
     public function getTransaction(string $txHash): ?Transaction
     {
+        [$h0, $h1] = $this->hashVariants($txHash);
         $stmt = $this->database->prepare("
-            SELECT * FROM mempool WHERE tx_hash = ?
+            SELECT * FROM mempool WHERE tx_hash = ? OR tx_hash = ? LIMIT 1
         ");
         
-        $stmt->execute([$txHash]);
+        $stmt->execute([$h0, $h1]);
         $data = $stmt->fetch();
         
         if (!$data) {
@@ -129,11 +165,12 @@ class MempoolManager
      */
     public function hasTransaction(string $txHash): bool
     {
+        [$h0, $h1] = $this->hashVariants($txHash);
         $stmt = $this->database->prepare("
-            SELECT COUNT(*) FROM mempool WHERE tx_hash = ?
+            SELECT COUNT(*) FROM mempool WHERE tx_hash = ? OR tx_hash = ?
         ");
         
-        $stmt->execute([$txHash]);
+        $stmt->execute([$h0, $h1]);
         return (int)$stmt->fetchColumn() > 0;
     }
     

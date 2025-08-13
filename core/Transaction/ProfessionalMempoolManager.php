@@ -363,9 +363,12 @@ class ProfessionalMempoolManager
     
     private function transactionExists(string $txHash): bool
     {
-        $sql = "SELECT COUNT(*) FROM mempool WHERE tx_hash = ?";
+        $h = strtolower(trim($txHash));
+        $h0 = str_starts_with($h,'0x') ? $h : ('0x'.$h);
+        $h1 = str_starts_with($h,'0x') ? substr($h,2) : $h;
+        $sql = "SELECT COUNT(*) FROM mempool WHERE tx_hash = ? OR tx_hash = ?";
         $stmt = $this->database->prepare($sql);
-        $stmt->execute([$txHash]);
+        $stmt->execute([$h0, $h1]);
         
         return $stmt->fetchColumn() > 0;
     }
@@ -416,8 +419,10 @@ class ProfessionalMempoolManager
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)";
         
         $stmt = $this->database->prepare($sql);
+        $h = strtolower(trim((string)$tx['tx_hash']));
+        $h0 = str_starts_with($h,'0x') ? $h : ('0x'.$h);
         return $stmt->execute([
-            $tx['tx_hash'],
+            $h0,
             $tx['from_address'],
             $tx['to_address'],
             $tx['amount'],

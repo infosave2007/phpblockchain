@@ -289,8 +289,11 @@ try {
                         @rename($file, $newPath);
                         continue;
                     }
-                    $hashDupM = $pdo->prepare("SELECT 1 FROM mempool WHERE tx_hash = ? LIMIT 1");
-                    $hashDupM->execute([$hash]);
+                    $h = strtolower(trim((string)$hash));
+                    $h0 = str_starts_with($h,'0x') ? $h : ('0x'.$h);
+                    $h1 = str_starts_with($h,'0x') ? substr($h,2) : $h;
+                    $hashDupM = $pdo->prepare("SELECT 1 FROM mempool WHERE tx_hash = ? OR tx_hash = ? LIMIT 1");
+                    $hashDupM->execute([$h0, $h1]);
                     if ($hashDupM->fetchColumn()) {
                         log_message("Skip hash already in mempool: $hash for file $filename", $verbose);
                         $newPath = $processedDir . '/' . $filename;
@@ -415,9 +418,12 @@ try {
         
         // Clean up mempool
         $removed = 0;
-        $del = $pdo->prepare('DELETE FROM mempool WHERE tx_hash = ?');
+        $del = $pdo->prepare('DELETE FROM mempool WHERE tx_hash = ? OR tx_hash = ?');
         foreach ($originalHashes as $originalHash) {
-            $del->execute([$originalHash]);
+            $dh = strtolower(trim((string)$originalHash));
+            $dh0 = str_starts_with($dh,'0x') ? $dh : ('0x'.$dh);
+            $dh1 = str_starts_with($dh,'0x') ? substr($dh,2) : $dh;
+            $del->execute([$dh0, $dh1]);
             $removed += $del->rowCount();
         }
         

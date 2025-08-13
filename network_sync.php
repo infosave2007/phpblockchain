@@ -1094,8 +1094,11 @@ class NetworkSyncManager {
     public function propagateTransactionToNetwork($txHash): bool {
         try {
             // Get transaction from local mempool
-            $stmt = $this->pdo->prepare("SELECT * FROM mempool WHERE tx_hash = ? AND status = 'pending'");
-            $stmt->execute([$txHash]);
+            $h = strtolower(trim((string)$txHash));
+            $h0 = str_starts_with($h,'0x') ? $h : ('0x'.$h);
+            $h1 = str_starts_with($h,'0x') ? substr($h,2) : $h;
+            $stmt = $this->pdo->prepare("SELECT * FROM mempool WHERE (tx_hash = ? OR tx_hash = ?) AND status = 'pending'");
+            $stmt->execute([$h0, $h1]);
             $tx = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if (!$tx) {
