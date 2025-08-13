@@ -690,6 +690,25 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             
             $result = receiveBroadcastedTransaction($walletManager, $transaction, $sourceNode, $timestamp);
             break;
+            
+        case 'listnodes':
+            $result = getNetworkTopology($walletManager);
+            break;
+            
+        case 'update_topology':
+            $result = updateNetworkTopology($walletManager);
+            break;
+            
+        case 'get_optimal_broadcast_nodes':
+            $transactionHash = $input['transaction_hash'] ?? '';
+            $batchSize = (int)($input['batch_size'] ?? 10);
+            
+            if (!$transactionHash) {
+                throw new Exception('Transaction hash is required');
+            }
+            
+            $result = selectOptimalBroadcastNodes($walletManager, $transactionHash, $batchSize);
+            break;
 
         case 'rpc':
             // Minimal JSON-RPC over query/body: ?action=rpc&method=eth_chainId or JSON body handled above
@@ -2576,15 +2595,32 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                 return false;
 
             case 'eth_getBalance': {
-                $address = $params[0] ?? '';
+                $address = normalizeHexAddress($params[0] ?? '');
                 if (!$address) return '0x0';
-                // Use spendable balance (exclude staked) for wallet UIs
-                $balance = $walletManager->getAvailableBalance($address);
                 $decimals = getTokenDecimals($networkConfig);
-                // Convert to smallest units using big integer string math (avoid 64-bit overflow)
-                $unitsDec = decimalAmountToUnitsString($balance, $decimals);
+                try {
+                    $pdo = $walletManager->getDatabase();
+                    // 1) Try cached balance from wallets
+                    $stmt = $pdo->prepare("SELECT balance FROM wallets WHERE address = ? LIMIT 1");
+                    $stmt->execute([$address]);
+                    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                    if ($row && isset($row['balance'])) {
+                        $balDec = (float)$row['balance'];
+                    } else {
+                        // 2) If no cache, compute once and, if wallet exists, persist
+                        $balDec = computeWalletBalanceDecimal($pdo, $address);
+                        try {
+                            $upd = $pdo->prepare("UPDATE wallets SET balance = ?, updated_at = NOW() WHERE address = ?");
+                            $upd->execute([$balDec, $address]);
+                        } catch (\Throwable $e2) { /* ignore if wallet row absent */ }
+                    }
+                    // Return as wei hex
+                    $unitsDec = decimalAmountToUnitsString($balDec, $decimals);
                 $hex = decimalStringToHex($unitsDec);
                 return '0x' . ($hex === '' ? '0' : $hex);
+                } catch (\Throwable $e) {
+                    return '0x0';
+                }
             }
 
             case 'eth_coinbase': {
@@ -2616,11 +2652,23 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
             }
 
             case 'eth_gasPrice':
-                // No gas market; return zero
-                return '0x0';
+                // Return dynamic gas price (base + priority) in wei
+                try {
+                    $pdo = $walletManager->getDatabase();
+                    $fees = getSuggestedFeesWei($pdo);
+                    return '0x' . dechex(max(0, (int)$fees['gasPrice']));
+                } catch (Throwable $e) {
+                    return '0x3b9aca00'; // 1 gwei fallback
+                }
 
             case 'eth_maxPriorityFeePerGas':
-                return '0x0';
+                try {
+                    $pdo = $walletManager->getDatabase();
+                    $fees = getSuggestedFeesWei($pdo);
+                    return '0x' . dechex(max(0, (int)$fees['priority']));
+                } catch (Throwable $e) {
+                    return '0x77359400'; // 2 gwei fallback
+                }
 
             case 'eth_estimateGas':
                 // Return a fixed 21000 units as a placeholder
@@ -2628,7 +2676,7 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
 
             case 'eth_feeHistory': {
                 // params: [blockCount, newestBlock, rewardPercentiles]
-                // Provide a minimal stable response with zeros; enough for many wallets/UIs
+                // Provide simple, non-zero base fees so wallets can compute suggestions
                 $blockCount = $params[0] ?? '0x0';
                 $newest = $params[1] ?? 'latest';
                 $count = 0;
@@ -2638,12 +2686,34 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                     $count = (int)$blockCount;
                 }
                 if ($count <= 0) $count = 1;
-                $baseFees = array_fill(0, $count, '0x0');
-                $gasUsedRatio = array_fill(0, $count, 0.0);
-                $reward = [];
+                try {
+                    $pdo = $walletManager->getDatabase();
+                    $fees = getSuggestedFeesWei($pdo);
+                    $base = max(1, (int)$fees['base']);
+                    // build slight variation for history
+                    $baseFees = [];
+                    for ($i = 0; $i < $count; $i++) {
+                        $adj = max(0, $base - ($i * (int)round($base * 0.02))); // small decline
+                        $baseFees[] = '0x' . dechex($adj);
+                    }
+                    $gasUsedRatio = array_fill(0, $count, 0.15);
+                    $percentiles = $params[2] ?? [];
+                    $reward = [];
+                    if (is_array($percentiles) && !empty($percentiles)) {
+                        $priority = max(1, (int)$fees['priority']);
+                        $rewardRow = array_fill(0, count($percentiles), '0x' . dechex($priority));
+                        $reward = array_fill(0, $count, $rewardRow);
+                    }
+                } catch (Throwable $e) {
+                    $baseFees = array_fill(0, $count, '0x3b9aca00');
+                    $gasUsedRatio = array_fill(0, $count, 0.15);
+                    $reward = [];
+                }
                 $percentiles = $params[2] ?? [];
                 if (is_array($percentiles) && !empty($percentiles)) {
-                    $reward = array_fill(0, $count, array_fill(0, count($percentiles), '0x0'));
+                    if (empty($reward)) {
+                        $reward = array_fill(0, $count, array_fill(0, count($percentiles), '0x77359400'));
+                    }
                 }
                 return [
                     'oldestBlock' => is_string($newest) ? $newest : 'latest',
@@ -2683,7 +2753,7 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                                 'gasPrice' => '0x' . dechex((int)($mp['gas_price'] ?? 0)),
                                 'maxFeePerGas' => '0x0',
                                 'maxPriorityFeePerGas' => '0x0',
-                                'type' => '0x0',
+                                'type' => '0x2',
                                 'accessList' => [],
                                 'chainId' => $chainIdHex,
                                 'v' => '0x0', 'r' => '0x0', 's' => '0x0',
@@ -2692,6 +2762,50 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                         }
                     } catch (Throwable $e) {
                         writeLog('eth_getTransactionByHash mempool fallback error: ' . $e->getMessage(), 'ERROR');
+                    }
+                    // Fallback 2: raw_mempool file -> return pending view to avoid dropped
+                    try {
+                        $baseDir = dirname(__DIR__);
+                        $rawPath1 = $baseDir . '/storage/raw_mempool/' . strtolower($hash) . '.json';
+                        $rawPath2 = $baseDir . '/storage/raw_mempool/processed/' . strtolower($hash) . '.json';
+                        $rawPath = null;
+                        if (is_file($rawPath1)) { $rawPath = $rawPath1; }
+                        elseif (is_file($rawPath2)) { $rawPath = $rawPath2; }
+                        if ($rawPath) {
+                            $rawJson = json_decode((string)@file_get_contents($rawPath), true);
+                            if (is_array($rawJson)) {
+                                $parsed = $rawJson['parsed'] ?? [];
+                                $from = $parsed['from'] ?? null;
+                                $to = $parsed['to'] ?? null;
+                                $value = $parsed['value'] ?? '0x0';
+                                $gas = $parsed['gas'] ?? '0x5208';
+                                $gasPrice = $parsed['gasPrice'] ?? '0x0';
+                                $nonce = $parsed['nonce'] ?? '0x0';
+                                $chainInfo = method_exists($networkConfig, 'getNetworkInfo') ? $networkConfig->getNetworkInfo() : [];
+                                $chainIdHex = '0x' . dechex((int)($chainInfo['chain_id'] ?? 0));
+                                return [
+                                    'hash' => $hash,
+                                    'nonce' => is_string($nonce) ? $nonce : ('0x' . dechex((int)$nonce)),
+                                    'blockHash' => null,
+                                    'blockNumber' => null,
+                                    'transactionIndex' => null,
+                                    'from' => $from,
+                                    'to' => $to,
+                                    'value' => is_string($value) ? $value : '0x0',
+                                    'gas' => is_string($gas) ? $gas : ('0x' . dechex((int)$gas)),
+                                    'gasPrice' => is_string($gasPrice) ? $gasPrice : ('0x' . dechex((int)$gasPrice)),
+                                    'maxFeePerGas' => '0x0',
+                                    'maxPriorityFeePerGas' => '0x0',
+                                    'type' => '0x0',
+                                    'accessList' => [],
+                                    'chainId' => $chainIdHex,
+                                    'v' => '0x0','r' => '0x0','s' => '0x0',
+                                    'input' => is_string($parsed['input'] ?? null) ? $parsed['input'] : '0x',
+                                ];
+                            }
+                        }
+                    } catch (Throwable $e) {
+                        writeLog('eth_getTransactionByHash raw_mempool fallback error: ' . $e->getMessage(), 'ERROR');
                     }
                     return null;
                 }
@@ -2760,10 +2874,55 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                 $parsed = parseEthRawTransaction($rawHex);
                 writeLog('Parsed transaction data: ' . json_encode($parsed), 'DEBUG');
 
-                // Persist raw tx to local queue for asynchronous processing
+                // Security: must recover sender address from signature. Reject if failed.
+                $recoveredFrom = null;
+                try {
+                    $recoveredFrom = \Blockchain\Core\Crypto\EthereumTx::recoverAddress($rawHex);
+                } catch (\Throwable $e) {}
+                if (!is_string($recoveredFrom) || !preg_match('/^0x[a-f0-9]{40}$/', strtolower($recoveredFrom))) {
+                    writeLog('Rejecting raw tx (invalid signature recovery) for ' . $txHash, 'WARNING');
+                    return rpcError(-32602, 'Invalid transaction signature');
+                }
+
+                // Strict EIP-1559 sanity checks (chainId, r/s length)
+                try {
+                    $first = ord($bin[0]);
+                    if ($first === 0x02) {
+                        $payload = substr($bin, 1);
+                        $off = 0;
+                        $decode = function($b,&$o) use (&$decode){
+                            $len = strlen($b); if ($o >= $len) return null; $b0 = ord($b[$o]);
+                            if ($b0 <= 0x7f) { $o++; return $b[$o-1]; }
+                            if ($b0 <= 0xb7) { $l=$b0-0x80; $o++; $v=substr($b,$o,$l); $o+=$l; return $v; }
+                            if ($b0 <= 0xbf) { $ll=$b0-0xb7; $o++; $lBytes=substr($b,$o,$ll); $o+=$ll; $l=intval(bin2hex($lBytes),16); $v=substr($b,$o,$l); $o+=$l; return $v; }
+                            if ($b0 <= 0xf7) { $l=$b0-0xc0; $o++; $end=$o+$l; $arr=[]; while($o<$end){ $arr[]=$decode($b,$o);} return $arr; }
+                            $ll=$b0-0xf7; $o++; $lBytes=substr($b,$o,$ll); $o+=$ll; $l=intval(bin2hex($lBytes),16); $end=$o+$l; $arr=[]; while($o<$end){ $arr[]=$decode($b,$o);} return $arr; };
+                        $list = $decode($payload,$off);
+                        if (is_array($list) && count($list) >= 12) {
+                            $cfg = method_exists($networkConfig, 'getNetworkInfo') ? $networkConfig->getNetworkInfo() : [];
+                            $cfgCid = (int)($cfg['chain_id'] ?? 0);
+                            $txCid = intval(bin2hex($list[0] ?? ''), 16);
+                            if ($cfgCid > 0 && $txCid !== $cfgCid) {
+                                writeLog('Rejecting raw tx due chainId mismatch txCid=' . $txCid . ' cfgCid=' . $cfgCid, 'WARNING');
+                                return rpcError(-32602, 'Invalid chainId');
+                            }
+                            $r = $list[10] ?? '';
+                            $s = $list[11] ?? '';
+                            $rlen = is_string($r) ? strlen($r) : 0;
+                            $slen = is_string($s) ? strlen($s) : 0;
+                            if ($rlen < 1 || $rlen > 33 || $slen < 1 || $slen > 33) {
+                                writeLog('Rejecting raw tx due invalid r/s length', 'WARNING');
+                                return rpcError(-32602, 'Invalid signature');
+                            }
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    writeLog('Strict EIP-1559 checks error: ' . $e->getMessage(), 'WARNING');
+                }
+
+                // Persist raw tx to local queue for asynchronous processing (only after signature ok)
                 $queued = queueRawTransaction($txHash, $rawHex, $parsed);
                 if (!$queued) {
-                    // Still return hash so dApps have a handle; log the issue
                     writeLog('Failed to persist raw tx queue for ' . $txHash, 'ERROR');
                 } else {
                     writeLog('Queued raw tx ' . $txHash . ' (from MetaMask)', 'INFO');
@@ -2773,6 +2932,13 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                 try {
                     writeLog('Starting transaction normalization and processing', 'INFO');
                     $pdo = $walletManager->getDatabase();
+                    // Ensure recent network topology before proceeding to broadcast
+                    $topologyStatus = ensureFreshTopology($walletManager);
+                    if (($topologyStatus['success'] ?? false) === false) {
+                        writeLog('Topology check (raw tx) failed: ' . ($topologyStatus['reason'] ?? 'unknown'), 'WARNING');
+                    } elseif (($topologyStatus['updated'] ?? false) === true) {
+                        writeLog('Topology refreshed (raw tx pipeline)', 'INFO');
+                    }
                     $decimals = getTokenDecimals($networkConfig);
                     // Convert value (wei-like) from hex to a decimal amount using chain decimals with 8-digit scale
                     $amountDecimal = 0.0;
@@ -2786,7 +2952,7 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                     }
                     $normalized = [
                         'hash' => $txHash, // keep 0x prefix to match mempool storage
-                        'from_address' => normalizeHexAddress($parsed['from'] ?? ''),
+                        'from_address' => strtolower($recoveredFrom),
                         'to_address' => normalizeHexAddress($parsed['to'] ?? ''),
                         'amount' => $amountDecimal,
                         'fee' => 0.0,
@@ -2967,6 +3133,18 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                             receiveBroadcastedTransaction($walletManager, $normalized, $_SERVER['HTTP_HOST'] ?? 'self', time());
                         } catch (\Throwable $e) {
                             writeLog('Local accept of sendTransaction failed: ' . $e->getMessage(), 'WARNING');
+                        }
+
+                        // Ensure topology fresh before broadcast
+                        try {
+                            $topologyStatus = ensureFreshTopology($walletManager);
+                            if (($topologyStatus['success'] ?? false) === false) {
+                                writeLog('Topology check (eth_sendTransaction) failed: ' . ($topologyStatus['reason'] ?? 'unknown'), 'WARNING');
+                            } elseif (($topologyStatus['updated'] ?? false) === true) {
+                                writeLog('Topology refreshed (eth_sendTransaction)', 'INFO');
+                            }
+                        } catch (\Throwable $e) {
+                            writeLog('Topology ensure error (eth_sendTransaction): ' . $e->getMessage(), 'WARNING');
                         }
 
                         $broadcastResult = broadcastTransactionToNetwork($normalized, $pdo);
@@ -4067,8 +4245,9 @@ function parseEthRawTransaction(string $rawHex): array
             'input' => '0x'
         ];
         
-        // EIP-1559: Extract using robust pattern approach
+        // Parse both legacy and EIP-1559 transactions
         if ($isTyped && $typeByte === 0x02) {
+            // EIP-1559 transaction parsing
             // Nonce: find after chainId. Look for '840135' (chainId with RLP short-len prefix) then take next 8 hex
             $cidPos = strpos($rawHex, '840135');
             if ($cidPos !== false && strlen($rawHex) >= $cidPos + 6 + 8) {
@@ -4109,6 +4288,96 @@ function parseEthRawTransaction(string $rawHex): array
                     }
                 }
             }
+        } else {
+            // Legacy transaction parsing (type 0x0)
+            // RLP structure: [nonce, gasPrice, gasLimit, to, value, data, v, r, s]
+            
+            // Skip RLP list prefix (f8xx or f9xxxx)
+            $pos = 0;
+            if (str_starts_with($rawHex, 'f8') || str_starts_with($rawHex, 'f9')) {
+                $pos = str_starts_with($rawHex, 'f8') ? 4 : 6;
+            }
+            
+            // Parse nonce (first field)
+            if ($pos < strlen($rawHex)) {
+                $prefix = substr($rawHex, $pos, 2);
+                // Single byte nonce (0x01-0x7f)
+                if (preg_match('/^[0-7][0-9a-f]$/i', $prefix)) {
+                    $out['nonce'] = '0x' . $prefix;
+                    $pos += 2;
+                } elseif (preg_match('/^8[0-9a-f]$/i', $prefix)) {
+                    $len = hexdec(substr($prefix, 1, 1)) * 2;
+                    if ($pos + 2 + $len <= strlen($rawHex)) {
+                        $out['nonce'] = '0x' . substr($rawHex, $pos + 2, $len);
+                        $pos += 2 + $len;
+                    }
+                }
+            }
+            
+            // Parse gasPrice (second field)
+            if ($pos < strlen($rawHex)) {
+                $prefix = substr($rawHex, $pos, 2);
+                if ($prefix === '84') { // 4-byte gasPrice
+                    if ($pos + 10 <= strlen($rawHex)) {
+                        $out['gasPrice'] = '0x' . substr($rawHex, $pos + 2, 8);
+                        $pos += 10;
+                    }
+                } elseif (preg_match('/^8[0-9a-f]$/i', $prefix)) {
+                    $len = hexdec(substr($prefix, 1, 1)) * 2;
+                    if ($pos + 2 + $len <= strlen($rawHex)) {
+                        $out['gasPrice'] = '0x' . substr($rawHex, $pos + 2, $len);
+                        $pos += 2 + $len;
+                    }
+                }
+            }
+            
+            // Parse gasLimit (third field)
+            if ($pos < strlen($rawHex)) {
+                $prefix = substr($rawHex, $pos, 2);
+                if ($prefix === '82') { // 2-byte gasLimit
+                    if ($pos + 6 <= strlen($rawHex)) {
+                        $out['gas'] = '0x' . substr($rawHex, $pos + 2, 4);
+                        $pos += 6;
+                    }
+                } elseif (preg_match('/^8[0-9a-f]$/i', $prefix)) {
+                    $len = hexdec(substr($prefix, 1, 1)) * 2;
+                    if ($pos + 2 + $len <= strlen($rawHex)) {
+                        $out['gas'] = '0x' . substr($rawHex, $pos + 2, $len);
+                        $pos += 2 + $len;
+                    }
+                }
+            }
+            
+            // Parse to address (fourth field)
+            if ($pos < strlen($rawHex)) {
+                $prefix = substr($rawHex, $pos, 2);
+                if ($prefix === '94') { // 20-byte address
+                    if ($pos + 42 <= strlen($rawHex)) {
+                        $toHex = substr($rawHex, $pos + 2, 40);
+                        if (ctype_xdigit($toHex) && $toHex !== '0000000000000000000000000000000000000000') {
+                            $out['to'] = '0x' . $toHex;
+                        }
+                        $pos += 42;
+                    }
+                }
+            }
+            
+            // Parse value (fifth field)
+            if ($pos < strlen($rawHex)) {
+                $prefix = substr($rawHex, $pos, 2);
+                if ($prefix === '88') { // 8-byte value
+                    if ($pos + 18 <= strlen($rawHex)) {
+                        $out['value'] = '0x' . substr($rawHex, $pos + 2, 16);
+                        $pos += 18;
+                    }
+                } elseif (preg_match('/^8[0-9a-f]$/i', $prefix)) {
+                    $len = hexdec(substr($prefix, 1, 1)) * 2;
+                    if ($pos + 2 + $len <= strlen($rawHex)) {
+                        $out['value'] = '0x' . substr($rawHex, $pos + 2, $len);
+                        $pos += 2 + $len;
+                    }
+                }
+            }
         }
         
         // Use EthereumTx::recoverAddress to get the 'from' address
@@ -4122,12 +4391,7 @@ function parseEthRawTransaction(string $rawHex): array
             // Ignore signature recovery errors
         }
         
-        // Fallback: if no 'from' address recovered, use a default one for testing
-        if (empty($out['from'])) {
-            // For testing purposes, use a known address
-            $out['from'] = '0x0000000000000000000000000000000000000001';
-            writeLog('Using fallback from address: ' . $out['from'], 'DEBUG');
-        }
+        // Note: Do NOT fallback to a fake 'from'. If recovery failed, caller must reject the tx.
         
         return $out;
     } catch (\Throwable $e) {
@@ -4470,9 +4734,220 @@ function updateNodeStats(PDO $pdo, string $nodeId, bool $success, float $respons
 }
 
 /**
+ * Compute balance for a wallet address: confirmed_in - (confirmed_out + fee) - pending_out
+ */
+function computeWalletBalanceDecimal(PDO $pdo, string $address): float {
+    try {
+        $stmtIn = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM transactions WHERE to_address = ? AND status = 'confirmed'");
+        $stmtIn->execute([$address]);
+        $confirmedIn = (float)($stmtIn->fetchColumn() ?: 0);
+
+        $stmtOut = $pdo->prepare("SELECT COALESCE(SUM(amount + fee),0) FROM transactions WHERE from_address = ? AND status = 'confirmed'");
+        $stmtOut->execute([$address]);
+        $confirmedOut = (float)($stmtOut->fetchColumn() ?: 0);
+
+        $stmtPend = $pdo->prepare("SELECT COALESCE(SUM(amount + fee),0) FROM mempool WHERE from_address = ? AND status IN ('pending','processing')");
+        $stmtPend->execute([$address]);
+        $pendingOut = (float)($stmtPend->fetchColumn() ?: 0);
+
+        $balance = $confirmedIn - $confirmedOut - $pendingOut;
+        if ($balance < 0) { $balance = 0.0; }
+        return $balance;
+    } catch (Throwable $e) {
+        return 0.0;
+    }
+}
+
+/**
+ * Upsert cached balance into wallets table
+ */
+function upsertWalletBalance(PDO $pdo, string $address): void {
+    try {
+        $balance = computeWalletBalanceDecimal($pdo, $address);
+        $upd = $pdo->prepare("UPDATE wallets SET balance = ?, updated_at = NOW() WHERE address = ?");
+        $upd->execute([$balance, $address]);
+        if ($upd->rowCount() === 0) {
+            $ins = $pdo->prepare("INSERT INTO wallets (address, public_key, balance) VALUES (?, '', ?)");
+            $ins->execute([$address, $balance]);
+        }
+    } catch (Throwable $e) { /* ignore */ }
+}
+
+/**
+ * Simple fee oracle: suggest base fee and priority fee (in wei) using config and mempool pressure
+ */
+function getSuggestedFeesWei(PDO $pdo): array {
+    try {
+        $config = getNetworkConfigFromDatabase($pdo);
+    } catch (Throwable $e) { $config = []; }
+
+    $gwei = 1000000000; // 1e9
+
+    // Base fee from config or default 1 gwei
+    $baseGwei = isset($config['fee.base_gwei']) && is_numeric($config['fee.base_gwei'])
+        ? (float)$config['fee.base_gwei']
+        : 1.0;
+
+    // Priority fee from config or default 2 gwei
+    $prioGwei = isset($config['fee.priority_gwei']) && is_numeric($config['fee.priority_gwei'])
+        ? (float)$config['fee.priority_gwei']
+        : 2.0;
+
+    // Bump with mempool pressure
+    $mempoolCount = 0;
+    try {
+        $stmt = $pdo->query("SELECT COUNT(*) FROM mempool");
+        $mempoolCount = (int)$stmt->fetchColumn();
+    } catch (Throwable $e) {}
+
+    // Increase base slightly with log of mempool size
+    $baseBump = min(10.0, log(1 + max(0, $mempoolCount)));
+    $baseGwei += $baseBump; // up to +10 gwei
+
+    // Increase priority fee for larger queues
+    if ($mempoolCount > 50) { $prioGwei += 1.0; }
+    if ($mempoolCount > 200) { $prioGwei += 2.0; }
+
+    $baseWei = (int)round($baseGwei * $gwei);
+    $prioWei = (int)round($prioGwei * $gwei);
+    $gasPriceWei = $baseWei + $prioWei;
+
+    return [
+        'base' => $baseWei,
+        'priority' => $prioWei,
+        'gasPrice' => $gasPriceWei,
+    ];
+}
+
+/**
  * Broadcast transaction to all network nodes via multi_curl
  */
 function broadcastTransactionToNetwork(array $transaction, PDO $pdo): array {
+    try {
+        // Get configuration
+        $config = getNetworkConfigFromDatabase($pdo);
+        $batchSize = (int)($config['network.broadcast_batch_size'] ?? 10);
+        $timeout = $config['broadcast.timeout'] ?? 10;
+        $maxRetries = $config['broadcast.max_retries'] ?? 3;
+        
+        // Get optimal nodes for broadcasting based on network topology
+        $walletManager = new \Blockchain\Wallet\WalletManager($pdo);
+        // Make sure topology data is fresh (TTL) before selecting nodes
+        $topologyStatus = ensureFreshTopology($walletManager);
+        if (($topologyStatus['success'] ?? false) === false) {
+            writeLog('Topology freshness check failed: ' . ($topologyStatus['reason'] ?? 'unknown'), 'WARNING');
+        } else {
+            if (($topologyStatus['updated'] ?? false) === true) {
+                writeLog('Topology cache refreshed just before broadcast', 'INFO');
+            }
+        }
+        $optimalNodes = selectOptimalBroadcastNodes($walletManager, $transaction['hash'] ?? '', $batchSize);
+        
+        if (!$optimalNodes['success'] || empty($optimalNodes['selected_nodes'])) {
+            writeLog('No optimal nodes found for broadcasting, falling back to traditional method', 'WARNING');
+            return broadcastTransactionToNetworkTraditional($transaction, $pdo);
+        }
+        
+        writeLog('Selected ' . count($optimalNodes['selected_nodes']) . ' optimal nodes for broadcasting', 'INFO');
+        
+        // Create MultiCurl for parallel broadcasting
+        $multiCurl = new \Blockchain\Core\Network\MultiCurl(50, $timeout, 3);
+        
+        // Prepare requests for optimal nodes with specific broadcast instructions
+        $requests = [];
+        foreach ($optimalNodes['selected_nodes'] as $node) {
+            $nodeId = $node['id'];
+            $broadcastInstructions = $optimalNodes['broadcast_instructions'][$nodeId] ?? [];
+            
+            $requests[$nodeId] = [
+                'url' => rtrim($node['url'], '/') . '/wallet/wallet_api.php',
+                'method' => 'POST',
+                'data' => json_encode([
+                    'action' => 'broadcast_transaction',
+                    'transaction' => $transaction,
+                    'source_node' => getCurrentNodeId($pdo),
+                    'timestamp' => time(),
+                    'broadcast_instructions' => $broadcastInstructions,
+                    'network_topology' => true
+                ]),
+                'headers' => [
+                    'Content-Type: application/json',
+                    'User-Agent: BlockchainNode/2.0',
+                    'X-Node-Id: ' . getCurrentNodeId($pdo)
+                ],
+                'timeout' => $timeout,
+                'connect_timeout' => 3
+            ];
+        }
+        
+        // Execute parallel broadcasting
+        $results = $multiCurl->executeRequests($requests);
+        
+        // Analyze results
+        $successful = 0;
+        $failed = 0;
+        $nodeResults = [];
+        
+        foreach ($results as $nodeId => $result) {
+            if ($result['success'] && $result['http_code'] === 200) {
+                $successful++;
+                $nodeResults[$nodeId] = [
+                    'status' => 'success',
+                    'response_time' => $result['time'],
+                    'response' => $result['data'] ?? null,
+                    'node_info' => $optimalNodes['selected_nodes'][array_search($nodeId, array_column($optimalNodes['selected_nodes'], 'id'))] ?? null,
+                    'broadcast_instructions' => $optimalNodes['broadcast_instructions'][$nodeId] ?? []
+                ];
+                
+                // Update node statistics
+                updateNodeStats($pdo, $nodeId, true, $result['time']);
+                
+            } else {
+                $failed++;
+                $nodeResults[$nodeId] = [
+                    'status' => 'failed',
+                    'error' => $result['error'] ?? 'HTTP ' . $result['http_code'],
+                    'response_time' => $result['time'],
+                    'node_info' => $optimalNodes['selected_nodes'][array_search($nodeId, array_column($optimalNodes['selected_nodes'], 'id'))] ?? null
+                ];
+                
+                // Update node statistics (failed attempt)
+                updateNodeStats($pdo, $nodeId, false, $result['time']);
+            }
+        }
+        
+        // Check minimum success rate
+        $minSuccessRate = $config['broadcast.min_success_rate'] ?? 50;
+        $successRate = count($optimalNodes['selected_nodes']) > 0 ? round(($successful / count($optimalNodes['selected_nodes'])) * 100, 2) : 0;
+        
+        return [
+            'success' => $successful > 0 && $successRate >= $minSuccessRate,
+            'method' => 'smart_topology',
+            'nodes_contacted' => count($optimalNodes['selected_nodes']),
+            'successful_broadcasts' => $successful,
+            'failed_broadcasts' => $failed,
+            'success_rate' => $successRate,
+            'min_success_rate' => $minSuccessRate,
+            'total_network_coverage' => $optimalNodes['total_coverage'],
+            'node_results' => $nodeResults,
+            'stats' => $multiCurl->getStats()
+        ];
+        
+    } catch (Exception $e) {
+        writeLog("Error broadcasting transaction to network: " . $e->getMessage(), 'ERROR');
+        return [
+            'success' => false,
+            'error' => $e->getMessage(),
+            'nodes_contacted' => 0,
+            'successful_broadcasts' => 0
+        ];
+    }
+}
+
+/**
+ * Traditional broadcasting method as fallback
+ */
+function broadcastTransactionToNetworkTraditional(array $transaction, PDO $pdo): array {
     try {
         // Get nodes from database
         $networkNodes = getNetworkNodesFromDatabase($pdo);
@@ -4557,6 +5032,7 @@ function broadcastTransactionToNetwork(array $transaction, PDO $pdo): array {
         
         return [
             'success' => $successful > 0 && $successRate >= $minSuccessRate,
+            'method' => 'traditional',
             'nodes_contacted' => count($networkNodes),
             'successful_broadcasts' => $successful,
             'failed_broadcasts' => $failed,
@@ -4567,12 +5043,11 @@ function broadcastTransactionToNetwork(array $transaction, PDO $pdo): array {
         ];
         
     } catch (Exception $e) {
-        writeLog("Error broadcasting transaction to network: " . $e->getMessage(), 'ERROR');
+        writeLog("Error in traditional broadcasting: " . $e->getMessage(), 'ERROR');
         return [
             'success' => false,
             'error' => $e->getMessage(),
-            'nodes_contacted' => 0,
-            'successful_broadcasts' => 0
+            'method' => 'traditional'
         ];
     }
 }
@@ -4617,6 +5092,20 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
                 'message' => 'Transaction already in mempool',
                 'status' => 'duplicate'
             ];
+        }
+        
+        // Check if this is a smart topology broadcast with instructions
+        $broadcastInstructions = $transaction['broadcast_instructions'] ?? null;
+        $isNetworkTopology = $transaction['network_topology'] ?? false;
+        
+        if ($isNetworkTopology && $broadcastInstructions) {
+            writeLog('Received smart topology broadcast with instructions for: ' . $transaction['hash'], 'INFO');
+            
+            // Process broadcast instructions to forward to other nodes
+            $forwardResult = processBroadcastInstructions($pdo, $transaction, $broadcastInstructions);
+            if ($forwardResult['success']) {
+                writeLog('Successfully forwarded transaction to ' . $forwardResult['nodes_contacted'] . ' additional nodes', 'INFO');
+            }
         }
         
         // Normalize incoming structure (support both from/to and from_address/to_address)
@@ -4665,6 +5154,32 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
         @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         
         if ($added) {
+            // Update cached balances for involved addresses
+            try { upsertWalletBalance($pdo, strtolower($from)); } catch (Throwable $e) {}
+            try { if (!empty($to)) upsertWalletBalance($pdo, strtolower($to)); } catch (Throwable $e) {}
+            // Ensure a raw_mempool placeholder exists so pending state is visible via RPC
+            try {
+                $dir = dirname(__DIR__) . '/storage/raw_mempool';
+                if (!is_dir($dir)) { @mkdir($dir, 0755, true); }
+                $path = $dir . '/' . str_replace('0x','', strtolower($transaction['hash'])) . '.json';
+                if (!is_file($path)) {
+                    $parsed = [
+                        'from' => strtolower($from),
+                        'to' => strtolower($to),
+                        'value' => isset($amount) ? ('0x' . dechex((int)round($amount * pow(10, (int)($config['decimals'] ?? 8))))) : '0x0',
+                        'gas' => '0x' . dechex((int)$gasLimit),
+                        'gasPrice' => '0x' . dechex((int)$gasPrice),
+                        'nonce' => '0x' . dechex((int)$nonce),
+                        'input' => is_string($dataHex) ? $dataHex : '0x'
+                    ];
+                    @file_put_contents($path, json_encode([
+                        'hash' => $transaction['hash'],
+                        'raw' => null,
+                        'parsed' => $parsed,
+                        'received_at' => time()
+                    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+                }
+            } catch (Throwable $e) { /* ignore */ }
             return [
                 'success' => true,
                 'message' => 'Transaction added to mempool',
@@ -4724,6 +5239,19 @@ function autoMineBlocks($walletManager, array $config): array {
         
         // Mine block
         $blockResult = mineBlock($transactions, $pdo, $config);
+        // Update cached balances for affected addresses after mining
+        try {
+            $addresses = [];
+            foreach ($transactions as $t) {
+                $aFrom = method_exists($t, 'getFrom') ? strtolower($t->getFrom()) : null;
+                $aTo = method_exists($t, 'getTo') ? strtolower($t->getTo()) : null;
+                if ($aFrom) { $addresses[$aFrom] = true; }
+                if ($aTo) { $addresses[$aTo] = true; }
+            }
+            foreach (array_keys($addresses) as $addr) {
+                upsertWalletBalance($pdo, $addr);
+            }
+        } catch (Throwable $e) { /* ignore */ }
         
         return [
             'mined' => true,
@@ -4758,12 +5286,13 @@ function mineBlock(array $transactions, PDO $pdo, array $config): array {
         writeLog("Mining block height $height with " . count($transactions) . " transactions", 'INFO');
         
         // Get original hashes for cleanup
+        $maxCount = count($transactions);
         $stmt = $pdo->prepare("
             SELECT tx_hash FROM mempool 
             ORDER BY priority_score DESC, created_at ASC 
             LIMIT :max_count
         ");
-        $stmt->bindParam(':max_count', count($transactions), PDO::PARAM_INT);
+        $stmt->bindParam(':max_count', $maxCount, PDO::PARAM_INT);
         $stmt->execute();
         $originalHashes = [];
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -4784,7 +5313,14 @@ function mineBlock(array $transactions, PDO $pdo, array $config): array {
         $pos = new \Blockchain\Core\Consensus\ProofOfStake($logger);
         $pos->setValidatorManager($validatorManager);
         
+        // Create block with PoS-specific metadata
         $block = new \Blockchain\Core\Blockchain\Block($height, $transactions, $prevHash, [], []);
+        
+        // Add PoS-specific metadata
+        $block->addMetadata('consensus', 'pos');
+        $block->addMetadata('staking_required', true);
+        $block->addMetadata('validator_block', true);
+        $block->addMetadata('difficulty', '0'); // PoS has no difficulty
         
         // Sign block
         try { 
@@ -4819,6 +5355,622 @@ function mineBlock(array $transactions, PDO $pdo, array $config): array {
     } catch (Exception $e) {
         writeLog("Error mining block: " . $e->getMessage(), 'ERROR');
         throw $e;
+    }
+}
+
+/**
+ * Get network topology information
+ */
+function getNetworkTopology($walletManager): array {
+    try {
+        $pdo = $walletManager->getDatabase();
+        
+        // Get current node ID
+        $currentNodeId = getCurrentNodeId($pdo);
+        
+        // Get all active nodes from existing nodes table
+        $stmt = $pdo->prepare("SELECT node_id as id, ip_address, port, status, last_seen, metadata FROM nodes WHERE status = 'active'");
+        $stmt->execute();
+        $nodes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Process nodes to build URLs from metadata
+        foreach ($nodes as &$node) {
+            $metadata = json_decode($node['metadata'], true) ?: [];
+            $protocol = $metadata['protocol'] ?? 'https';
+            $domain = $metadata['domain'] ?? $node['ip_address'];
+            
+            $node['url'] = $protocol . '://' . $domain;
+            if ($node['port'] !== 80 && $node['port'] !== 443) {
+                $node['url'] .= ':' . $node['port'];
+            }
+        }
+        
+        // Get topology connections
+        $stmt = $pdo->prepare("
+            SELECT source_node_id, target_node_id, connection_strength 
+            FROM network_topology 
+            WHERE ttl_expires_at IS NULL OR ttl_expires_at > NOW()
+        ");
+        $stmt->execute();
+        $connections = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        return [
+            'current_node_id' => $currentNodeId,
+            'nodes' => $nodes,
+            'connections' => $connections,
+            'timestamp' => time()
+        ];
+        
+    } catch (Exception $e) {
+        writeLog('getNetworkTopology error: ' . $e->getMessage(), 'ERROR');
+        return [
+            'success' => false,
+            'error' => $e->getMessage()
+        ];
+    }
+}
+
+/**
+ * Update network topology by querying other nodes
+ */
+function updateNetworkTopology($walletManager): array {
+    try {
+        $pdo = $walletManager->getDatabase();
+        
+        // Check if topology update is needed
+        $config = getNetworkConfigFromDatabase($pdo);
+        $updateInterval = (int)($config['network.topology_update_interval'] ?? 60);
+        $ttl = (int)($config['network.topology_ttl'] ?? 300);
+        
+        // Check last update time
+        $stmt = $pdo->prepare("SELECT MAX(created_at) as last_update FROM network_topology_cache WHERE cache_key = 'topology_update'");
+        $stmt->execute();
+        $lastUpdate = $stmt->fetchColumn();
+        
+        if ($lastUpdate && (time() - strtotime($lastUpdate)) < $updateInterval) {
+            return [
+                'success' => true,
+                'message' => 'Topology update not needed yet',
+                'last_update' => $lastUpdate
+            ];
+        }
+        
+        // Get active nodes from existing nodes table
+        $stmt = $pdo->prepare("SELECT node_id as id, ip_address, port, metadata FROM nodes WHERE status = 'active' AND node_id != ?");
+        $currentNodeId = getCurrentNodeId($pdo);
+        $stmt->execute([$currentNodeId]);
+        $nodes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Process nodes to build URLs from metadata
+        foreach ($nodes as &$node) {
+            $metadata = json_decode($node['metadata'], true) ?: [];
+            $protocol = $metadata['protocol'] ?? 'https';
+            $domain = $metadata['domain'] ?? $node['ip_address'];
+            
+            $node['url'] = $protocol . '://' . $domain;
+            if ($node['port'] !== 80 && $node['port'] !== 443) {
+                $node['url'] .= ':' . $node['port'];
+            }
+        }
+        
+        if (empty($nodes)) {
+            return [
+                'success' => true,
+                'message' => 'No active nodes to query',
+                'nodes_queried' => 0
+            ];
+        }
+        
+        // Query each node for their topology
+        $topologyData = [];
+        $successfulQueries = 0;
+        
+        foreach ($nodes as $node) {
+            try {
+                $response = queryNodeForTopology($node['url'], $node['id']);
+                if ($response['success']) {
+                    $topologyData[$node['id']] = $response['data'];
+                    $successfulQueries++;
+                }
+            } catch (Exception $e) {
+                writeLog("Failed to query node {$node['id']}: " . $e->getMessage(), 'WARNING');
+            }
+        }
+        
+        // Update topology database
+        if (!empty($topologyData)) {
+            updateTopologyDatabase($pdo, $topologyData, $ttl);
+        }
+        
+        // Cache the update
+        $cacheData = [
+            'nodes_queried' => count($nodes),
+            'successful_queries' => $successfulQueries,
+            'topology_data' => $topologyData,
+            'timestamp' => time()
+        ];
+        
+        $stmt = $pdo->prepare("
+            INSERT INTO network_topology_cache (cache_key, cache_data, expires_at) 
+            VALUES ('topology_update', ?, DATE_ADD(NOW(), INTERVAL ? SECOND))
+            ON DUPLICATE KEY UPDATE cache_data = VALUES(cache_data), expires_at = VALUES(expires_at)
+        ");
+        $stmt->execute([json_encode($cacheData), $ttl]);
+        
+        return [
+            'success' => true,
+            'nodes_queried' => count($nodes),
+            'successful_queries' => $successfulQueries,
+            'topology_updated' => true
+        ];
+        
+    } catch (Exception $e) {
+        writeLog('updateNetworkTopology error: ' . $e->getMessage(), 'ERROR');
+        return [
+            'success' => false,
+            'error' => $e->getMessage()
+        ];
+    }
+}
+
+/**
+ * Ensure network topology cache is fresh (TTL not expired); if expired triggers update.
+ * Returns array with keys: fresh(bool), updated(bool), last_update(?string), reason(string)
+ */
+function ensureFreshTopology($walletManager): array {
+    try {
+        $pdo = $walletManager->getDatabase();
+        $config = getNetworkConfigFromDatabase($pdo);
+        $ttl = (int)($config['network.topology_ttl'] ?? 300); // seconds
+        $now = time();
+
+        // Read cache entry
+        $stmt = $pdo->prepare("SELECT cache_data, expires_at, updated_at FROM network_topology_cache WHERE cache_key = 'topology_update' LIMIT 1");
+        $stmt->execute();
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($row) {
+            $expiresAt = strtotime($row['expires_at'] ?? '') ?: 0;
+            if ($expiresAt > $now) {
+                // Still valid
+                return [
+                    'success' => true,
+                    'fresh' => true,
+                    'updated' => false,
+                    'last_update' => $row['updated_at'] ?? null,
+                    'reason' => 'cache_valid'
+                ];
+            }
+        }
+
+        // Expired or missing -> update
+        writeLog('Topology cache stale or missing, performing update before broadcast', 'INFO');
+        $res = updateNetworkTopology($walletManager);
+        return [
+            'success' => $res['success'] ?? false,
+            'fresh' => true,
+            'updated' => true,
+            'last_update' => date('Y-m-d H:i:s'),
+            'reason' => 'cache_refreshed'
+        ];
+    } catch (Throwable $e) {
+        writeLog('ensureFreshTopology error: ' . $e->getMessage(), 'ERROR');
+        return [
+            'success' => false,
+            'fresh' => false,
+            'updated' => false,
+            'reason' => 'exception:' . $e->getMessage()
+        ];
+    }
+}
+
+/**
+ * Select optimal nodes for broadcasting based on network topology
+ */
+function selectOptimalBroadcastNodes($walletManager, string $transactionHash, int $batchSize = 10): array {
+    try {
+        $pdo = $walletManager->getDatabase();
+        
+        // Get configuration
+        $config = getNetworkConfigFromDatabase($pdo);
+        $maxConnections = (int)($config['network.max_connections_per_node'] ?? 20);
+        
+        // Get current node ID
+        $currentNodeId = getCurrentNodeId($pdo);
+        
+        // Get nodes with best connectivity (most connections to other nodes)
+        $stmt = $pdo->prepare("
+            SELECT 
+                n.node_id as id,
+                n.ip_address,
+                n.port,
+                n.status,
+                n.metadata,
+                COUNT(t.target_node_id) as connection_count,
+                AVG(t.connection_strength) as avg_strength
+            FROM nodes n
+            LEFT JOIN network_topology t ON n.node_id = t.source_node_id
+            WHERE n.status = 'active' 
+            AND n.node_id != ?
+            AND (t.ttl_expires_at IS NULL OR t.ttl_expires_at > NOW())
+            GROUP BY n.node_id, n.ip_address, n.port, n.status, n.metadata
+            ORDER BY connection_count DESC, avg_strength DESC
+            LIMIT ?
+        ");
+        $stmt->execute([$currentNodeId, $batchSize]);
+        $optimalNodes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Process nodes to build URLs from metadata
+        foreach ($optimalNodes as &$node) {
+            $metadata = json_decode($node['metadata'], true) ?: [];
+            $protocol = $metadata['protocol'] ?? 'https';
+            $domain = $metadata['domain'] ?? $node['ip_address'];
+            
+            $node['url'] = $protocol . '://' . $domain;
+            if ($node['port'] !== 80 && $node['port'] !== 443) {
+                $node['url'] .= ':' . $node['port'];
+            }
+        }
+        
+        // If not enough nodes with connections, add random active nodes
+        if (count($optimalNodes) < $batchSize) {
+            $additionalCount = $batchSize - count($optimalNodes);
+            
+            // Build SQL query dynamically based on existing nodes
+            if (count($optimalNodes) > 0) {
+                // Build NOT IN clause for existing nodes
+                $placeholders = str_repeat('?,', max(0, count($optimalNodes) - 1)) . '?';
+                $sql = "SELECT node_id as id, ip_address, port, status, metadata FROM nodes WHERE status = 'active' AND node_id != ? AND node_id NOT IN ($placeholders) ORDER BY RAND() LIMIT $additionalCount";
+                $params = [$currentNodeId];
+                foreach ($optimalNodes as $node) {
+                    $params[] = $node['id'];
+                }
+            } else {
+                // No existing nodes, just exclude current node
+                $sql = "SELECT node_id as id, ip_address, port, status, metadata FROM nodes WHERE status = 'active' AND node_id != ? ORDER BY RAND() LIMIT $additionalCount";
+                $params = [$currentNodeId];
+            }
+            
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            $additionalNodes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Process additional nodes to build URLs
+            foreach ($additionalNodes as &$node) {
+                $metadata = json_decode($node['metadata'], true) ?: [];
+                $protocol = $metadata['protocol'] ?? 'https';
+                $domain = $metadata['domain'] ?? $node['ip_address'];
+                
+                $node['url'] = $protocol . '://' . $domain;
+                if ($node['port'] !== 80 && $node['port'] !== 443) {
+                    $node['url'] .= ':' . $node['port'];
+                }
+            }
+            
+            $optimalNodes = array_merge($optimalNodes, $additionalNodes);
+        }
+        
+        // Prepare broadcast instructions for each node
+        $broadcastInstructions = [];
+        foreach ($optimalNodes as $node) {
+            // Get nodes that this node can reach (excluding already selected ones)
+            if (count($optimalNodes) > 1) {
+                // Build NOT IN clause for other selected nodes
+                $otherNodes = [];
+                foreach ($optimalNodes as $selectedNode) {
+                    if ($selectedNode['id'] !== $node['id']) {
+                        $otherNodes[] = $selectedNode['id'];
+                    }
+                }
+                
+                if (!empty($otherNodes)) {
+                    $placeholders = str_repeat('?,', max(0, count($otherNodes) - 1)) . '?';
+                    $sql = "SELECT target_node_id FROM network_topology WHERE source_node_id = ? AND target_node_id NOT IN ($placeholders) AND (ttl_expires_at IS NULL OR ttl_expires_at > NOW()) LIMIT $maxConnections";
+                    $params = [$node['id']];
+                    foreach ($otherNodes as $otherNodeId) {
+                        $params[] = $otherNodeId;
+                    }
+                } else {
+                    $sql = "SELECT target_node_id FROM network_topology WHERE source_node_id = ? AND (ttl_expires_at IS NULL OR ttl_expires_at > NOW()) LIMIT $maxConnections";
+                    $params = [$node['id']];
+                }
+            } else {
+                $sql = "SELECT target_node_id FROM network_topology WHERE source_node_id = ? AND (ttl_expires_at IS NULL OR ttl_expires_at > NOW()) LIMIT $maxConnections";
+                $params = [$node['id']];
+            }
+            
+            $stmt = $pdo->prepare($sql);
+            
+            $stmt->execute($params);
+            $reachableNodes = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            
+            $broadcastInstructions[$node['id']] = [
+                'url' => $node['url'],
+                'status' => $node['status'],
+                'connection_count' => $node['connection_count'] ?? 0,
+                'reachable_nodes' => $reachableNodes,
+                'broadcast_to' => array_slice($reachableNodes, 0, $maxConnections)
+            ];
+        }
+        
+        return [
+            'success' => true,
+            'transaction_hash' => $transactionHash,
+            'selected_nodes' => $optimalNodes,
+            'broadcast_instructions' => $broadcastInstructions,
+            'total_coverage' => count(array_unique(array_merge(...array_column($broadcastInstructions, 'reachable_nodes'))))
+        ];
+        
+    } catch (Exception $e) {
+        writeLog('selectOptimalBroadcastNodes error: ' . $e->getMessage(), 'ERROR');
+        return [
+            'success' => false,
+            'error' => $e->getMessage()
+        ];
+    }
+}
+
+/**
+ * Query a specific node for its topology information
+ */
+function queryNodeForTopology(string $nodeUrl, string $nodeId): array {
+    try {
+        $url = rtrim($nodeUrl, '/') . '/wallet/wallet_api.php';
+        
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode([
+                'action' => 'listnodes'
+            ]),
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'User-Agent: BlockchainNode/2.0'
+            ],
+            CURLOPT_TIMEOUT => 10,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_SSL_VERIFYPEER => false
+        ]);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        if ($httpCode !== 200 || !$response) {
+            throw new Exception("HTTP $httpCode or empty response from $nodeId");
+        }
+        
+        $data = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            throw new Exception("Invalid JSON response from $nodeId");
+        }
+        
+        // Extract node information and create connections
+        $nodeInfo = $data['data'] ?? $data;
+        $connections = [];
+        
+        // Create connections to other active nodes
+        if (isset($nodeInfo['nodes']) && is_array($nodeInfo['nodes'])) {
+            foreach ($nodeInfo['nodes'] as $otherNode) {
+                if (isset($otherNode['id']) && $otherNode['id'] !== $nodeId) {
+                    $connections[] = [
+                        'target_node_id' => $otherNode['id'],
+                        'connection_strength' => 1, // Base strength for PoS network
+                        'connection_type' => 'pos_peer',
+                        'last_seen' => $otherNode['last_seen'] ?? date('Y-m-d H:i:s')
+                    ];
+                }
+            }
+        }
+        
+        return [
+            'success' => true,
+            'data' => [
+                'current_node_id' => $nodeId,
+                'nodes' => $nodeInfo['nodes'] ?? [],
+                'connections' => $connections,
+                'timestamp' => time()
+            ]
+        ];
+        
+    } catch (Exception $e) {
+        return [
+            'success' => false,
+            'error' => $e->getMessage()
+        ];
+    }
+}
+
+/**
+ * Update topology database with collected information
+ */
+function updateTopologyDatabase(PDO $pdo, array $topologyData, int $ttl): void {
+    try {
+        $pdo->beginTransaction();
+        
+        // Clear old expired entries
+        $stmt = $pdo->prepare("DELETE FROM network_topology WHERE ttl_expires_at < NOW()");
+        $stmt->execute();
+        
+        // Insert new topology data for PoS network
+        $stmt = $pdo->prepare("
+            INSERT INTO network_topology (source_node_id, target_node_id, connection_strength, connection_type, ttl_expires_at)
+            VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL ? SECOND))
+            ON DUPLICATE KEY UPDATE 
+                connection_strength = VALUES(connection_strength),
+                connection_type = VALUES(connection_type),
+                last_updated = NOW(),
+                ttl_expires_at = VALUES(ttl_expires_at)
+        ");
+        
+        foreach ($topologyData as $sourceNodeId => $nodeData) {
+            if (isset($nodeData['connections']) && is_array($nodeData['connections'])) {
+                foreach ($nodeData['connections'] as $connection) {
+                    if (isset($connection['target_node_id'])) {
+                        $stmt->execute([
+                            $sourceNodeId,
+                            $connection['target_node_id'],
+                            $connection['connection_strength'] ?? 1,
+                            $connection['connection_type'] ?? 'pos_peer',
+                            $ttl
+                        ]);
+                    }
+                }
+            }
+        }
+        
+        $pdo->commit();
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+}
+
+/**
+ * Process broadcast instructions to forward transactions to other nodes
+ */
+function processBroadcastInstructions(PDO $pdo, array $transaction, array $broadcastInstructions): array {
+    try {
+        $config = getNetworkConfigFromDatabase($pdo);
+        $timeout = $config['broadcast.timeout'] ?? 10;
+        $maxConnections = (int)($config['network.max_connections_per_node'] ?? 20);
+        
+        if (empty($broadcastInstructions['reachable_nodes'])) {
+            return [
+                'success' => true,
+                'message' => 'No additional nodes to forward to',
+                'nodes_contacted' => 0
+            ];
+        }
+        
+        // Get node information for reachable nodes
+        $reachableNodeIds = array_slice($broadcastInstructions['reachable_nodes'], 0, $maxConnections);
+        $placeholders = str_repeat('?,', count($reachableNodeIds) - 1) . '?';
+        
+        $stmt = $pdo->prepare("SELECT node_id as id, ip_address, port, metadata FROM nodes WHERE node_id IN ($placeholders) AND status = 'active'");
+        $stmt->execute($reachableNodeIds);
+        $nodesToContact = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Process nodes to build URLs from metadata
+        foreach ($nodesToContact as &$node) {
+            $metadata = json_decode($node['metadata'], true) ?: [];
+            $protocol = $metadata['protocol'] ?? 'https';
+            $domain = $metadata['domain'] ?? $node['ip_address'];
+            
+            $node['url'] = $protocol . '://' . $domain;
+            if ($node['port'] !== 80 && $node['port'] !== 443) {
+                $node['url'] .= ':' . $node['port'];
+            }
+        }
+        
+        if (empty($nodesToContact)) {
+            return [
+                'success' => true,
+                'message' => 'No active nodes found for forwarding',
+                'nodes_contacted' => 0
+            ];
+        }
+        
+        // Forward transaction to additional nodes
+        $successful = 0;
+        $failed = 0;
+        
+        foreach ($nodesToContact as $node) {
+            try {
+                $response = forwardTransactionToNode($node['url'], $transaction, $timeout);
+                if ($response['success']) {
+                    $successful++;
+                    writeLog("Successfully forwarded transaction to node {$node['id']}", 'INFO');
+                } else {
+                    $failed++;
+                    writeLog("Failed to forward transaction to node {$node['id']}: " . ($response['error'] ?? 'Unknown error'), 'WARNING');
+                }
+            } catch (Exception $e) {
+                $failed++;
+                writeLog("Exception forwarding to node {$node['id']}: " . $e->getMessage(), 'ERROR');
+            }
+        }
+        
+        return [
+            'success' => $successful > 0,
+            'nodes_contacted' => count($nodesToContact),
+            'successful_forwards' => $successful,
+            'failed_forwards' => $failed,
+            'total_reachable' => count($broadcastInstructions['reachable_nodes'])
+        ];
+        
+    } catch (Exception $e) {
+        writeLog('processBroadcastInstructions error: ' . $e->getMessage(), 'ERROR');
+        return [
+            'success' => false,
+            'error' => $e->getMessage(),
+            'nodes_contacted' => 0
+        ];
+    }
+}
+
+/**
+ * Forward transaction to a specific node
+ */
+function forwardTransactionToNode(string $nodeUrl, array $transaction, int $timeout): array {
+    try {
+        $url = rtrim($nodeUrl, '/') . '/wallet/wallet_api.php';
+        
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode([
+                'action' => 'broadcast_transaction',
+                'transaction' => $transaction,
+                'source_node' => getCurrentNodeId(new PDO('mysql:host=localhost;dbname=blockchain', 'blockchain', 'blockchain123')),
+                'timestamp' => time(),
+                'forwarded' => true
+            ]),
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'User-Agent: BlockchainNode/2.0'
+            ],
+            CURLOPT_TIMEOUT => $timeout,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_SSL_VERIFYPEER => false
+        ]);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        if ($httpCode !== 200 || !$response) {
+            return [
+                'success' => false,
+                'error' => "HTTP $httpCode or empty response"
+            ];
+        }
+        
+        $data = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            return [
+                'success' => false,
+                'error' => 'Invalid JSON response'
+            ];
+        }
+        
+        return [
+            'success' => true,
+            'response' => $data
+        ];
+        
+    } catch (Exception $e) {
+        return [
+            'success' => false,
+            'error' => $e->getMessage()
+        ];
     }
 }
 

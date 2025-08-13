@@ -19,6 +19,7 @@ return array (
   ),
   'blockchain' => 
   array (
+    'name' => 'Blockchain',
     'genesis_created' => true,
     'last_block_check' => 1754914609,
     'binary_storage' => 

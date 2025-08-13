@@ -769,7 +769,9 @@ class WalletBlockchainManager
                 'wallet_block' => true,
                 'nonce' => $nonce,
                 'created_by' => 'WalletBlockchainManager',
-                'validator_manager_used' => $this->validatorManager !== null
+                'validator_manager_used' => $this->validatorManager !== null,
+                'consensus' => 'pos',
+                'staking_required' => true
             ]);
             
             \WalletLogger::debug("Saving block to database - hash: $hash, validator: $validatorAddress, height: $index");

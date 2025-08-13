@@ -45,7 +45,7 @@ class Block implements BlockInterface
         $this->nonce = 0;
         $this->gasUsed = 0;
         $this->gasLimit = 8000000; // 8M gas limit
-        $this->difficulty = '0000'; // Initial difficulty
+        $this->difficulty = '0'; // PoS network - no difficulty mining
         $this->smartContractResults = [];
         $this->metadata = [];
         

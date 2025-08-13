@@ -659,28 +659,20 @@ class NodeHealthMonitor
     {
         try {
             $stmt = $this->database->query("
-                SELECT node_id as id, ip_address, port, status, metadata
+                SELECT node_id as id, url, status 
                 FROM nodes 
                 WHERE status != 'disabled'
                 ORDER BY last_seen DESC
             ");
             $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
             foreach ($rows as &$row) {
-                // Build URL from ip_address and port
-                $host = $row['ip_address'] ?? 'localhost';
+                // legacy schema may not have ip_address/port columns, keep fallback
+                $host = $row['ip_address'] ?? ($row['url'] ?? 'localhost');
                 $port = isset($row['port']) ? (int)$row['port'] : 80;
                 $scheme = 'http';
                 $defaultPort = $scheme === 'https' ? 443 : 80;
-                
-                // Create URL field for compatibility
-                $row['url'] = $scheme . '://' . $host . ($port !== $defaultPort ? ':' . $port : '');
-                
-                // Add ip_address and port fields if not present
-                if (!isset($row['ip_address'])) {
-                    $row['ip_address'] = $host;
-                }
-                if (!isset($row['port'])) {
-                    $row['port'] = $port;
+                if (!isset($row['url']) || strpos($row['url'], 'http') !== 0) {
+                    $row['url'] = $scheme . '://' . $host . ($port !== $defaultPort ? ':' . $port : '');
                 }
             }
             return $rows;
