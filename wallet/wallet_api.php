@@ -1045,13 +1045,14 @@ function stakeTokens($walletManager, $address, $amount, $period, $privateKey) {
         ");
         $stmt->execute([$newBalance, $address]);
         
-        // Add staking record
+        // Add staking record with contract address
         $stmt = $pdo->prepare("
-            INSERT INTO staking (staker, amount, status, start_block, validator)
-            VALUES (?, ?, 'active', ?, ?)
+            INSERT INTO staking (staker, amount, status, start_block, validator, contract_address)
+            VALUES (?, ?, 'active', ?, ?, ?)
         ");
         $currentBlock = getCurrentBlockHeight($pdo);
-        $stmt->execute([$address, $amount, $currentBlock, $address]);
+        $contractAddress = $contractAddresses['staking'] ?? null;
+        $stmt->execute([$address, $amount, $currentBlock, $address, $contractAddress]);
         
         // Record staking transaction using public method
         try {

@@ -252,12 +252,14 @@ class Migration
                 status ENUM('active', 'pending_withdrawal', 'withdrawn') NOT NULL DEFAULT 'active',
                 rewards_earned DECIMAL(20,8) NOT NULL DEFAULT 0,
                 last_reward_block BIGINT NOT NULL DEFAULT 0,
+                contract_address VARCHAR(42) DEFAULT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_validator (validator),
                 INDEX idx_staker (staker),
                 INDEX idx_status (status),
-                INDEX idx_start_block (start_block)
+                INDEX idx_start_block (start_block),
+                INDEX idx_contract_address (contract_address)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             
             -- Validators table
