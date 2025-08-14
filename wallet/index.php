@@ -2957,15 +2957,54 @@ function getLanguageOptions($currentLang) {
             }
         }
         
+        // Try to resolve public key for given private key from current session or local storage
+        function getPublicKeyForPrivateKey(privateKey) {
+            try {
+                if (currentWalletData && currentWalletData.private_key === privateKey && currentWalletData.public_key) {
+                    return currentWalletData.public_key;
+                }
+                const myWallets = JSON.parse(localStorage.getItem('myWallets') || '[]');
+                // Some records may store key as private_key, others as privateKey; also try to match by address if available
+                for (const w of myWallets) {
+                    if ((w.private_key && w.private_key === privateKey) || (w.privateKey && w.privateKey === privateKey)) {
+                        if (w.public_key) return w.public_key;
+                    }
+                }
+            } catch (e) {
+                console.warn('getPublicKeyForPrivateKey error:', e);
+            }
+            return null;
+        }
+
+        // Ensure encrypted_message JSON contains recipient_public_key to improve legacy compatibility
+        function prepareEncryptedMessageWithRecipientKey(encryptedMessageJson, privateKey) {
+            try {
+                const obj = typeof encryptedMessageJson === 'string' ? JSON.parse(encryptedMessageJson) : encryptedMessageJson;
+                if (obj && obj.encrypted_data && typeof obj.encrypted_data === 'object') {
+                    if (!obj.encrypted_data.recipient_public_key) {
+                        const pub = getPublicKeyForPrivateKey(privateKey);
+                        if (pub) {
+                            obj.encrypted_data.recipient_public_key = pub;
+                        }
+                    }
+                }
+                return JSON.stringify(obj);
+            } catch (e) {
+                console.warn('prepareEncryptedMessageWithRecipientKey failed, sending original payload:', e);
+                return encryptedMessageJson;
+            }
+        }
+
         // Try to decrypt message with given private key
         async function tryDecryptWithKey(encryptedMessageJson, privateKey) {
             try {
+                const preparedEncrypted = prepareEncryptedMessageWithRecipientKey(encryptedMessageJson, privateKey);
                 const response = await fetch('wallet_api.php', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         action: 'decrypt_message',
-                        encrypted_message: encryptedMessageJson,
+                        encrypted_message: preparedEncrypted,
                         private_key: privateKey
                     })
                 });
@@ -3047,12 +3086,13 @@ function getLanguageOptions($currentLang) {
             buttonElement.disabled = true;
             
             try {
+        const preparedEncrypted = prepareEncryptedMessageWithRecipientKey(encryptedMessageJson, privateKey);
                 const response = await fetch('wallet_api.php', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         action: 'decrypt_message',
-                        encrypted_message: encryptedMessageJson,
+            encrypted_message: preparedEncrypted,
                         private_key: privateKey
                     })
                 });
@@ -3125,12 +3165,13 @@ function getLanguageOptions($currentLang) {
             decryptButton.disabled = true;
             
             try {
+        const preparedEncrypted = prepareEncryptedMessageWithRecipientKey(JSON.stringify(window.currentEncryptedMessage), privateKey);
                 const response = await fetch('wallet_api.php', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         action: 'decrypt_message',
-                        encrypted_message: JSON.stringify(window.currentEncryptedMessage),
+            encrypted_message: preparedEncrypted,
                         private_key: privateKey
                     })
                 });

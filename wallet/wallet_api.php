@@ -74,9 +74,48 @@ if (!defined('WALLET_API_EARLY_LOGGED')) {
         $timestamp = date('Y-m-d H:i:s');
         $line1 = "[{$timestamp}] [REQUEST] [{$reqId}] {$method} {$uri} from {$ip}";
         @file_put_contents($logFile, $line1 . PHP_EOL, FILE_APPEND | LOCK_EX);
-        if ($method === 'POST' && !empty($rawBodyEarly)) {
-            $bodyPreview = substr($rawBodyEarly, 0, 1000); // Increased from 200 to 1000
-            $line2 = "[{$timestamp}] [REQUEST] [{$reqId}] body: {$bodyPreview}";
+        // Secure body logging: disabled by default. Enable via header X-Log-Body: true or env WALLET_API_LOG_BODY=1.
+        $logBodyAllowed = false;
+        $hdr = $_SERVER['HTTP_X_LOG_BODY'] ?? '';
+        if (is_string($hdr)) {
+            $v = strtolower(trim($hdr));
+            $logBodyAllowed = in_array($v, ['1','true','yes','on'], true);
+        }
+        if (!$logBodyAllowed) {
+            $envToggle = getenv('WALLET_API_LOG_BODY');
+            if ($envToggle !== false) {
+                $v = strtolower(trim((string)$envToggle));
+                $logBodyAllowed = in_array($v, ['1','true','yes','on'], true);
+            }
+        }
+        if ($logBodyAllowed && $method === 'POST' && !empty($rawBodyEarly)) {
+            // Try to safely mask sensitive fields in JSON
+            $bodyPreview = '';
+            $decoded = json_decode($rawBodyEarly, true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                $maskKeys = ['private_key','password','mnemonic','seed','signature'];
+                $walker = function(&$arr) use (&$walker, $maskKeys) {
+                    foreach ($arr as $k => &$v) {
+                        if (in_array((string)$k, $maskKeys, true) && (is_string($v) || is_numeric($v))) {
+                            $v = '***';
+                        } elseif (is_array($v)) {
+                            $walker($v);
+                        }
+                    }
+                };
+                $walker($decoded);
+                $bodyPreview = substr(json_encode($decoded, JSON_UNESCAPED_SLASHES), 0, 1000);
+            } else {
+                // Fallback: regex mask common secrets in raw text
+                $masked = preg_replace(
+                    '/("?(private_key|password|mnemonic|seed|signature)"?\s*:\s*")([^"]+)(")/i',
+                    '$1***$4',
+                    $rawBodyEarly
+                );
+                $bodyPreview = substr((string)$masked, 0, 1000);
+            }
+            $len = strlen($rawBodyEarly);
+            $line2 = "[{$timestamp}] [REQUEST] [{$reqId}] body_len={$len} body_preview: {$bodyPreview}";
             @file_put_contents($logFile, $line2 . PHP_EOL, FILE_APPEND | LOCK_EX);
         }
     } catch (\Throwable $e) {
@@ -222,11 +261,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
     // Log incoming request
     writeLog("[$requestId] $method $uri from $ip");
     
-    // Log POST body preview (first 200 chars, no sensitive data)
-    if ($method === 'POST' && !empty($rawBody)) {
-        $bodyPreview = substr($rawBody, 0, 200);
-        writeLog("[$requestId] POST body: $bodyPreview");
-    }
+    // Avoid logging raw POST body here to prevent accidental leakage. Early logger handles optional masked logging.
 
     // Support clean /rpc alias via PATH_INFO or URL ending with /rpc
     $pathInfo = $_SERVER['PATH_INFO'] ?? '';
@@ -628,11 +663,27 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             $encryptedMessage = $input['encrypted_message'] ?? '';
             $privateKey = $input['private_key'] ?? '';
             $senderPublicKey = $input['sender_public_key'] ?? '';
-            
+
             if (!$encryptedMessage || !$privateKey) {
                 throw new Exception('Encrypted message and private key are required');
             }
-            
+
+            // Server-side compatibility: inject recipient_public_key if missing
+            try {
+                $secureObj = json_decode($encryptedMessage, true);
+                if (json_last_error() === JSON_ERROR_NONE && is_array($secureObj) && isset($secureObj['encrypted_data']) && is_array($secureObj['encrypted_data'])) {
+                    $enc =& $secureObj['encrypted_data'];
+                    if (empty($enc['recipient_public_key'])) {
+                        // Derive recipient public key from provided private key
+                        $kp = \Blockchain\Core\Cryptography\KeyPair::fromPrivateKey(str_replace('0x','',$privateKey));
+                        $enc['recipient_public_key'] = $kp->getPublicKey();
+                        $encryptedMessage = json_encode($secureObj);
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Best-effort; proceed without modification
+            }
+
             $result = decryptMessage($encryptedMessage, $privateKey, $senderPublicKey);
             break;
             

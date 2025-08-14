@@ -28,6 +28,15 @@ class MessageEncryption
             throw new Exception('Invalid secp256k1 public key format');
         }
         
+        // Normalize recipient public key to compressed format to keep KDF deterministic
+        // If provided in uncompressed form (04 || X(32B) || Y(32B)), compress it to 02/03 || X
+        if (strlen($recipientPublicKeyHex) === 130 && substr($recipientPublicKeyHex, 0, 2) === '04') {
+            $x = substr($recipientPublicKeyHex, 2, 64);
+            $y = substr($recipientPublicKeyHex, 66, 64);
+            $yParity = hexdec(substr($y, -2));
+            $recipientPublicKeyHex = (($yParity % 2 === 0) ? '02' : '03') . $x;
+        }
+        
         // Generate ephemeral key pair
         $ephemeralPrivateKey = bin2hex(random_bytes(32));
         $ephemeralPublicKeyPoint = EllipticCurve::generatePublicKey($ephemeralPrivateKey);
@@ -92,9 +101,21 @@ class MessageEncryption
         $iv = base64_decode($encryptedData['iv']);
         $mac = base64_decode($encryptedData['mac']);
         
-        // Derive recipient public key from recipient private key
+        // Derive recipient public key from recipient private key (default)
         $recipientPublicKeyPoint = EllipticCurve::generatePublicKey($recipientPrivateKeyHex);
         $recipientPublicKeyHex = EllipticCurve::compressPublicKey($recipientPublicKeyPoint);
+        // Allow passing explicit recipient public key(s) for compatibility with legacy encryptors
+        $explicitRecipientKeys = [];
+        if (isset($encryptedData['recipient_public_key']) && is_string($encryptedData['recipient_public_key'])) {
+            $explicitRecipientKeys[] = str_replace('0x', '', $encryptedData['recipient_public_key']);
+        }
+        if (isset($encryptedData['recipient_public_key_candidates']) && is_array($encryptedData['recipient_public_key_candidates'])) {
+            foreach ($encryptedData['recipient_public_key_candidates'] as $cand) {
+                if (is_string($cand) && $cand !== '') {
+                    $explicitRecipientKeys[] = str_replace('0x', '', $cand);
+                }
+            }
+        }
         
         // Create shared secret using the same approach as during encryption:
         // Use both public keys in lexicographic order
@@ -104,18 +125,147 @@ class MessageEncryption
         $sharedSecret = hash('sha256', hex2bin($keyMaterial), true);
         $sharedSecretHex = bin2hex($sharedSecret);
         
-        // Derive keys
+        // Derive keys (primary path)
         $encryptionKey = self::deriveKey($sharedSecretHex, 'encryption');
         $macKey = self::deriveKey($sharedSecretHex, 'authentication');
-        
-        // Verify MAC
+
+        // Common AAD for MAC
         $dataToMac = $ephemeralPublicKeyHex . bin2hex($iv) . bin2hex($encryptedMessage);
         $expectedMac = hash_hmac('sha256', hex2bin($dataToMac), $macKey, true);
-        
+
+        // If MAC fails, try compatibility variants (uncompressed key and unsorted concatenations)
         if (!hash_equals($mac, $expectedMac)) {
-            throw new Exception('MAC verification failed - message may be tampered');
+            $recipientCompressed = $recipientPublicKeyHex;
+            $recipientUncompressed = '04' . $recipientPublicKeyPoint['x'] . $recipientPublicKeyPoint['y'];
+            $candidateKeys = [$recipientCompressed, $recipientUncompressed];
+            // Merge in any explicitly provided recipient keys
+            foreach ($explicitRecipientKeys as $ek) {
+                if (!in_array($ek, $candidateKeys, true)) {
+                    $candidateKeys[] = $ek;
+                }
+                // If provided in compressed form (66), also add synthetic uncompressed using our fallback Y (best-effort)
+                if (strlen($ek) === 66 && (substr($ek,0,2)==='02' || substr($ek,0,2)==='03')) {
+                    $candidateKeys[] = '04' . substr($ek, 2) . $recipientPublicKeyPoint['y'];
+                }
+            }
+
+            $aadHex = $ephemeralPublicKeyHex . bin2hex($iv) . bin2hex($encryptedMessage); // текущий формат
+            $aadRaw = hex2bin($ephemeralPublicKeyHex) . $iv . $encryptedMessage; // возможный наследный формат
+
+            $found = false;
+            $encKeyCandidate = null;
+
+            foreach ($candidateKeys as $rk) {
+                // Перебор способов построения материала:
+                $materials = [];
+                $sorted = [$rk, $ephemeralPublicKeyHex]; sort($sorted); $materials[] = implode('', $sorted);
+                $materials[] = $rk . $ephemeralPublicKeyHex;
+                $materials[] = $ephemeralPublicKeyHex . $rk;
+
+                foreach ($materials as $material) {
+                    // Вариант A: sha256(hex2bin(material))
+                    $sharedA = hash('sha256', hex2bin($material), true);
+                    $sharedAHex = bin2hex($sharedA);
+                    $macKeyA = self::deriveKey($sharedAHex, 'authentication');
+                    $encKeyA = self::deriveKey($sharedAHex, 'encryption');
+
+                    // Перебор всех комбинаций AAD: порядок + кодировка + алгоритм + ключ
+                    $aadParts = [
+                        [$ephemeralPublicKeyHex, bin2hex($iv), bin2hex($encryptedMessage)],
+                        [$ephemeralPublicKeyHex, bin2hex($encryptedMessage), bin2hex($iv)],
+                        [bin2hex($iv), $ephemeralPublicKeyHex, bin2hex($encryptedMessage)],
+                        [bin2hex($iv), bin2hex($encryptedMessage), $ephemeralPublicKeyHex],
+                        [bin2hex($encryptedMessage), $ephemeralPublicKeyHex, bin2hex($iv)],
+                        [bin2hex($encryptedMessage), bin2hex($iv), $ephemeralPublicKeyHex],
+                    ];
+
+                    $aadPartsRaw = [
+                        [hex2bin($ephemeralPublicKeyHex), $iv, $encryptedMessage],
+                        [hex2bin($ephemeralPublicKeyHex), $encryptedMessage, $iv],
+                        [$iv, hex2bin($ephemeralPublicKeyHex), $encryptedMessage],
+                        [$iv, $encryptedMessage, hex2bin($ephemeralPublicKeyHex)],
+                        [$encryptedMessage, hex2bin($ephemeralPublicKeyHex), $iv],
+                        [$encryptedMessage, $iv, hex2bin($ephemeralPublicKeyHex)],
+                    ];
+
+                    $algs = ['sha256', 'sha3-256'];
+                    $keys = [ $macKeyA, $encKeyA ];
+
+                    // hex-кодировка
+                    foreach ($aadParts as $parts) {
+                        $aadBytes = hex2bin(implode('', $parts));
+                        foreach ($algs as $alg) {
+                            foreach ($keys as $k) {
+                                $macCalc = hash_hmac($alg, $aadBytes, $k, true);
+                                if (hash_equals($mac, $macCalc)) { $encKeyCandidate = $encKeyA; $found = true; break 4; }
+                            }
+                        }
+                    }
+
+                    // raw-кодировка
+                    foreach ($aadPartsRaw as $partsRaw) {
+                        $aadRawBytes = $partsRaw[0] . $partsRaw[1] . $partsRaw[2];
+                        foreach ($algs as $alg) {
+                            foreach ($keys as $k) {
+                                $macCalc = hash_hmac($alg, $aadRawBytes, $k, true);
+                                if (hash_equals($mac, $macCalc)) { $encKeyCandidate = $encKeyA; $found = true; break 4; }
+                            }
+                        }
+                    }
+
+                    // Вариант B: sha256(material как ascii-hex)
+                    $sharedB = hash('sha256', $material, true);
+                    $sharedBHex = bin2hex($sharedB);
+                    $macKeyB = self::deriveKey($sharedBHex, 'authentication');
+                    $encKeyB = self::deriveKey($sharedBHex, 'encryption');
+
+                    // Повторяем перебор для sharedB
+                    $aadParts = [
+                        [$ephemeralPublicKeyHex, bin2hex($iv), bin2hex($encryptedMessage)],
+                        [$ephemeralPublicKeyHex, bin2hex($encryptedMessage), bin2hex($iv)],
+                        [bin2hex($iv), $ephemeralPublicKeyHex, bin2hex($encryptedMessage)],
+                        [bin2hex($iv), bin2hex($encryptedMessage), $ephemeralPublicKeyHex],
+                        [bin2hex($encryptedMessage), $ephemeralPublicKeyHex, bin2hex($iv)],
+                        [bin2hex($encryptedMessage), bin2hex($iv), $ephemeralPublicKeyHex],
+                    ];
+                    $aadPartsRaw = [
+                        [hex2bin($ephemeralPublicKeyHex), $iv, $encryptedMessage],
+                        [hex2bin($ephemeralPublicKeyHex), $encryptedMessage, $iv],
+                        [$iv, hex2bin($ephemeralPublicKeyHex), $encryptedMessage],
+                        [$iv, $encryptedMessage, hex2bin($ephemeralPublicKeyHex)],
+                        [$encryptedMessage, hex2bin($ephemeralPublicKeyHex), $iv],
+                        [$encryptedMessage, $iv, hex2bin($ephemeralPublicKeyHex)],
+                    ];
+                    $algs = ['sha256', 'sha3-256'];
+                    $keys = [ $macKeyB, $encKeyB ];
+                    foreach ($aadParts as $parts) {
+                        $aadBytes = hex2bin(implode('', $parts));
+                        foreach ($algs as $alg) {
+                            foreach ($keys as $k) {
+                                $macCalc = hash_hmac($alg, $aadBytes, $k, true);
+                                if (hash_equals($mac, $macCalc)) { $encKeyCandidate = $encKeyB; $found = true; break 4; }
+                            }
+                        }
+                    }
+                    foreach ($aadPartsRaw as $partsRaw) {
+                        $aadRawBytes = $partsRaw[0] . $partsRaw[1] . $partsRaw[2];
+                        foreach ($algs as $alg) {
+                            foreach ($keys as $k) {
+                                $macCalc = hash_hmac($alg, $aadRawBytes, $k, true);
+                                if (hash_equals($mac, $macCalc)) { $encKeyCandidate = $encKeyB; $found = true; break 4; }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!$found) {
+                throw new Exception('MAC verification failed - message may be tampered');
+            }
+
+            $encryptionKey = $encKeyCandidate;
         }
-        
+
         // Decrypt message
         $decryptedMessage = openssl_decrypt($encryptedMessage, 'AES-256-CBC', $encryptionKey, OPENSSL_RAW_DATA, $iv);
         
@@ -179,6 +329,14 @@ class MessageEncryption
         if ($length === 66) {
             $prefix = substr($publicKeyHex, 0, 2);
             if ($prefix !== '02' && $prefix !== '03') {
+                return false;
+            }
+        }
+        
+        // Check prefix for uncompressed keys
+        if ($length === 130) {
+            $prefix = substr($publicKeyHex, 0, 2);
+            if ($prefix !== '04') {
                 return false;
             }
         }
