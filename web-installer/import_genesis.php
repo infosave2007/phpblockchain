@@ -46,7 +46,7 @@ try {
     
     // Insert genesis transactions
     foreach ($genesisData['transactions'] as $tx) {
-        $txHash = $tx['hash'] ?? hash('sha256', json_encode($tx));
+        $txHash = '0x' . ($tx['hash'] ?? hash('sha256', json_encode($tx)));
         
         // Check if transaction already exists
         $stmt = $pdo->prepare("SELECT COUNT(*) FROM transactions WHERE hash = ?");

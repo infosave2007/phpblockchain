@@ -22,9 +22,10 @@
         "kornrunner/keccak": "^1.1",
         "kornrunner/secp256k1": "^0.3",
         "monolog/monolog": "^3.0",
+        "psr/log": "^3.0",
         "stephenhill/base58": "^1.1",
         "symfony/console": "^6.4",
-    "symfony/string": "^6.4",
+        "symfony/string": "^6.4",
         "twig/twig": "^3.0",
         "vlucas/phpdotenv": "^5.0"
     },

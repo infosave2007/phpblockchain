@@ -19,6 +19,7 @@ class VirtualMachine
     private array $memory = [];
     private array $logs = [];
     private int $pc = 0; // Program counter
+    private string $returnData = '';
     
     // Opcodes
     private const OPCODES = [
@@ -352,7 +353,10 @@ class VirtualMachine
             case 'LOG0':
                 $offset = $this->pop();
                 $length = $this->pop();
-                $data = substr($this->memory, $offset, $length);
+                $data = '';
+                for ($i = 0; $i < $length; $i++) {
+                    $data .= $this->memory[$offset + $i] ?? chr(0);
+                }
                 $this->logs[] = [
                     'data' => bin2hex($data),
                     'topics' => []
@@ -362,7 +366,10 @@ class VirtualMachine
             case 'RETURN':
                 $offset = $this->pop();
                 $length = $this->pop();
-                $this->returnData = substr($this->memory, $offset, $length);
+                $this->returnData = '';
+                for ($i = 0; $i < $length; $i++) {
+                    $this->returnData .= $this->memory[$offset + $i] ?? chr(0);
+                }
                 return;
                 
             case 'MLOAD':
@@ -472,5 +479,70 @@ class VirtualMachine
     public function getStateChanges(): array
     {
         return $this->state;
+    }
+
+    /**
+     * Execute smart contract function with specific parameters
+     */
+    public function executeFunction(
+        string $code,
+        string $functionName,
+        array $args,
+        array $storage,
+        array $context
+    ): array {
+        $this->reset();
+        
+        try {
+            // Initialize storage
+            $this->state = $storage;
+            
+            // Prepare context with function-specific data
+            $executionContext = array_merge($context, [
+                'function' => $functionName,
+                'args' => $args,
+                'calldata' => $this->encodeCalldata($functionName, $args)
+            ]);
+            
+            // Execute the bytecode
+            $result = $this->execute($code, $executionContext);
+            
+            // Return result with storage updates
+            if ($result['success']) {
+                return [
+                    'success' => true,
+                    'gasUsed' => $result['gasUsed'],
+                    'storage' => $this->state,
+                    'result' => $result['result'],
+                    'logs' => $result['logs'],
+                    'stateChanges' => $result['stateChanges']
+                ];
+            }
+            
+            return $result;
+            
+        } catch (Exception $e) {
+            return [
+                'success' => false,
+                'gasUsed' => $this->gasUsed,
+                'error' => $e->getMessage(),
+                'storage' => $storage,
+                'logs' => $this->logs,
+                'stateChanges' => []
+            ];
+        }
+    }
+
+    /**
+     * Encode function call data (simplified implementation)
+     */
+    private function encodeCalldata(string $functionName, array $args): string
+    {
+        // Simple encoding - in real implementation this would be more sophisticated
+        $data = $functionName;
+        foreach ($args as $arg) {
+            $data .= pack('Q', $arg);
+        }
+        return $data;
     }
 }

@@ -385,11 +385,12 @@ class SmartContractManager
             'ERC20'
         );
 
-        // Staking contract
-        $stakingCode = $this->getStakingTemplate();
+        // Staking contract with configurable duration
+        $stakingCode = $this->getStakingTemplateInternal();
+        $stakingDuration = $this->config['staking']['default_duration'] ?? 30 * 24 * 60 * 60 / 15; // 30 days in blocks (15s blocks) as default
         $results['staking'] = $this->deployContract(
             $stakingCode,
-            [1000, 10], // minimum stake, reward per block
+            [1000, 10, $stakingDuration], // minimum stake, reward per block, duration
             $deployer,
             100000,
             'Staking'
@@ -406,6 +407,14 @@ class SmartContractManager
         );
 
         return $results;
+    }
+
+    /**
+     * Get staking template for testing
+     */
+    public function getStakingTemplate(): string
+    {
+        return $this->getStakingTemplateInternal();
     }
 
     /**
@@ -457,36 +466,165 @@ class SmartContractManager
     /**
      * Staking contract template
      */
-    private function getStakingTemplate(): string
+    private function getStakingTemplateInternal(): string
     {
         return '
         contract Staking {
+            // Configuration
             uint256 public minimumStake;
             uint256 public rewardPerBlock;
+            uint256 public earlyWithdrawalPenalty; // Percentage (e.g., 10 = 10%)
+            uint256 public stakingDuration; // Duration in blocks
             
+            // State tracking
             mapping(address => uint256) public stakes;
             mapping(address => uint256) public rewards;
+            mapping(address => uint256) public stakingStartBlock;
+            mapping(address => bool) public isCompleted;
+            mapping(address => uint256) public lastRewardBlock;
+            mapping(address => uint256) public penaltyAmount;
             
-            constructor(uint256 _minimumStake, uint256 _rewardPerBlock) {
+            // Events
+            event Staked(address indexed user, uint256 amount, uint256 startBlock);
+            event Unstaked(address indexed user, uint256 amount, uint256 penalty);
+            event RewardsClaimed(address indexed user, uint256 amount);
+            event StakingCompleted(address indexed user, uint256 totalRewards);
+            event EarlyWithdrawal(address indexed user, uint256 amount, uint256 penalty);
+            
+            constructor(uint256 _minimumStake, uint256 _rewardPerBlock, uint256 _stakingDuration) {
                 minimumStake = _minimumStake;
                 rewardPerBlock = _rewardPerBlock;
+                earlyWithdrawalPenalty = 10; // 10% penalty
+                stakingDuration = _stakingDuration; // Use provided duration instead of hardcoded 30 days
             }
             
             function stake() public payable {
-                require(msg.value >= minimumStake);
+                require(msg.value >= minimumStake, "Staking amount below minimum");
+                require(!isCompleted[msg.sender], "Staking already completed");
+                
                 stakes[msg.sender] += msg.value;
+                stakingStartBlock[msg.sender] = block.timestamp;
+                lastRewardBlock[msg.sender] = block.timestamp;
+                
+                emit Staked(msg.sender, msg.value, block.timestamp);
             }
             
             function unstake(uint256 _amount) public {
-                require(stakes[msg.sender] >= _amount);
+                require(stakes[msg.sender] >= _amount, "Insufficient staked amount");
+                require(!isCompleted[msg.sender], "Staking already completed");
+                
+                uint256 currentTimestamp = block.timestamp;
+                uint256 stakingTime = currentTimestamp - stakingStartBlock[msg.sender];
+                uint256 expectedDuration = stakingDuration;
+                
+                // Calculate rewards based on actual staking time
+                uint256 calculatedRewards = calculateRewards(msg.sender, stakingTime);
+                
+                // Check for early withdrawal
+                uint256 penalty = 0;
+                if (stakingTime < expectedDuration) {
+                    penalty = (_amount * earlyWithdrawalPenalty) / 100;
+                    penaltyAmount[msg.sender] += penalty;
+                    emit EarlyWithdrawal(msg.sender, _amount, penalty);
+                }
+                
+                // Update stakes
                 stakes[msg.sender] -= _amount;
-                // Send funds back
+                
+                // Mark as completed if unstaking full amount
+                if (stakes[msg.sender] == 0) {
+                    isCompleted[msg.sender] = true;
+                    emit StakingCompleted(msg.sender, calculatedRewards);
+                }
+                
+                emit Unstaked(msg.sender, _amount, penalty);
+                
+                // Send funds back (minus penalty)
+                payable(msg.sender).transfer(_amount - penalty);
             }
             
             function claimRewards() public {
-                uint256 reward = rewards[msg.sender];
+                require(!isCompleted[msg.sender], "Staking already completed");
+                
+                uint256 currentTimestamp = block.timestamp;
+                uint256 stakingTime = currentTimestamp - stakingStartBlock[msg.sender];
+                uint256 calculatedRewards = calculateRewards(msg.sender, stakingTime);
+                
+                require(calculatedRewards > 0, "No rewards to claim");
+                
                 rewards[msg.sender] = 0;
-                // Send reward
+                lastRewardBlock[msg.sender] = currentTimestamp;
+                
+                emit RewardsClaimed(msg.sender, calculatedRewards);
+                
+                // Send rewards
+                payable(msg.sender).transfer(calculatedRewards);
+            }
+            
+            function calculateRewards(address _user, uint256 _stakingTime) internal view returns (uint256) {
+                if (_stakingTime == 0) return 0;
+                
+                uint256 blocksStaked = _stakingTime / 15; // Assuming 15-second blocks
+                uint256 baseRewards = (stakes[_user] * blocksStaked * rewardPerBlock) / 1e18;
+                
+                // Bonus for completing full duration
+                uint256 expectedDuration = stakingDuration;
+                if (_stakingTime >= expectedDuration) {
+                    baseRewards = (baseRewards * 120) / 100; // 20% bonus
+                }
+                
+                return baseRewards;
+            }
+            
+            function checkAndCompleteExpiredStakings() public {
+                // This function can be called by anyone to check for expired stakings
+                for (uint256 i = 0; i < 100; i++) { // Limit to prevent gas issues
+                    address user = address(i); // Simplified - in real implementation would need proper iteration
+                    if (stakes[user] > 0 && !isCompleted[user]) {
+                        uint256 currentTimestamp = block.timestamp;
+                        uint256 stakingTime = currentTimestamp - stakingStartBlock[user];
+                        uint256 expectedDuration = stakingDuration;
+                        
+                        if (stakingTime >= expectedDuration) {
+                            // Auto-complete staking
+                            uint256 calculatedRewards = calculateRewards(user, stakingTime);
+                            isCompleted[user] = true;
+                            
+                            emit StakingCompleted(user, calculatedRewards);
+                            
+                            // Send rewards
+                            payable(user).transfer(calculatedRewards);
+                        }
+                    }
+                }
+            }
+            
+            function getStakingInfo(address _user) public view returns (
+                uint256 stakeAmount,
+                uint256 startTime,
+                uint256 rewards,
+                bool completed,
+                uint256 timeRemaining,
+                uint256 totalRewards
+            ) {
+                stakeAmount = stakes[_user];
+                startTime = stakingStartBlock[_user];
+                rewards = rewards[_user];
+                completed = isCompleted[_user];
+                
+                if (!completed && startTime > 0) {
+                    uint256 currentTimestamp = block.timestamp;
+                    uint256 stakingTime = currentTimestamp - startTime;
+                    uint256 expectedDuration = stakingDuration;
+                    
+                    if (stakingTime < expectedDuration) {
+                        timeRemaining = expectedDuration - stakingTime;
+                    } else {
+                        timeRemaining = 0;
+                    }
+                    
+                    totalRewards = calculateRewards(_user, stakingTime);
+                }
             }
         }';
     }

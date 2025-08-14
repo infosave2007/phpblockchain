@@ -38,6 +38,20 @@ function writeLog($message, $level = 'DEBUG') {
     }
 }
 
+/**
+ * Get current block height from database
+ */
+function getCurrentBlockHeight(PDO $pdo): int
+{
+    try {
+        $stmt = $pdo->query("SELECT MAX(height) as max_height FROM blocks");
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        return (int)($result['max_height'] ?? 0);
+    } catch (Exception $e) {
+        return 0; // Fallback to 0 if query fails
+    }
+}
+
 // Early, dependency-free request logging to guarantee request traces even if later init fails
 // This writes a minimal entry and preserves body/request ID for later use.
 if (!defined('WALLET_API_EARLY_LOGGED')) {
@@ -918,33 +932,163 @@ function getWalletInfo($walletManager, $address) {
 }
 
 /**
- * Stake tokens via WalletManager
+ * Stake tokens via WalletManager with full blockchain integration
  */
 function stakeTokens($walletManager, $address, $amount, $period, $privateKey) {
     try {
-        $result = $walletManager->stake($address, $amount, $privateKey);
+        $pdo = $walletManager->getDatabase();
+        $baseDir = dirname(__DIR__);
         
-        if ($result) {
-            // Fetch updated balances
-            $availableBalance = $walletManager->getAvailableBalance($address);
-            $stakedBalance = $walletManager->getStakedBalance($address);
-            
-            return [
-                'staked' => [
-                    'success' => true,
-                    'amount' => $amount,
-                    'period' => $period,
-                    'new_balances' => [
-                        'available' => $availableBalance,
-                        'staked' => $stakedBalance,
-                        'total' => $availableBalance + $stakedBalance
-                    ]
-                ]
-            ];
-        } else {
-            throw new Exception('Staking operation failed');
+        // Include SmartContractManager for contract deployment
+        require_once $baseDir . '/contracts/SmartContractManager.php';
+        require_once $baseDir . '/core/Storage/StateStorage.php';
+        require_once $baseDir . '/core/SmartContract/VirtualMachine.php';
+        require_once $baseDir . '/core/Logging/NullLogger.php';
+        
+        // Initialize SmartContractManager
+        $stateStorage = new \Blockchain\Core\Storage\StateStorage($pdo);
+        $vm = new \Blockchain\Core\SmartContract\VirtualMachine(3000000); // gas limit
+        $logger = new \Blockchain\Core\Logging\NullLogger();
+        $contractManager = new \Blockchain\Contracts\SmartContractManager($vm, $stateStorage, $logger);
+        
+        // Load config for contract deployment
+        $configFile = $baseDir . '/config/config.php';
+        $config = [];
+        if (file_exists($configFile)) {
+            $config = require $configFile;
         }
+        
+        // Deploy standard contracts (same as genesis installation)
+        writeLog("Deploying standard contracts for wallet staking", 'INFO');
+        $results = $contractManager->deployStandardContracts($address);
+        
+        $contractAddresses = [];
+        foreach ($results as $contractType => $result) {
+            if (!empty($result['success']) && !empty($result['address'])) {
+                $contractAddresses[$contractType] = $result['address'];
+                writeLog("Deployed $contractType contract: " . $result['address'], 'INFO');
+            } else {
+                writeLog("Failed to deploy $contractType contract: " . ($result['error'] ?? 'Unknown error'), 'WARNING');
+            }
+        }
+        
+        // Add validator to ValidatorManager (same as genesis installation)
+        require_once $baseDir . '/core/Consensus/ValidatorManager.php';
+        $validatorManager = new \Blockchain\Core\Consensus\ValidatorManager($pdo, $config);
+        
+        // Create validator record
+        // Get public key from wallet
+        $walletStmt = $pdo->prepare("SELECT public_key FROM wallets WHERE address = ?");
+        $walletStmt->execute([$address]);
+        $wallet = $walletStmt->fetch();
+        $publicKey = $wallet['public_key'] ?? null;
+        
+        if ($publicKey) {
+            $validatorResult = $validatorManager->addValidator($address, $publicKey, (int)$amount);
+            if (!$validatorResult) {
+                writeLog("Failed to add validator: " . ($validatorResult['error'] ?? 'Unknown error'), 'WARNING');
+            } else {
+                writeLog("Added validator: " . $address, 'INFO');
+            }
+        } else {
+            writeLog("Cannot add validator: public key not found for address " . $address, 'WARNING');
+        }
+        
+        // Execute staking transaction through smart contract
+        if (!empty($contractAddresses['staking'])) {
+            $stakingContractAddress = $contractAddresses['staking'];
+            writeLog("Executing staking through contract: " . $stakingContractAddress, 'INFO');
+            
+            // Create staking transaction using existing blockchain manager
+            $blockchainManager = new \Blockchain\Wallet\WalletBlockchainManager($pdo, $config);
+            
+            // Create transaction data for staking
+            $transactionData = [
+                'hash' => '0x' . hash('sha256', 'stake_' . $address . '_' . $amount . '_' . time()),
+                'type' => 'stake',
+                'from' => $address,
+                'to' => $stakingContractAddress,
+                'amount' => $amount,
+                'fee' => 0.0,
+                'timestamp' => time(),
+                'data' => [
+                    'method' => 'stake',
+                    'params' => [
+                        'staker' => $address,
+                        'amount' => $amount,
+                        'period' => $period,
+                        'contract_address' => $stakingContractAddress
+                    ],
+                    'action' => 'stake_tokens'
+                ],
+                'signature' => '', // Will be signed by ValidatorManager
+                'status' => 'pending'
+            ];
+            
+            // Record transaction in blockchain
+            $result = $blockchainManager->recordTransactionInBlockchain($transactionData);
+            
+            if ($result['blockchain_recorded']) {
+                writeLog("Staking transaction recorded in blockchain: " . $result['block']['hash'], 'INFO');
+            } else {
+                writeLog("Failed to record staking transaction in blockchain: " . ($result['error'] ?? 'Unknown error'), 'WARNING');
+            }
+        }
+        
+        // Update wallet balance (subtract staked amount)
+        $availableBalance = $walletManager->getAvailableBalance($address);
+        $newBalance = $availableBalance - $amount;
+        $stmt = $pdo->prepare("
+            UPDATE wallets
+            SET balance = ?, updated_at = NOW()
+            WHERE address = ?
+        ");
+        $stmt->execute([$newBalance, $address]);
+        
+        // Add staking record
+        $stmt = $pdo->prepare("
+            INSERT INTO staking (staker, amount, status, start_block, validator)
+            VALUES (?, ?, 'active', ?, ?)
+        ");
+        $currentBlock = getCurrentBlockHeight($pdo);
+        $stmt->execute([$address, $amount, $currentBlock, $address]);
+        
+        // Record staking transaction using public method
+        try {
+            $stakingTransaction = $walletManager->createTransaction(
+                $address,
+                'staking_pool',
+                $amount,
+                0, // No fee for staking
+                null, // No private key needed for this type of transaction
+                json_encode(['staking_type' => 'stake', 'timestamp' => time()])
+            );
+            $walletManager->sendTransaction($stakingTransaction);
+        } catch (Exception $e) {
+            writeLog("Failed to record staking transaction: " . $e->getMessage(), 'WARNING');
+        }
+        
+        // Fetch updated balances
+        $availableBalance = $walletManager->getAvailableBalance($address);
+        $stakedBalance = $walletManager->getStakedBalance($address);
+        
+        return [
+            'staked' => [
+                'success' => true,
+                'amount' => $amount,
+                'period' => $period,
+                'contracts_deployed' => $contractAddresses,
+                'validator_added' => $validatorResult['success'] ?? false,
+                'new_balances' => [
+                    'available' => $availableBalance,
+                    'staked' => $stakedBalance,
+                    'total' => $availableBalance + $stakedBalance
+                ]
+            ]
+        ];
+        
     } catch (Exception $e) {
+        writeLog("Error in stakeTokens: " . $e->getMessage(), 'ERROR');
         throw new Exception('Failed to stake tokens: ' . $e->getMessage());
     }
 }
@@ -1622,7 +1766,7 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
         
         // 5. Create transfer transaction
         $transferTx = [
-            'hash' => hash('sha256', 'transfer_' . $fromAddress . '_' . $toAddress . '_' . $amount . '_' . time()),
+            'hash' => '0x' . hash('sha256', 'transfer_' . $fromAddress . '_' . $toAddress . '_' . $amount . '_' . time()),
             'type' => 'transfer',
             'from' => $fromAddress,
             'to' => $toAddress,
@@ -1794,7 +1938,7 @@ function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $a
 
         // 5. Create staking transaction
         $stakeTx = [
-            'hash' => hash('sha256', 'stake_' . $address . '_' . $amount . '_' . time()),
+            'hash' => '0x' . hash('sha256', 'stake_' . $address . '_' . $amount . '_' . time()),
             'type' => 'stake',
             'from' => $address,
             // Use real staking contract address
@@ -1825,6 +1969,10 @@ function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $a
         }
         
         try {
+            // Get current block height
+            $currentBlockHeight = $blockchainManager->getCurrentBlockHeight();
+            error_log("DEBUG: Current block height: " . $currentBlockHeight . " (type: " . gettype($currentBlockHeight) . ")");
+            
             // Verify current balance before staking
             $stmt = $pdo->prepare("SELECT balance FROM wallets WHERE address = ?");
             $stmt->execute([$address]);
@@ -1842,12 +1990,21 @@ function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $a
             $stmt = $pdo->prepare("UPDATE wallets SET balance = balance - ?, staked_balance = staked_balance + ?, updated_at = NOW() WHERE address = ?");
             $stmt->execute([$amount, $amount, $address]);
             
-            // Record staking details
-            $stmt = $pdo->prepare("
-                INSERT INTO staking (staker, amount, status, start_date) 
-                VALUES (?, ?, 'active', NOW())
-            ");
-            $stmt->execute([$address, $amount]);
+            // Record staking details - use direct SQL since prepared statements cause truncation
+            $escapedAddress = addslashes($address);
+            $sql = "INSERT INTO staking (staker, amount, status, start_block, created_at, validator, reward_rate, rewards_earned, last_reward_block)
+                    VALUES ('$escapedAddress', $amount, 'active', $currentBlockHeight, NOW(), '$escapedAddress', 0.0500, 0.00000000, 0)";
+            
+            error_log("DEBUG: Direct SQL query: " . $sql);
+            error_log("DEBUG: Current block height: " . $currentBlockHeight . " (type: " . gettype($currentBlockHeight) . ")");
+            
+            try {
+                $result = $pdo->exec($sql);
+                error_log("DEBUG: Direct SQL result: " . $result);
+            } catch (Exception $e) {
+                error_log("DEBUG: Direct SQL error: " . $e->getMessage());
+                throw $e;
+            }
             
             if ($needsTransaction) {
                 $pdo->commit();
@@ -1913,6 +2070,7 @@ function calculateStakingAPY(int $periodDays): float {
     if ($periodDays >= 180) return 10.0; // 10% APY for 6+ months
     if ($periodDays >= 90) return 8.0;   // 8% APY for 3+ months
     if ($periodDays >= 30) return 6.0;   // 6% APY for 1+ month
+    if ($periodDays == 7) return 4.0;    // 4% APY for 7 days
     return 4.0; // 4% APY for less than 1 month
 }
 
@@ -1972,7 +2130,7 @@ function unstakeTokens($walletManager, $blockchainManager, string $address, floa
 
         // 5. Create unstaking transaction
         $unstakeTx = [
-            'hash' => hash('sha256', 'unstake_' . $address . '_' . $amount . '_' . time()),
+            'hash' => '0x' . hash('sha256', 'unstake_' . $address . '_' . $amount . '_' . time()),
             'type' => 'unstake',
             // Use real staking contract address
             'from' => $stakingContract,
@@ -3637,22 +3795,6 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
     }
 }
 
-// Helpers to access height and block details with current codebase
-function getCurrentBlockHeight($walletManager): ?int
-{
-    // Try DB-based highest height from blocks table
-    try {
-        $pdo = $walletManager->getDatabase();
-        $stmt = $pdo->query("SELECT MAX(height) AS h FROM blocks");
-        $row = $stmt->fetch();
-        if ($row && isset($row['h'])) {
-            return (int)$row['h'];
-        }
-    } catch (Exception $e) {
-        writeLog("getCurrentBlockHeight DB error: " . $e->getMessage(), 'DEBUG');
-    }
-    return 0;
-}
 
 function getBlockByHeight($walletManager, int $height): ?array
 {

@@ -994,7 +994,6 @@ function getLanguageOptions($currentLang) {
             font-weight: 500;
             text-decoration: none;
             position: relative;
-        }
             border: none;
             border-radius: 12px;
             text-decoration: none;
@@ -2858,9 +2857,59 @@ function getLanguageOptions($currentLang) {
             }
         }
         
-        // Confirm staking (placeholder function)
+        // Confirm staking function
         function confirmStaking() {
-            return confirm(t.confirm_staking || 'Are you sure you want to proceed with staking?');
+            // Get form values
+            const amount = document.getElementById('stakingAmount').value;
+            const period = document.getElementById('stakingPeriod').value;
+            
+            if (!amount || !period) {
+                showNotification('Please fill in all staking fields', 'warning');
+                return false;
+            }
+            
+            if (parseFloat(amount) <= 0) {
+                showNotification('Staking amount must be greater than 0', 'warning');
+                return false;
+            }
+            
+            // Show confirmation dialog
+            const confirmMessage = `Are you sure you want to stake ${amount} tokens for ${period} days?`;
+            if (!confirm(confirmMessage)) {
+                return false;
+            }
+            
+            // Send staking request to backend with period parameter
+            fetch('wallet_api.php?action=stake', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: new URLSearchParams({
+                    amount: amount,
+                    period: period,
+                    private_key: document.getElementById('stakingPrivateKey').value
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showNotification(t.staking_successful || 'Staking successful!', 'success');
+                    closeModal('stakingModal');
+                    // Refresh wallet balance
+                    if (typeof updateWalletBalance === 'function') {
+                        updateWalletBalance();
+                    }
+                } else {
+                    showNotification(data.error || t.staking_failed || 'Staking failed', 'danger');
+                }
+            })
+            .catch(error => {
+                console.error('Staking error:', error);
+                showNotification(t.staking_failed || 'Staking failed', 'danger');
+            });
+            
+            return false; // Prevent form submission
         }
         
         // Confirm restore (placeholder function)

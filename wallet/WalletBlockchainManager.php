@@ -209,7 +209,7 @@ class WalletBlockchainManager
             
             \Blockchain\Wallet\WalletLogger::debug("WalletBlockchainManager::createWalletTransaction - Creating transaction array");
             $transaction = [
-                'hash' => hash('sha256', 'wallet_create_' . $walletData['address'] . '_' . time()),
+                'hash' => '0x' . hash('sha256', 'wallet_create_' . $walletData['address'] . '_' . time()),
                 'type' => 'wallet_create',
                 'from' => 'system',
                 'to' => $walletData['address'],
@@ -247,7 +247,7 @@ class WalletBlockchainManager
     private function createRestoreTransaction(array $walletData): array
     {
         return [
-            'hash' => hash('sha256', 'wallet_restore_' . $walletData['address'] . '_' . time()),
+            'hash' => '0x' . hash('sha256', 'wallet_restore_' . $walletData['address'] . '_' . time()),
             'type' => 'wallet_restore',
             'from' => 'system',
             'to' => $walletData['address'],
@@ -1029,6 +1029,53 @@ class WalletBlockchainManager
                 'error' => $e->getMessage(),
                 'status' => 'failed'
             ];
+        }
+    }
+    
+    /**
+     * Get current block height from blockchain
+     */
+    public function getCurrentBlockHeight(): int
+    {
+        try {
+            \WalletLogger::debug("WalletBlockchainManager::getCurrentBlockHeight - Getting current block height");
+            
+            // Try to get from BlockStorage first
+            if ($this->blockStorage) {
+                $latestBlock = $this->blockStorage->getLatestBlock();
+                if ($latestBlock) {
+                    $height = is_callable([$latestBlock, 'getIndex']) ? $latestBlock->getIndex() : ($latestBlock->index ?? 0);
+                    $result = max(1, (int)$height);
+                    \WalletLogger::debug("WalletBlockchainManager::getCurrentBlockHeight - Got height from BlockStorage: $height, returning: $result");
+                    return $result;
+                }
+            }
+            
+            // Fallback to database query
+            if ($this->database) {
+                try {
+                    \WalletLogger::debug("WalletBlockchainManager::getCurrentBlockHeight - Querying database for latest block");
+                    $stmt = $this->database->query("SELECT height FROM blocks ORDER BY height DESC LIMIT 1");
+                    $latestBlock = $stmt->fetch(PDO::FETCH_ASSOC);
+                    
+                    if ($latestBlock && isset($latestBlock['height'])) {
+                        $height = (int)$latestBlock['height'];
+                        $result = max(1, $height);
+                        \WalletLogger::debug("WalletBlockchainManager::getCurrentBlockHeight - Got height from database: $height, returning: $result");
+                        return (int)$result;
+                    }
+                } catch (Exception $e) {
+                    \WalletLogger::warning("WalletBlockchainManager::getCurrentBlockHeight - Database query failed: " . $e->getMessage());
+                }
+            }
+            
+            // If no blocks found, return 1 (minimum valid block height)
+            \WalletLogger::debug("WalletBlockchainManager::getCurrentBlockHeight - No blocks found, returning 1");
+            return 1;
+            
+        } catch (Exception $e) {
+            \WalletLogger::error("WalletBlockchainManager::getCurrentBlockHeight - Error: " . $e->getMessage());
+            return 1; // Return 1 as fallback to avoid 0 value
         }
     }
 

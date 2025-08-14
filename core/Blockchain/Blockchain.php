@@ -601,7 +601,7 @@ class Blockchain implements BlockchainInterface
         try {
             $genesisTransactions = [
                 [
-                    'hash' => hash('sha256', 'genesis_network_' . time()),
+                    'hash' => '0x' . hash('sha256', 'genesis_network_' . time()),
                     'type' => 'genesis',
                     'from' => 'genesis',
                     'to' => 'genesis_address',
@@ -619,7 +619,7 @@ class Blockchain implements BlockchainInterface
             // Add wallet funding transaction if specified
             if (!empty($config['wallet_address']) && !empty($config['primary_wallet_amount'])) {
                 $genesisTransactions[] = [
-                    'hash' => hash('sha256', 'genesis_wallet_' . $config['wallet_address'] . '_' . time()),
+                    'hash' => '0x' . hash('sha256', 'genesis_wallet_' . $config['wallet_address'] . '_' . time()),
                     'type' => 'transfer',
                     'from' => 'genesis_address',
                     'to' => $config['wallet_address'],
@@ -633,7 +633,7 @@ class Blockchain implements BlockchainInterface
                 // Add staking transaction to genesis block
                 if (!empty($config['staking_amount'])) {
                     $genesisTransactions[] = [
-                        'hash' => hash('sha256', 'genesis_stake_' . $config['wallet_address'] . '_' . time()),
+                        'hash' => '0x' . hash('sha256', 'genesis_stake_' . $config['wallet_address'] . '_' . time()),
                         'type' => 'stake',
                         'from' => $config['wallet_address'],
                         'to' => 'staking_contract',
@@ -667,7 +667,7 @@ class Blockchain implements BlockchainInterface
                 }
                 
                 $genesisTransactions[] = [
-                    'hash' => hash('sha256', 'genesis_validator_' . $config['wallet_address'] . '_' . time()),
+                    'hash' => '0x' . hash('sha256', 'genesis_validator_' . $config['wallet_address'] . '_' . time()),
                     'type' => 'register_validator',
                     'from' => $config['wallet_address'],
                     'to' => 'validator_registry',
@@ -681,7 +681,7 @@ class Blockchain implements BlockchainInterface
                 
                 // Add genesis node registration transaction
                 $genesisTransactions[] = [
-                    'hash' => hash('sha256', 'genesis_node_' . $config['wallet_address'] . '_' . time()),
+                    'hash' => '0x' . hash('sha256', 'genesis_node_' . $config['wallet_address'] . '_' . time()),
                     'type' => 'register_node',
                     'from' => $config['wallet_address'],
                     'to' => 'node_registry',

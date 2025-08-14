@@ -14,6 +14,66 @@ use Blockchain\Core\Storage\SelectiveBlockchainSyncManager;
 use Blockchain\Core\Network\NodeHealthMonitor;
 use Blockchain\Core\Network\HealthCheckMiddleware;
 
+// Check if database is empty and redirect to web-installer if needed
+function isDatabaseEmpty(): bool
+{
+    try {
+        // Use the same DB connection approach as getDatabaseStats
+        $envFile = __DIR__ . '/config/.env';
+        if (file_exists($envFile)) {
+            $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            foreach ($lines as $line) {
+                if (strpos($line, '#') === 0) continue;
+                if (strpos($line, '=') !== false) {
+                    list($key, $value) = explode('=', $line, 2);
+                    $key = trim($key);
+                    $value = trim($value);
+                    if (!array_key_exists($key, $_ENV)) {
+                        $_ENV[$key] = $value;
+                    }
+                }
+            }
+        }
+        
+        $pdo = new PDO(
+            "mysql:host={$_ENV['DB_HOST']};port={$_ENV['DB_PORT']};dbname={$_ENV['DB_DATABASE']};charset=utf8mb4",
+            $_ENV['DB_USERNAME'],
+            $_ENV['DB_PASSWORD'],
+            [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+        );
+        
+        // Check if any tables exist
+        $stmt = $pdo->query("SHOW TABLES");
+        $tables = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        
+        if (empty($tables)) {
+            return true; // No tables exist - database is empty
+        }
+        
+        // Check if all tables are empty
+        foreach ($tables as $table) {
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM `$table`");
+            $stmt->execute();
+            $count = $stmt->fetchColumn();
+            if ($count > 0) {
+                return false; // At least one table has data
+            }
+        }
+        
+        return true; // All tables are empty
+        
+    } catch (Exception $e) {
+        error_log("Database check error: " . $e->getMessage());
+        return true; // If we can't check, assume database is empty
+    }
+}
+
+// Check if we need to redirect to web-installer
+if (php_sapi_name() !== 'cli' && isDatabaseEmpty()) {
+    header('Location: /web-installer/');
+    exit;
+}
+
 // error_reporting(E_ALL);
 // ini_set('display_errors', 1);
 // ini_set('log_errors', 1);
@@ -641,7 +701,7 @@ function renderDashboard($app, NodeHealthMonitor $healthMonitor): string
             box-shadow: 0 8px 25px rgba(0,0,0,0.15);
         }
         
-        .status { color: {$statusColor}; font-weight: 600; }
+        .status { color: " . $statusColor . "; font-weight: 600; }
         .healthy { color: var(--success-color); }
         .error { color: var(--error-color); }
         .warning { color: var(--warning-color); }
@@ -993,7 +1053,7 @@ function renderDashboard($app, NodeHealthMonitor $healthMonitor): string
             document.querySelectorAll('.lang-btn').forEach(btn => {
                 btn.classList.remove('active');
             });
-            document.querySelector(`[onclick=\"switchLanguage('${lang}')\"]`).classList.add('active');
+            document.querySelector(`[onclick=\"switchLanguage('` + lang + `')\"]`).classList.add('active');
         }
         
         function updateLanguage() {
@@ -1044,7 +1104,7 @@ function renderDashboard($app, NodeHealthMonitor $healthMonitor): string
             currentLang = savedLang;
             
             // Set active language button
-            document.querySelector(`[onclick=\"switchLanguage('${savedLang}')\"]`)?.classList.add('active');
+            document.querySelector(`[onclick=\"switchLanguage('` + savedLang + `')\"]`)?.classList.add('active');
             
             // Apply translations
             updateLanguage();
@@ -1092,11 +1152,11 @@ function renderDashboard($app, NodeHealthMonitor $healthMonitor): string
             <h2 data-translate='nodeStatus'>Node Status</h2>
             <div class='metric'>
                 <span data-translate='state'>State:</span>
-                <span class='status-indicator status-" . ($health['healthy'] ? 'healthy' : 'error') . "'>{$statusText}</span>
+                <span class='status-indicator status-" . ($health['healthy'] ? 'healthy' : 'error') . "'>" . htmlspecialchars($statusText) . "</span>
             </div>
             <div class='metric'>
                 <span data-translate='nodeId'>Node ID:</span>
-                <span style='font-family: monospace; color: var(--text-secondary);'>{$health['node_id']}</span>
+                <span style='font-family: monospace; color: var(--text-secondary);'>" . htmlspecialchars($health['node_id']) . "</span>
             </div>
             <div class='metric'>
                 <span data-translate='checkTime'>Check Time:</span>

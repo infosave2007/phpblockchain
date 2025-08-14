@@ -336,7 +336,7 @@ class Migration
                 INDEX idx_expires_at (expires_at),
                 INDEX idx_nonce_from (from_address, nonce),
                 INDEX idx_status_created (status, created_at),
-                INDEX idx_priority_score (priority_score),
+                INDEX idx_priority_score_asc (priority_score),
                 INDEX idx_broadcast_count (broadcast_count)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             
@@ -453,11 +453,11 @@ class Migration
                 broadcast_path TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 expires_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_tx_hash (transaction_hash),
+                INDEX idx_broadcast_tracking_tx_hash (transaction_hash),
                 INDEX idx_source_node (source_node_id),
                 INDEX idx_current_node (current_node_id),
                 INDEX idx_hop_count (hop_count),
-                INDEX idx_expires (expires_at),
+                INDEX idx_broadcast_tracking_expires (expires_at),
                 UNIQUE KEY unique_tx_source_current (transaction_hash, source_node_id, current_node_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             

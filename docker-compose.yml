@@ -47,6 +47,22 @@ services:
     networks:
       - blockchain-network
 
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: phpmyadmin
+    environment:
+      PMA_HOST: database
+      PMA_PORT: 3306
+      PMA_USER: blockchain
+      PMA_PASSWORD: blockchain123
+      PMA_ARBITRARY: 1
+    ports:
+      - "8081:80"
+    networks:
+      - blockchain-network
+    depends_on:
+      - database
+
 volumes:
   db_data:
 

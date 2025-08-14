@@ -806,35 +806,150 @@ class WalletManager
     }
 
     /**
-     * Stake tokens
+     * Stake tokens with full blockchain integration (same as genesis installation)
      */
-    public function stake(string $address, float $amount, string $privateKey): bool
+    public function stake(string $address, float $amount, string $privateKey, int $period = 30): bool
     {
         try {
+            $pdo = $this->database;
+            $baseDir = dirname(__DIR__);
+            
+            // Validate period
+            if (!in_array($period, [7, 30, 90, 180])) {
+                throw new Exception("Invalid staking period. Must be 7, 30, 90, or 180 days");
+            }
+            
+            // Get wallet balance
             $availableBalance = $this->getAvailableBalance($address);
             
             if ($availableBalance < $amount) {
                 throw new Exception("Insufficient balance for staking");
             }
 
+            // Include SmartContractManager for contract deployment
+            require_once $baseDir . '/contracts/SmartContractManager.php';
+            require_once $baseDir . '/core/Storage/StateStorage.php';
+            require_once $baseDir . '/core/SmartContract/VirtualMachine.php';
+            require_once $baseDir . '/core/Logging/NullLogger.php';
+            
+            // Initialize SmartContractManager
+            $stateStorage = new \Blockchain\Core\Storage\StateStorage($pdo);
+            $vm = new \Blockchain\Core\SmartContract\VirtualMachine($pdo);
+            $logger = new \Blockchain\Core\Logging\NullLogger();
+            $contractManager = new \Blockchain\Contracts\SmartContractManager($vm, $stateStorage, $logger);
+            
+            // Load config for contract deployment
+            $configFile = $baseDir . '/config/config.php';
+            $config = [];
+            if (file_exists($configFile)) {
+                $config = require $configFile;
+            }
+            
+            // Deploy standard contracts (same as genesis installation)
+            writeWalletLog("Deploying standard contracts for wallet staking", 'INFO');
+            $results = $contractManager->deployStandardContracts($address);
+            
+            $contractAddresses = [];
+            foreach ($results as $contractType => $result) {
+                if (!empty($result['success']) && !empty($result['address'])) {
+                    $contractAddresses[$contractType] = $result['address'];
+                    writeWalletLog("Deployed $contractType contract: " . $result['address'], 'INFO');
+                } else {
+                    writeWalletLog("Failed to deploy $contractType contract: " . ($result['error'] ?? 'Unknown error'), 'WARNING');
+                }
+            }
+            
+            // Add validator to ValidatorManager (same as genesis installation)
+            require_once $baseDir . '/core/Consensus/ValidatorManager.php';
+            $validatorManager = new \Blockchain\Core\Consensus\ValidatorManager($pdo, $config);
+            
+            // Create validator record
+            // Get public key from wallet
+            $walletInfo = $this->getWalletInfo($address);
+            $publicKey = $walletInfo['public_key'] ?? null;
+            
+            if ($publicKey) {
+                $validatorResult = $validatorManager->addValidator($address, $publicKey, (int)$amount);
+                if (!$validatorResult) {
+                    writeWalletLog("Failed to add validator: " . ($validatorResult['error'] ?? 'Unknown error'), 'WARNING');
+                } else {
+                    writeWalletLog("Added validator: " . $address, 'INFO');
+                }
+            } else {
+                writeWalletLog("Cannot add validator: public key not found for address " . $address, 'WARNING');
+            }
+            
+            // Execute staking transaction through smart contract
+            if (!empty($contractAddresses['staking'])) {
+                $stakingContractAddress = $contractAddresses['staking'];
+                writeWalletLog("Executing staking through contract: " . $stakingContractAddress, 'INFO');
+                
+                // Create staking transaction using existing blockchain manager
+                require_once $baseDir . '/wallet/WalletBlockchainManager.php';
+                $blockchainManager = new \Blockchain\Wallet\WalletBlockchainManager($pdo, $config);
+                
+                // Create transaction data for staking
+                $transactionData = [
+                    'hash' => '0x' . hash('sha256', 'stake_' . $address . '_' . $amount . '_' . time()),
+                    'type' => 'stake',
+                    'from' => $address,
+                    'to' => $stakingContractAddress,
+                    'amount' => $amount,
+                    'fee' => 0.0,
+                    'timestamp' => time(),
+                    'data' => [
+                        'method' => 'stake',
+                        'params' => [
+                            'staker' => $address,
+                            'amount' => $amount,
+                            'period' => 30, // Default period
+                            'contract_address' => $stakingContractAddress
+                        ],
+                        'action' => 'stake_tokens'
+                    ],
+                    'signature' => '', // Will be signed by ValidatorManager
+                    'status' => 'pending'
+                ];
+                
+                // Record transaction in blockchain
+                $result = $blockchainManager->recordTransactionInBlockchain($transactionData);
+                
+                if ($result['blockchain_recorded']) {
+                    writeWalletLog("Staking transaction recorded in blockchain: " . $result['block']['hash'], 'INFO');
+                } else {
+                    writeWalletLog("Failed to record staking transaction in blockchain: " . ($result['error'] ?? 'Unknown error'), 'WARNING');
+                }
+            }
+            
             // Start transaction
             $this->database->beginTransaction();
 
             // Update wallet balance (subtract staked amount)
             $newBalance = $availableBalance - $amount;
-            $stmt = $this->database->prepare("
-                UPDATE wallets 
-                SET balance = ?, updated_at = NOW() 
+            $stmt = $pdo->prepare("
+                UPDATE wallets
+                SET balance = ?, updated_at = NOW()
                 WHERE address = ?
             ");
             $stmt->execute([$newBalance, $address]);
 
-            // Add staking record
-            $stmt = $this->database->prepare("
-                INSERT INTO staking (staker, amount, status, start_date, period_days)
-                VALUES (?, ?, 'active', NOW(), 30)
+            // Add staking record with contract address and dynamic period
+            $contractAddress = !empty($contractAddresses['staking']) ? $contractAddresses['staking'] : null;
+            
+            // Calculate end block based on current block and period
+            $currentBlock = $this->getCurrentBlockHeight();
+            $blocksPerDay = 86400 / 10; // Assuming 10-second blocks
+            $periodBlocks = (int)($period * $blocksPerDay);
+            $endBlock = $currentBlock + $periodBlocks;
+            
+            $stmt = $pdo->prepare("
+                INSERT INTO staking (staker, amount, status, start_block, end_block, reward_rate)
+                VALUES (?, ?, 'active', ?, ?, ?)
             ");
-            $stmt->execute([$address, $amount]);
+            
+            // Calculate reward rate based on period
+            $rewardRate = $this->getRewardRateForPeriod($period);
+            $stmt->execute([$address, $amount, $currentBlock, $endBlock, $rewardRate]);
 
             // Record staking transaction
             $this->recordStakingTransaction($address, $amount, 'stake');
@@ -844,6 +959,7 @@ class WalletManager
 
         } catch (Exception $e) {
             $this->database->rollBack();
+            writeWalletLog("Error in WalletManager::stake: " . $e->getMessage(), 'ERROR');
             throw new Exception("Staking failed: " . $e->getMessage());
         }
     }
@@ -962,12 +1078,63 @@ class WalletManager
             return 0.0;
         }
 
-        // Simple reward calculation: 5% APY
-        $stakingPeriod = time() - strtotime($walletInfo['updated_at']);
-        $yearSeconds = 365 * 24 * 60 * 60;
-        $rewardRate = 0.05; // 5% APY
-        
-        return ($stakedBalance * $rewardRate * $stakingPeriod) / $yearSeconds;
+        // Get active staking records with their reward rates
+        $stmt = $this->database->prepare("
+            SELECT start_block, end_block, reward_rate, amount
+            FROM staking
+            WHERE staker = ? AND status = 'active'
+            ORDER BY start_block ASC
+        ");
+        $stmt->execute([$address]);
+        $stakingRecords = $stmt->fetchAll();
+
+        if (empty($stakingRecords)) {
+            return 0.0;
+        }
+
+        $totalRewards = 0.0;
+        $currentBlock = $this->getCurrentBlockHeight();
+
+        foreach ($stakingRecords as $record) {
+            $startBlock = (int)$record['start_block'];
+            $endBlock = (int)$record['end_block'];
+            $rewardRate = (float)$record['reward_rate'];
+            $amount = (float)$record['amount'];
+            
+            // Calculate blocks elapsed
+            $blocksElapsed = min($currentBlock - $startBlock, $endBlock - $startBlock);
+            if ($blocksElapsed <= 0) {
+                continue;
+            }
+
+            // Calculate rewards based on blocks elapsed
+            // Assuming 10-second blocks and 365 days = 3153600 seconds = 315360 blocks
+            $blocksInYear = 315360;
+            $recordRewards = ($amount * $rewardRate * $blocksElapsed) / $blocksInYear;
+            $totalRewards += $recordRewards;
+        }
+
+        return $totalRewards;
+    }
+
+    /**
+     * Get reward rate based on staking period
+     */
+    private function getRewardRateForPeriod(int $periodDays): float
+    {
+        // Different APY rates based on staking period
+        switch ($periodDays) {
+            case 7:
+                return 0.03; // 3% APY for 7 days
+            case 30:
+                return 0.05; // 5% APY for 30 days
+            case 90:
+                return 0.08; // 8% APY for 90 days
+            case 180:
+                return 0.12; // 12% APY for 180 days
+            default:
+                return 0.05; // Default 5% APY
+        }
     }
 
     /**
@@ -983,6 +1150,14 @@ class WalletManager
             
             $this->updateBalance($address, $newBalance);
             $this->recordStakingTransaction($address, $rewards, 'reward_claim');
+            
+            // Reset reward calculation timestamps for active staking records
+            $stmt = $this->database->prepare("
+                UPDATE staking
+                SET last_reward_claim = NOW()
+                WHERE staker = ? AND status = 'active'
+            ");
+            $stmt->execute([$address]);
         }
         
         return $rewards;
@@ -1261,5 +1436,24 @@ class WalletManager
     public function getWalletByAddress(string $address): ?array
     {
         return $this->getWalletInfo($address);
+    }
+
+    /**
+     * Get current block height
+     */
+    private function getCurrentBlockHeight(): int
+    {
+        try {
+            $stmt = $this->database->prepare("
+                SELECT MAX(height) as max_height FROM blocks
+            ");
+            $stmt->execute();
+            $result = $stmt->fetch();
+            
+            return $result && $result['max_height'] ? (int)$result['max_height'] : 0;
+        } catch (Exception $e) {
+            writeWalletLog("Error getting current block height: " . $e->getMessage(), 'ERROR');
+            return 0;
+        }
     }
 }
