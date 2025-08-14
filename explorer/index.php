@@ -222,7 +222,7 @@ function getLanguageOptions($currentLang) {
     <nav class="navbar navbar-expand-lg navbar-dark navbar-custom fixed-top">
         <div class="container">
             <a class="navbar-brand d-flex align-items-center" href="/explorer/">
-                <img src="/assets/network-icon.svg" alt="Logo" style="height:28px" class="me-2"> <?php echo htmlspecialchars($cryptoName); ?> <?php echo htmlspecialchars($t['title']); ?>
+                <img src="/assets/network-icon.svg" alt="Logo" style="height:28px" class="me-2"> <?php echo htmlspecialchars($t['title']); ?>
             </a>
             <div class="navbar-nav ms-auto d-flex align-items-center">
                 <div class="language-selector me-3">
@@ -335,7 +335,7 @@ function getLanguageOptions($currentLang) {
                                 <button class="pagination-btn" id="prevBlocksBtn" onclick="loadBlocks('prev')" disabled>
                                     <i class="fas fa-chevron-left me-1"></i> <?php echo htmlspecialchars($t['back']); ?>
                                 </button>
-                                <span class="pagination-info mx-3" id="blocksPageInfo"><?php echo htmlspecialchars($t['page']); ?> 1</span>
+                                <span class="pagination-info mx-3" id="blocksPageInfo"><?php echo htmlspecialchars($t['page']); ?> 1 из 20</span>
                                 <button class="pagination-btn" id="nextBlocksBtn" onclick="loadBlocks('next')">
                                     <?php echo htmlspecialchars($t['next']); ?> <i class="fas fa-chevron-right ms-1"></i>
                                 </button>
@@ -368,7 +368,7 @@ function getLanguageOptions($currentLang) {
                                 <button class="pagination-btn" id="prevTxBtn" onclick="loadTransactions('prev')" disabled>
                                     <i class="fas fa-chevron-left me-1"></i> <?php echo htmlspecialchars($t['back']); ?>
                                 </button>
-                                <span class="pagination-info mx-3" id="transactionsPageInfo"><?php echo htmlspecialchars($t['page']); ?> 1</span>
+                                <span class="pagination-info mx-3" id="transactionsPageInfo"><?php echo htmlspecialchars($t['page']); ?> 1 из 45</span>
                                 <button class="pagination-btn" id="nextTxBtn" onclick="loadTransactions('next')">
                                     <?php echo htmlspecialchars($t['next']); ?> <i class="fas fa-chevron-right ms-1"></i>
                                 </button>

@@ -755,11 +755,11 @@ class BlockchainExplorer {
             <div class="row g-2 mb-3">
                 <div class="col-6">
                     <small class="text-muted d-block">${fromText}</small>
-                    <div class="hash-display small">${this.truncateHash(tx.from_address || tx.from, 16)}</div>
+                    <div class="hash-display small">${this.truncateHash(tx.from_address, 16)}</div>
                 </div>
                 <div class="col-6">
                     <small class="text-muted d-block">${toText}</small>
-                    <div class="hash-display small">${this.truncateHash(tx.to_address || tx.to, 16)}</div>
+                    <div class="hash-display small">${this.truncateHash(tx.to_address, 16)}</div>
                 </div>
             </div>
             
@@ -867,11 +867,11 @@ class BlockchainExplorer {
         this.showLoading(true);
         
         try {
-            const response = await fetch(`${this.apiEndpoint}/transaction/${hash}?network=${this.currentNetwork}`);
+            const response = await fetch(`${this.apiEndpoint}/transaction?id=${hash}&network=${this.currentNetwork}`);
             const data = await response.json();
             
             if (data.success && data.data) {
-                this.showTransactionDetails(data.data);
+                this.viewTransactionModal(data.data);
             } else {
                 this.showError('Failed to load transaction details');
             }
@@ -890,7 +890,120 @@ class BlockchainExplorer {
 
     showTransactionDetails(tx) {
         // Use the modal view for transaction details
-        this.viewTransaction(tx.hash);
+        this.viewTransactionModal(tx);
+    }
+
+    // Show transaction details in modal
+    async viewTransactionModal(tx) {
+        try {
+            // Format timestamp
+            const timestamp = new Date(tx.timestamp * 1000);
+            const formattedTimestamp = timestamp.toLocaleString();
+            
+            // Format amount
+            const formattedAmount = this.formatAmount(tx.amount);
+            
+            // Create modal content
+            const modalContent = `
+                <div class="modal-header">
+                    <h5 class="modal-title">Transaction Details</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Hash</label>
+                        <div class="form-control-plaintext font-monospace">${tx.hash}</div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">From</label>
+                                <div class="form-control-plaintext font-monospace">${tx.from_address}</div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">To</label>
+                                <div class="form-control-plaintext font-monospace">${tx.to_address}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">Amount</label>
+                                <div class="form-control-plaintext">${formattedAmount}</div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">Fee</label>
+                                <div class="form-control-plaintext">${this.formatAmount(tx.fee)}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">Status</label>
+                                <div class="form-control-plaintext">
+                                    <span class="badge bg-${tx.status === 'confirmed' ? 'success' : 'warning'}">${tx.status}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">Timestamp</label>
+                                <div class="form-control-plaintext">${formattedTimestamp}</div>
+                            </div>
+                        </div>
+                    </div>
+                    ${tx.block_height ? `
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">Block Height</label>
+                                <div class="form-control-plaintext">${tx.block_height}</div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">Block Hash</label>
+                                <div class="form-control-plaintext font-monospace">${tx.block_hash}</div>
+                            </div>
+                        </div>
+                    </div>
+                    ` : ''}
+                    ${tx.signature ? `
+                    <div class="mb-3">
+                        <label class="form-label">Signature</label>
+                        <div class="form-control-plaintext font-monospace">${tx.signature}</div>
+                    </div>
+                    ` : ''}
+                    ${tx.data ? `
+                    <div class="mb-3">
+                        <label class="form-label">Data</label>
+                        <div class="form-control-plaintext font-monospace">${JSON.stringify(tx.data, null, 2)}</div>
+                    </div>
+                    ` : ''}
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn btn-primary" onclick="copyToClipboard('${tx.hash}')">Copy Hash</button>
+                </div>
+            `;
+            
+            // Update modal content
+            const modalElement = document.getElementById('transactionDetailsModal');
+            modalElement.innerHTML = modalContent;
+            
+            // Show modal
+            const modal = new bootstrap.Modal(modalElement);
+            modal.show();
+        } catch (error) {
+            console.error('Failed to show transaction details:', error);
+            this.showError('Failed to show transaction details');
+        }
     }
 
     loadMoreBlocks() {
@@ -1009,8 +1122,8 @@ class BlockchainExplorer {
                 throw new Error(data.error || 'Transaction not found');
             }
 
-            // Handle both direct transaction data and wrapped data
-            const tx = data.transaction || data;
+            // Handle transaction data from API
+            const tx = data.data;
             const amount = parseFloat(tx.amount || 0);
             const fee = parseFloat(tx.fee || 0);
             const date = new Date(tx.timestamp * 1000);
@@ -1094,8 +1207,8 @@ class BlockchainExplorer {
                     <div class="col-md-6">
                         <label class="form-label fw-bold">${this.getTranslation('from_address', 'From Address')}:</label>
                         <div class="input-group">
-                            <input type="text" class="form-control font-monospace" value="${tx.from}" readonly>
-                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${tx.from}')">
+                            <input type="text" class="form-control font-monospace" value="${tx.from_address}" readonly>
+                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${tx.from_address}')">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
@@ -1103,8 +1216,8 @@ class BlockchainExplorer {
                     <div class="col-md-6">
                         <label class="form-label fw-bold">${this.getTranslation('to_address', 'To Address')}:</label>
                         <div class="input-group">
-                            <input type="text" class="form-control font-monospace" value="${tx.to}" readonly>
-                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${tx.to}')">
+                            <input type="text" class="form-control font-monospace" value="${tx.to_address}" readonly>
+                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${tx.to_address}')">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
@@ -1280,8 +1393,8 @@ class BlockchainExplorer {
                                     ${block.transactions.map(tx => `
                                         <tr>
                                             <td class="font-monospace">${this.truncateHash(tx.hash, 12)}</td>
-                                            <td class="font-monospace">${this.truncateHash(tx.from, 12)}</td>
-                                            <td class="font-monospace">${this.truncateHash(tx.to, 12)}</td>
+                                            <td class="font-monospace">${this.truncateHash(tx.from_address, 12)}</td>
+                                            <td class="font-monospace">${this.truncateHash(tx.to_address, 12)}</td>
                                             <td>${this.formatAmount(parseFloat(tx.amount || 0))}</td>
                                         </tr>
                                     `).join('')}
