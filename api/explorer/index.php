@@ -77,6 +77,34 @@ try {
             case 'get_network_config':
                 echo json_encode(getNetworkConfig($pdo, $network));
                 exit;
+            
+            case 'get_blocks_range':
+                $start = (int)($params['start'] ?? 0);
+                $end = (int)($params['end'] ?? $start);
+                echo json_encode(getBlocksRange($pdo, $network, $start, $end));
+                exit;
+            
+            case 'get_block_headers':
+                $start = (int)($params['start'] ?? 0);
+                $end = (int)($params['end'] ?? $start);
+                echo json_encode(getBlockHeaders($pdo, $network, $start, $end));
+                exit;
+
+            case 'get_block_hashes_range':
+                $start = (int)($params['start'] ?? 0);
+                $end = (int)($params['end'] ?? $start);
+                echo json_encode(getBlockHashesRange($pdo, $network, $start, $end));
+                exit;
+
+            case 'has_state_snapshot':
+                $height = (int)($params['height'] ?? 0);
+                echo json_encode(hasStateSnapshot($network, $height));
+                exit;
+
+            case 'get_state_snapshot':
+                $height = (int)($params['height'] ?? 0);
+                echo json_encode(getStateSnapshot($network, $height));
+                exit;
                 
             case 'verify_wallet_ownership':
                 $address = $params['address'] ?? '';
@@ -1570,7 +1598,7 @@ function getNetworkConfig(PDO $pdo, string $network): array {
                 require_once $configFile;
                 // Get global blockchain config
                 if (defined('BLOCKCHAIN_CONFIG')) {
-                    $blockchainConfig = BLOCKCHAIN_CONFIG;
+                    $blockchainConfig = constant('BLOCKCHAIN_CONFIG');
                     
                     // Only override if not already set
                     if (!$config['network_name'] && isset($blockchainConfig['network_name'])) {
@@ -2010,6 +2038,270 @@ function getAllTransactions(PDO $pdo, string $network, int $page = 0, int $limit
             'success' => false,
             'error' => $e->getMessage(),
             'data' => []
+        ];
+    }
+}
+
+/**
+ * Stubs for state snapshot availability and retrieval.
+ * Return no snapshots to force SyncManager to fallback without errors.
+ */
+function hasStateSnapshot(string $network, int $height): array {
+    return [
+        'success' => true,
+        'data' => [
+            'exists' => false,
+            'height' => $height
+        ]
+    ];
+}
+
+function getStateSnapshot(string $network, int $height): array {
+    return [
+        'success' => false,
+        'error' => 'State snapshots are not available on this node',
+        'data' => [
+            'height' => $height
+        ]
+    ];
+}
+
+/**
+ * Get blocks in an inclusive height range [start, end]
+ * Returns database-backed data when available, falling back to chain.json.
+ */
+function getBlocksRange(PDO $pdo, string $network, int $start, int $end): array {
+    try {
+        if ($start > $end) {
+            [$start, $end] = [$end, $start];
+        }
+        // Safety cap to avoid huge responses
+        $maxRange = 500;
+        if ($end - $start + 1 > $maxRange) {
+            $end = $start + $maxRange - 1;
+        }
+
+        // Prefer database if table exists
+        $stmt = $pdo->query("SHOW TABLES LIKE 'blocks'");
+        if ($stmt->rowCount() > 0) {
+            $q = $pdo->prepare("SELECT hash, parent_hash, height, timestamp, validator, signature, merkle_root, transactions_count, metadata FROM blocks WHERE height BETWEEN ? AND ? ORDER BY height ASC");
+            $q->execute([$start, $end]);
+            $rows = $q->fetchAll(PDO::FETCH_ASSOC);
+
+            $blocks = array_map(function($b) {
+                return [
+                    'height' => (int)$b['height'],
+                    'index' => (int)$b['height'],
+                    'hash' => (string)$b['hash'],
+                    'parent_hash' => (string)$b['parent_hash'],
+                    'previous_hash' => (string)$b['parent_hash'],
+                    'timestamp' => (int)$b['timestamp'],
+                    'validator' => $b['validator'],
+                    'signature' => $b['signature'],
+                    'merkle_root' => $b['merkle_root'] ?? '',
+                    'transactions_count' => (int)($b['transactions_count'] ?? 0),
+                    'metadata' => $b['metadata'] ? (json_decode($b['metadata'], true) ?: []) : []
+                ];
+            }, $rows);
+
+            return [
+                'success' => true,
+                'data' => [
+                    'blocks' => $blocks,
+                    'range' => ['start' => $start, 'end' => $end]
+                ]
+            ];
+        }
+
+        // Fallback to file storage
+        $chainFile = '../../storage/blockchain/chain.json';
+        $blocks = [];
+        if (file_exists($chainFile)) {
+            $chain = json_decode(file_get_contents($chainFile), true);
+            if (is_array($chain)) {
+                foreach ($chain as $blk) {
+                    $h = (int)($blk['index'] ?? $blk['height'] ?? -1);
+                    if ($h >= $start && $h <= $end) {
+                        $blocks[] = [
+                            'height' => $h,
+                            'index' => $h,
+                            'hash' => $blk['hash'] ?? '',
+                            'parent_hash' => $blk['previousHash'] ?? $blk['parent_hash'] ?? ($blk['previous_hash'] ?? ''),
+                            'previous_hash' => $blk['previousHash'] ?? $blk['parent_hash'] ?? ($blk['previous_hash'] ?? ''),
+                            'timestamp' => (int)($blk['timestamp'] ?? time()),
+                            'validator' => $blk['validator'] ?? null,
+                            'signature' => $blk['signature'] ?? null,
+                            'merkle_root' => $blk['merkleRoot'] ?? ($blk['merkle_root'] ?? ''),
+                            'transactions_count' => isset($blk['transactions']) && is_array($blk['transactions']) ? count($blk['transactions']) : 0,
+                            'metadata' => $blk['metadata'] ?? []
+                        ];
+                    }
+                }
+                usort($blocks, fn($a, $b) => $a['height'] <=> $b['height']);
+            }
+        }
+
+        return [
+            'success' => true,
+            'data' => [
+                'blocks' => $blocks,
+                'range' => ['start' => $start, 'end' => $end]
+            ]
+        ];
+    } catch (Exception $e) {
+        return [
+            'success' => false,
+            'error' => $e->getMessage(),
+            'data' => [ 'blocks' => [], 'range' => ['start' => $start, 'end' => $end] ]
+        ];
+    }
+}
+
+/**
+ * Get only block headers for an inclusive height range [start, end]
+ */
+function getBlockHeaders(PDO $pdo, string $network, int $start, int $end): array {
+    try {
+        if ($start > $end) {
+            [$start, $end] = [$end, $start];
+        }
+        $maxRange = 1000;
+        if ($end - $start + 1 > $maxRange) {
+            $end = $start + $maxRange - 1;
+        }
+
+        $headers = [];
+        // Prefer database if available
+        $stmt = $pdo->query("SHOW TABLES LIKE 'blocks'");
+        if ($stmt->rowCount() > 0) {
+            $q = $pdo->prepare("SELECT hash, parent_hash, height, timestamp, merkle_root, validator, signature FROM blocks WHERE height BETWEEN ? AND ? ORDER BY height ASC");
+            $q->execute([$start, $end]);
+            $rows = $q->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($rows as $r) {
+                $headers[] = [
+                    'height' => (int)$r['height'],
+                    'index' => (int)$r['height'],
+                    'hash' => (string)$r['hash'],
+                    'previous_hash' => (string)$r['parent_hash'],
+                    'timestamp' => (int)$r['timestamp'],
+                    'merkle_root' => $r['merkle_root'] ?? '',
+                    'validator' => $r['validator'] ?? null,
+                    'signature' => $r['signature'] ?? null,
+                ];
+            }
+
+            return [
+                'success' => true,
+                'data' => [
+                    'headers' => $headers,
+                    'range' => ['start' => $start, 'end' => $end]
+                ]
+            ];
+        }
+
+        // File fallback
+        $chainFile = '../../storage/blockchain/chain.json';
+        if (file_exists($chainFile)) {
+            $chain = json_decode(file_get_contents($chainFile), true);
+            if (is_array($chain)) {
+                foreach ($chain as $blk) {
+                    $h = (int)($blk['index'] ?? $blk['height'] ?? -1);
+                    if ($h >= $start && $h <= $end) {
+                        $headers[] = [
+                            'height' => $h,
+                            'index' => $h,
+                            'hash' => $blk['hash'] ?? '',
+                            'previous_hash' => $blk['previousHash'] ?? $blk['parent_hash'] ?? ($blk['previous_hash'] ?? ''),
+                            'timestamp' => (int)($blk['timestamp'] ?? time()),
+                            'merkle_root' => $blk['merkleRoot'] ?? ($blk['merkle_root'] ?? ''),
+                            'validator' => $blk['validator'] ?? null,
+                            'signature' => $blk['signature'] ?? null,
+                        ];
+                    }
+                }
+                usort($headers, fn($a, $b) => $a['height'] <=> $b['height']);
+            }
+        }
+
+        return [
+            'success' => true,
+            'data' => [
+                'headers' => $headers,
+                'range' => ['start' => $start, 'end' => $end]
+            ]
+        ];
+    } catch (Exception $e) {
+        return [
+            'success' => false,
+            'error' => $e->getMessage(),
+            'data' => [ 'headers' => [], 'range' => ['start' => $start, 'end' => $end] ]
+        ];
+    }
+}
+
+/**
+ * Get only block hashes for an inclusive height range [start, end]
+ */
+function getBlockHashesRange(PDO $pdo, string $network, int $start, int $end): array {
+    try {
+        if ($start > $end) {
+            [$start, $end] = [$end, $start];
+        }
+        // Keep it lightweight; allow up to 2000 heights per call
+        $maxRange = 2000;
+        if ($end - $start + 1 > $maxRange) {
+            $end = $start + $maxRange - 1;
+        }
+
+        $hashes = [];
+        // Prefer database if available
+        $stmt = $pdo->query("SHOW TABLES LIKE 'blocks'");
+        if ($stmt->rowCount() > 0) {
+            $q = $pdo->prepare("SELECT height, hash FROM blocks WHERE height BETWEEN ? AND ? ORDER BY height ASC");
+            $q->execute([$start, $end]);
+            $rows = $q->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($rows as $r) {
+                $hashes[] = (string)$r['hash'];
+            }
+
+            return [
+                'success' => true,
+                'data' => [
+                    'hashes' => $hashes,
+                    'range' => ['start' => $start, 'end' => $end]
+                ]
+            ];
+        }
+
+        // File fallback
+        $chainFile = '../../storage/blockchain/chain.json';
+        if (file_exists($chainFile)) {
+            $chain = json_decode(file_get_contents($chainFile), true);
+            if (is_array($chain)) {
+                foreach ($chain as $blk) {
+                    $h = (int)($blk['index'] ?? $blk['height'] ?? -1);
+                    if ($h >= $start && $h <= $end) {
+                        $hashes[$h] = $blk['hash'] ?? '';
+                    }
+                }
+                // Ensure ascending order by height
+                ksort($hashes, SORT_NUMERIC);
+                $hashes = array_values($hashes);
+            }
+        }
+
+        return [
+            'success' => true,
+            'data' => [
+                'hashes' => $hashes,
+                'range' => ['start' => $start, 'end' => $end]
+            ]
+        ];
+    } catch (Exception $e) {
+        return [
+            'success' => false,
+            'error' => $e->getMessage(),
+            'data' => [ 'hashes' => [], 'range' => ['start' => $start, 'end' => $end] ]
         ];
     }
 }

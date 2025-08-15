@@ -721,6 +721,71 @@ class NetworkSyncManager {
         }
         
         $totalSynced = 0;
+
+        // Try fast path: batched range fetch via explorer (added endpoint)
+        $rangeStart = (int)$localHeight + 1;
+        if ($rangeStart <= (int)$remoteHeight) {
+            $this->log("Attempting batched block sync using get_blocks_range endpoint...");
+            $batchSize = 500; // matches API cap
+            $batchInserted = 0;
+
+            for ($start = $rangeStart; $start <= $remoteHeight; $start += $batchSize) {
+                $end = min($start + $batchSize - 1, (int)$remoteHeight);
+                $url = rtrim($node, '/') . "/api/explorer/index.php?action=get_blocks_range&start=$start&end=$end";
+                $response = $this->makeApiCall($url);
+
+                if (!$response || !isset($response['success']) || !$response['success']) {
+                    $this->log("Batched fetch failed or unsupported at range $start-$end; falling back to per-block...");
+                    $batchInserted = 0; // signal fallback
+                    break;
+                }
+
+                $blocks = $response['data']['blocks'] ?? [];
+                if (empty($blocks)) {
+                    $this->log("No blocks returned for range $start-$end");
+                    continue;
+                }
+
+                $ins = 0;
+                foreach ($blocks as $block) {
+                    // Ensure metadata is JSON string
+                    $metadata = $block['metadata'] ?? '{}';
+                    if (is_array($metadata)) { $metadata = json_encode($metadata, JSON_UNESCAPED_UNICODE); }
+                    if ($metadata === null || $metadata === '') { $metadata = '{}'; }
+
+                    $stmt = $this->pdo->prepare("
+                        INSERT IGNORE INTO blocks (height, hash, parent_hash, merkle_root, timestamp, validator, signature, transactions_count, metadata)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ");
+                    $result = $stmt->execute([
+                        $block['height'],
+                        $block['hash'],
+                        $block['parent_hash'] ?? ($block['previous_hash'] ?? ''),
+                        $block['merkle_root'] ?? '',
+                        $block['timestamp'],
+                        $block['validator'] ?? '',
+                        $block['signature'] ?? '',
+                        $block['transactions_count'] ?? 0,
+                        $metadata
+                    ]);
+                    if ($result && $stmt->rowCount() > 0) { $ins++; }
+                }
+
+                $totalSynced += $ins;
+                $batchInserted += $ins;
+                $this->log("Range $start-$end: synced $ins new blocks");
+
+                if ($this->isWebMode) {
+                    echo json_encode(['status' => 'progress', 'message' => "Synced $totalSynced blocks (batched)"]) . "\n";
+                    flush();
+                }
+            }
+
+            // If we made some progress with batches, we can return early
+            if ($batchInserted > 0) {
+                $this->log("Batched sync completed with $batchInserted blocks inserted.");
+            }
+        }
         
         // Try to sync remaining blocks individually since get_blocks API doesn't work
         for ($h = $localHeight + 1; $h <= $remoteHeight; $h++) {

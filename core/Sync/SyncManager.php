@@ -404,19 +404,28 @@ class SyncManager
     {
         $blocks = [];
 
-        // Try parsing batched responses first
-        $batchedParsed = false;
+        // Try parsing batched responses from multiple nodes and apply a simple quorum (majority) per height
+        $heightMap = []; // height => [fingerprint => ['count' => n, 'sample' => payload]]
+        $rangeHint = ['start' => null, 'end' => null];
         foreach ($results as $id => $res) {
             if (!($res['success'] ?? false)) {
                 continue;
             }
-
             $payload = $res['data'] ?? null;
             if (!$payload && !empty($res['response'])) {
                 $payload = json_decode($res['response'], true);
             }
             if (!is_array($payload)) {
                 continue;
+            }
+
+            // Extract range hint from request id/url (used later for per-block fallback)
+            if ($rangeHint['start'] === null || $rangeHint['end'] === null) {
+                $req = $res['request']['url'] ?? '';
+                if (preg_match('#start=(\d+).*end=(\d+)#', $req, $m)) {
+                    $rangeHint['start'] = (int)$m[1];
+                    $rangeHint['end'] = (int)$m[2];
+                }
             }
 
             // Supported formats:
@@ -429,31 +438,64 @@ class SyncManager
                 $list = $payload['blocks'];
             }
 
-            if (!empty($list)) {
-                foreach ($list as $blockData) {
-                    $b = $this->createBlockFromExplorerData($blockData);
-                    if ($b) {
-                        $blocks[] = $b;
-                    }
+            if (empty($list)) {
+                continue;
+            }
+
+            // Tally fingerprints per height
+            foreach ($list as $blockData) {
+                $h = (int)($blockData['height'] ?? $blockData['index'] ?? -1);
+                if ($h < 0) { continue; }
+                $fp = $this->fingerprintBlockPayload($blockData);
+                if (!isset($heightMap[$h])) { $heightMap[$h] = []; }
+                if (!isset($heightMap[$h][$fp])) {
+                    $heightMap[$h][$fp] = ['count' => 0, 'sample' => $blockData];
                 }
-                $batchedParsed = true;
-                break; // One valid source is sufficient
+                $heightMap[$h][$fp]['count']++;
             }
         }
 
-        if ($batchedParsed) {
-            return $blocks;
+        if (!empty($heightMap)) {
+            // Choose majority payload per height and build blocks
+            ksort($heightMap, SORT_NUMERIC);
+            $selectedPayloads = [];
+            foreach ($heightMap as $h => $fpSet) {
+                // Pick the fingerprint with max count
+                uasort($fpSet, function($a, $b) { return ($b['count'] <=> $a['count']); });
+                $major = reset($fpSet);
+                if ($major && isset($major['sample'])) {
+                    $selectedPayloads[$h] = $major['sample'];
+                }
+            }
+
+            // Validate continuity within the selection (previous_hash -> hash when available)
+            $validatedPayloads = $this->validateAndTrimSequence($selectedPayloads);
+
+            foreach ($validatedPayloads as $p) {
+                if (method_exists(\Blockchain\Core\Blockchain\Block::class, 'fromPayload')) {
+                    $b = \Blockchain\Core\Blockchain\Block::fromPayload($p);
+                } else {
+                    $b = $this->createBlockFromExplorerData($p);
+                }
+                if ($b) { $b->addMetadata('source', 'sync'); $blocks[] = $b; }
+            }
+
+            if (!empty($blocks)) {
+                return $blocks;
+            }
         }
 
         // Fallback: per-block requests for the required range
-        // Determine requested range from request identifiers
-        $rangeStart = null;
-        $rangeEnd = null;
-        foreach (array_keys($results) as $key) {
-            if (preg_match('/::range::(\d+)-(\d+)/', $key, $m)) {
-                $rangeStart = (int)$m[1];
-                $rangeEnd = (int)$m[2];
-                break;
+        // Determine requested range from request identifiers if no hint yet
+        $rangeStart = $rangeHint['start'];
+        $rangeEnd = $rangeHint['end'];
+        if ($rangeStart === null || $rangeEnd === null) {
+            foreach (array_keys($results) as $key) {
+                if (preg_match('/::range::(\d+)-(\d+)/', $key, $m)) {
+                    $rangeStart = (int)$m[1];
+                    $rangeEnd = (int)$m[2];
+                    break;
+                }
             }
         }
         if ($rangeStart === null || $rangeEnd === null) {
@@ -494,6 +536,7 @@ class SyncManager
         }
 
         $singleResults = $this->multiCurl->executeRequests($singleRequests);
+        $singlePayloads = [];
         foreach ($singleResults as $rid => $res) {
             if (!($res['success'] ?? false)) {
                 continue;
@@ -508,9 +551,23 @@ class SyncManager
             if (isset($payload['success']) && $payload['success'] && isset($payload['data'])) {
                 $payload = $payload['data'];
             }
-            $b = $this->createBlockFromExplorerData($payload);
-            if ($b) {
-                $blocks[] = $b;
+            $h = (int)($payload['height'] ?? $payload['index'] ?? -1);
+            if ($h >= 0) {
+                $singlePayloads[$h] = $payload; // last write wins; we assume single base URL gives consistent data
+            }
+        }
+
+        // Validate continuity on single payloads then convert to blocks
+        if (!empty($singlePayloads)) {
+            ksort($singlePayloads, SORT_NUMERIC);
+            $validated = $this->validateAndTrimSequence($singlePayloads);
+            foreach ($validated as $p) {
+                if (method_exists(\Blockchain\Core\Blockchain\Block::class, 'fromPayload')) {
+                    $b = \Blockchain\Core\Blockchain\Block::fromPayload($p);
+                } else {
+                    $b = $this->createBlockFromExplorerData($p);
+                }
+                if ($b) { $b->addMetadata('source', 'sync'); $blocks[] = $b; }
             }
         }
 
@@ -558,6 +615,53 @@ class SyncManager
         // If needed, extend Block to support explicit nonce assignment.
 
         return $block;
+    }
+
+    /**
+     * Compute a lightweight fingerprint for block payload to compare between nodes.
+     * Prefers explicit 'hash' if present; otherwise derives from a few stable fields.
+     */
+    private function fingerprintBlockPayload(array $payload): string
+    {
+        if (!empty($payload['hash'])) {
+            return 'h:' . (string)$payload['hash'];
+        }
+        $h = (string)($payload['height'] ?? $payload['index'] ?? '');
+        $ph = (string)($payload['previous_hash'] ?? ($payload['previousHash'] ?? ''));
+        $txCount = is_array($payload['transactions'] ?? null) ? count($payload['transactions']) : (is_array($payload['tx'] ?? null) ? count($payload['tx']) : 0);
+        $mr = (string)($payload['merkle_root'] ?? ($payload['merkleRoot'] ?? ''));
+        return sha1($h . '|' . $ph . '|' . $txCount . '|' . $mr);
+    }
+
+    /**
+     * Validate sequence continuity inside a batch and trim trailing inconsistent part.
+     * We only check that payload[i].previous_hash == payload[i-1].hash when both present.
+     */
+    private function validateAndTrimSequence(array $byHeight): array
+    {
+        if (empty($byHeight)) return $byHeight;
+        ksort($byHeight, SORT_NUMERIC);
+        $heights = array_keys($byHeight);
+        $validUntil = count($heights) - 1; // index in $heights
+        for ($i = 1; $i < count($heights); $i++) {
+            $prev = $byHeight[$heights[$i - 1]];
+            $curr = $byHeight[$heights[$i]];
+            $prevHash = $prev['hash'] ?? null;
+            $currPrev = $curr['previous_hash'] ?? ($curr['previousHash'] ?? null);
+            if ($prevHash && $currPrev && $prevHash !== $currPrev) {
+                $validUntil = $i - 1;
+                break;
+            }
+        }
+        if ($validUntil < count($heights) - 1) {
+            // Trim everything after the last valid contiguous index
+            $trimmed = [];
+            for ($j = 0; $j <= $validUntil; $j++) {
+                $trimmed[$heights[$j]] = $byHeight[$heights[$j]];
+            }
+            return $trimmed;
+        }
+        return $byHeight;
     }
 
     private function downloadStateSnapshot(int $height): array
@@ -627,15 +731,63 @@ class SyncManager
 
     private function verifyHeaderChain(array $headers): bool
     {
-        // Basic check: previousHash -> hash continuity
-        for ($i = 1; $i < count($headers); $i++) {
-            $prevHash = $headers[$i - 1]['hash'] ?? null;
-            $currPrev = $headers[$i]['previous_hash'] ?? ($headers[$i]['previousHash'] ?? null);
-            if (!$prevHash || !$currPrev || $prevHash !== $currPrev) {
-                return false;
+        if (empty($headers)) { return true; }
+        // Recompute and validate each header's hash when possible
+        foreach ($headers as $idx => $h) {
+            if (isset($h['hash'])) {
+                $recomputed = $this->recomputeHashFromPayload($h);
+                if ($recomputed !== '' && $recomputed !== (string)$h['hash']) {
+                    return false;
+                }
+            }
+            // Continuity check with previous
+            if ($idx > 0) {
+                $prevHash = $headers[$idx - 1]['hash'] ?? null;
+                $currPrev = $h['previous_hash'] ?? ($h['previousHash'] ?? null);
+                if (!$prevHash || !$currPrev || $prevHash !== $currPrev) {
+                    return false;
+                }
             }
         }
         return true;
+    }
+
+    /**
+     * Recompute hash for a header-like payload using Block::calculateHash schema.
+     * Returns empty string if insufficient data.
+     */
+    private function recomputeHashFromPayload(array $p): string
+    {
+        // Map fields with fallbacks
+        $index = (int)($p['height'] ?? $p['index'] ?? 0);
+        $timestamp = (int)($p['timestamp'] ?? 0);
+        $prev = (string)($p['previous_hash'] ?? ($p['previousHash'] ?? ''));
+        $merkle = (string)($p['merkle_root'] ?? ($p['merkleRoot'] ?? ''));
+        $state = (string)($p['state_root'] ?? ($p['stateRoot'] ?? ''));
+        $nonce = (int)($p['nonce'] ?? 0);
+        $gasUsed = (int)($p['gas_used'] ?? ($p['gasUsed'] ?? 0));
+        $gasLimit = (int)($p['gas_limit'] ?? ($p['gasLimit'] ?? 0));
+        $difficulty = (string)($p['difficulty'] ?? '0');
+        $validators = $p['validators'] ?? [];
+        $stakes = $p['stakes'] ?? [];
+
+        // If critical parts are missing, skip (return empty to avoid false failures)
+        if ($timestamp === 0 || $prev === '' || $merkle === '' || $state === '') {
+            return '';
+        }
+
+        $data = $index .
+                $timestamp .
+                $prev .
+                $merkle .
+                $state .
+                $nonce .
+                $gasUsed .
+                $gasLimit .
+                $difficulty .
+                json_encode($validators) .
+                json_encode($stakes);
+        return \Blockchain\Core\Crypto\Hash::sha256($data);
     }
 
     private function findBestCheckpoint(int $networkHeight): ?array

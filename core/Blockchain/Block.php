@@ -300,4 +300,78 @@ class Block implements BlockInterface
             'metadata' => $this->metadata
         ];
     }
+
+    /**
+     * Construct Block from network payload without changing DB/schema.
+     * Uses payload values when provided; otherwise falls back to defaults/constructor behavior.
+     */
+    public static function fromPayload(array $payload): Block
+    {
+        $index = (int)($payload['height'] ?? $payload['index'] ?? 0);
+        $previousHash = (string)($payload['previous_hash'] ?? ($payload['previousHash'] ?? '0'));
+        $transactions = $payload['transactions'] ?? ($payload['tx'] ?? []);
+        if (!is_array($transactions)) {
+            $transactions = [];
+        }
+
+        // Normalize transactions arrays; leave as-is if already arrays
+        $txs = [];
+        foreach ($transactions as $tx) {
+            $txs[] = is_array($tx) ? $tx : (array)$tx;
+        }
+
+        $validators = isset($payload['validators']) && is_array($payload['validators']) ? $payload['validators'] : [];
+        $stakes = isset($payload['stakes']) && is_array($payload['stakes']) ? $payload['stakes'] : [];
+
+        $block = new Block($index, $txs, $previousHash, $validators, $stakes);
+
+        // Apply metadata early without recalculating stateRoot
+        if (isset($payload['metadata']) && is_array($payload['metadata'])) {
+            $block->metadata = $payload['metadata'];
+        }
+
+        // Override basic fields if provided
+        if (isset($payload['timestamp'])) {
+            $block->timestamp = (int)$payload['timestamp'];
+        }
+        if (isset($payload['nonce'])) {
+            $block->nonce = (int)$payload['nonce'];
+        }
+        if (isset($payload['merkle_root'])) {
+            $block->merkleRoot = (string)$payload['merkle_root'];
+        } elseif (isset($payload['merkleRoot'])) {
+            $block->merkleRoot = (string)$payload['merkleRoot'];
+        }
+        if (isset($payload['state_root'])) {
+            $block->stateRoot = (string)$payload['state_root'];
+        } elseif (isset($payload['stateRoot'])) {
+            $block->stateRoot = (string)$payload['stateRoot'];
+        }
+
+        // Finally, set hash if provided; else keep computed
+        if (isset($payload['hash'])) {
+            $block->hash = (string)$payload['hash'];
+        } else {
+            // Recalculate hash with possibly overridden fields
+            $block->calculateHash();
+        }
+
+        // Map possible signature fields from network payload into metadata for PoS verification
+        if (isset($payload['validator']) && isset($payload['signature'])) {
+            $block->addMetadata('validator_signature', [
+                'validator' => (string)$payload['validator'],
+                'signature' => (string)$payload['signature'],
+                'timestamp' => (int)($payload['timestamp'] ?? time()),
+                'method' => 'network'
+            ]);
+        } elseif (isset($payload['metadata']['validator_signature'])) {
+            // Preserve incoming validator_signature if nested in metadata
+            $vs = $payload['metadata']['validator_signature'];
+            if (is_array($vs) && isset($vs['validator'], $vs['signature'])) {
+                $block->addMetadata('validator_signature', $vs);
+            }
+        }
+
+        return $block;
+    }
 }

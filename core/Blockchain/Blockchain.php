@@ -132,6 +132,22 @@ class Blockchain implements BlockchainInterface
         }
 
         // Check consensus
+        // If у блока есть подпись валидатора в metadata, попробуем верифицировать через PoS/ValidatorManager
+        if (method_exists($block, 'getMetadata')) {
+            $meta = ($block instanceof \Blockchain\Core\Blockchain\Block) ? $block->getMetadata() : [];
+            if (isset($meta['validator_signature']) && method_exists($this->consensus, 'verifyBlockSignature')) {
+                try {
+                    $vs = $meta['validator_signature'];
+                    $validatorAddr = is_array($vs) && isset($vs['validator']) ? (string)$vs['validator'] : null;
+                    if ($validatorAddr && !$this->consensus->verifyBlockSignature($block, $validatorAddr)) {
+                        return false;
+                    }
+                } catch (\Throwable $e) {
+                    return false;
+                }
+            }
+        }
+
         if (!$this->consensus->validateBlock($block, $this->stakeholders)) {
             return false;
         }
@@ -142,8 +158,11 @@ class Blockchain implements BlockchainInterface
         // Update network state
         $this->updateNetworkState($block);
 
-        // Notify network nodes
-        $this->nodeManager->broadcastBlock($block);
+        // Notify network nodes unless block came from sync process
+    $metadata = ($block instanceof \Blockchain\Core\Blockchain\Block) ? $block->getMetadata() : [];
+        if (($metadata['source'] ?? null) !== 'sync') {
+            $this->nodeManager->broadcastBlock($block);
+        }
 
         // Dispatch event
         $this->eventDispatcher->dispatch('block.added', ['block' => $block]);
