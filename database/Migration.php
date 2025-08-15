@@ -392,8 +392,8 @@ class Migration
             ('network.token_symbol', 'COIN', 'Token symbol', 0),
             ('network.token_name', 'Blockchain Coin', 'Token full name', 0),
             ('network.initial_supply', '1000000', 'Initial token supply', 0),
-            ('network.decimals', '8', 'Token decimal places', 0),
-            ('network.chain_id', '1', 'Network chain ID', 1),
+            ('network.decimals', '18', 'Token decimal places', 0),
+            ('network.chain_id', '20250808', 'Network chain ID', 1),
             ('network.protocol_version', '1.0.0', 'Protocol version', 1),
             
             -- Parameters for transaction broadcasting

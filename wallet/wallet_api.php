@@ -664,9 +664,50 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             $privateKey = $input['private_key'] ?? '';
             $senderPublicKey = $input['sender_public_key'] ?? '';
 
+            // Enhanced validation for security
             if (!$encryptedMessage || !$privateKey) {
                 throw new Exception('Encrypted message and private key are required');
             }
+
+            // SECURITY FIX: Clean private key input (remove HTML tags and whitespace)
+            $privateKey = strip_tags(trim($privateKey));
+            
+            // SECURITY FIX: Comprehensive private key validation
+            // 1. Remove all non-hex characters and normalize
+            $cleanKey = preg_replace('/[^0-9a-f]/i', '', $privateKey);
+            $cleanKey = strtolower(ltrim(str_replace('0x', '', $cleanKey), '0'));
+            
+            // 2. Pad with zeros if needed and check length
+            if (strlen($cleanKey) < 64) {
+                $cleanKey = str_pad($cleanKey, 64, '0', STR_PAD_LEFT);
+            }
+            
+            // 3. Validate final format
+            \Blockchain\Wallet\WalletLogger::debug("Key validation steps", [
+                'original' => $privateKey,
+                'cleaned' => $cleanKey,
+                'length' => strlen($cleanKey),
+                'is_zero' => $cleanKey === str_repeat('0', 64)
+            ]);
+            
+            if (strlen($cleanKey) !== 64 || !ctype_xdigit($cleanKey)) {
+                throw new Exception('Invalid key format. Expected 64 hex chars after cleaning');
+            }
+            
+            if ($cleanKey === str_repeat('0', 64)) {
+                throw new Exception('Zero key is invalid');
+            }
+            
+            // 4. Try to create KeyPair instance for final validation
+            try {
+                $keyPair = \Blockchain\Core\Cryptography\KeyPair::fromPrivateKey($cleanKey);
+            } catch (Exception $e) {
+                throw new Exception('Key validation failed: '.$e->getMessage());
+            }
+
+            // SECURITY FIX: Log decryption attempt for audit trail
+            $requestId = $GLOBALS['__REQ_ID'] ?? 'unknown';
+            writeLog("SECURITY: Decrypt attempt from {$requestId} for key hash: " . hash('sha256', $privateKey), 'WARNING');
 
             // Server-side compatibility: inject recipient_public_key if missing
             try {
@@ -684,7 +725,21 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
                 // Best-effort; proceed without modification
             }
 
-            $result = decryptMessage($encryptedMessage, $privateKey, $senderPublicKey);
+            try {
+                // Ensure encryptedMessage is properly formatted
+                if (is_array($encryptedMessage)) {
+                    $encryptedMessage = json_encode($encryptedMessage, JSON_THROW_ON_ERROR);
+                }
+                
+                if (!is_string($encryptedMessage)) {
+                    throw new Exception('Encrypted message must be a JSON string or array');
+                }
+
+                $result = decryptMessage($encryptedMessage, $privateKey, $senderPublicKey);
+                
+            } catch (JsonException $e) {
+                throw new Exception('Failed to encode encrypted message: ' . $e->getMessage());
+            }
             break;
             
         case 'get_transaction_history':
@@ -6711,4 +6766,47 @@ function forwardTransactionToNode(string $nodeUrl, array $transaction, int $time
     }
 }
 
-
+/**
+ * Validate private key format and strength
+ */
+function isValidPrivateKey(string $privateKey): bool {
+    try {
+        // Remove 0x prefix if present
+        $cleanKey = str_replace('0x', '', trim($privateKey));
+        
+        // Check basic format
+        if (!ctype_xdigit($cleanKey)) {
+            return false;
+        }
+        
+        // Check length (64 characters for 256-bit key)
+        if (strlen($cleanKey) !== 64) {
+            return false;
+        }
+        
+        // Check if it's not all zeros
+        if (hexdec($cleanKey) === 0) {
+            return false;
+        }
+        
+        // Try to create key pair to validate the key
+        try {
+            $kp = \Blockchain\Core\Cryptography\KeyPair::fromPrivateKey($cleanKey);
+            $publicKey = $kp->getPublicKey();
+            
+            // Validate public key format
+            if (empty($publicKey) || !str_starts_with($publicKey, '0x')) {
+                return false;
+            }
+            
+            return true;
+        } catch (\Throwable $e) {
+            // If key pair creation fails, it's invalid
+            return false;
+        }
+        
+    } catch (\Throwable $e) {
+        // Any exception means invalid key
+        return false;
+    }
+}

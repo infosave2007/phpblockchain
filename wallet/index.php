@@ -2933,28 +2933,11 @@ function getLanguageOptions($currentLang) {
         // Show decrypt modal for encrypted messages
         // Attempt to decrypt message with current wallet's private key, fallback to modal
         async function attemptAutoDecrypt(encryptedMessageJson) {
-            try {
-                let privateKey = null;
-                
-                // Only try to get private key from current wallet data (if recently created/restored in this session)
-                if (currentWalletData && currentWalletData.private_key) {
-                    privateKey = currentWalletData.private_key;
-                }
-                
-                // If we have a private key from current session, try to decrypt
-                if (privateKey) {
-                    const success = await tryDecryptWithKey(encryptedMessageJson, privateKey);
-                    if (success) {
-                        return; // Successfully decrypted, no need for modal
-                    }
-                }
-                
-                // If auto-decrypt failed or no private key available, show modal
-                showDecryptModal(encryptedMessageJson);
-            } catch (e) {
-                console.error('Error in auto decrypt:', e);
-                showDecryptModal(encryptedMessageJson);
-            }
+            console.log('Auto-decrypt called - showing decryption modal for security');
+            
+            // SECURITY FIX: Always show decryption modal instead of auto-decrypting
+            // This prevents accidental decryption of sensitive messages
+            showDecryptModal(encryptedMessageJson);
         }
         
         // Try to resolve public key for given private key from current session or local storage
