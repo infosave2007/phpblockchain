@@ -2891,7 +2891,7 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
             }
 
             case 'eth_blockNumber': {
-                $height = getCurrentBlockHeight($walletManager);
+                $height = getCurrentBlockHeight($pdo);
                 return '0x' . dechex(max(0, (int)$height));
             }
 
@@ -3763,7 +3763,7 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                 if (is_string($tag) && str_starts_with($tag, '0x')) {
                     $height = hexdec($tag);
                 } elseif ($tag === 'latest') {
-                    $height = getCurrentBlockHeight($walletManager);
+                    $height = getCurrentBlockHeight($pdo);
                 }
                 if ($height === null) return null;
                 $block = getBlockByHeight($walletManager, (int)$height);
@@ -3872,7 +3872,7 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                 if (is_string($tag) && str_starts_with($tag, '0x')) {
                     $height = hexdec($tag);
                 } elseif ($tag === 'latest') {
-                    $height = getCurrentBlockHeight($walletManager);
+                    $height = getCurrentBlockHeight($pdo);
                 }
                 if ($height === null) return '0x0';
                 $block = getBlockByHeight($walletManager, (int)$height);
@@ -3888,7 +3888,7 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                 if (is_string($tag) && str_starts_with($tag, '0x')) {
                     $height = hexdec($tag);
                 } elseif ($tag === 'latest') {
-                    $height = getCurrentBlockHeight($walletManager);
+                    $height = getCurrentBlockHeight($pdo);
                 }
                 if ($height === null) return null;
                 $index = is_string($indexHex) && str_starts_with($indexHex, '0x') ? hexdec($indexHex) : (int)$indexHex;
