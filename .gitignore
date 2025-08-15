@@ -128,3 +128,6 @@ storage/trustwallet/tokenlist.json
 blockchain.json
 storage/trustwallet/network.json
 storage/trustwallet/tokenlist.json
+scripts/auto_deploy.php
+scripts/quick_update.php
+scripts/build_deployment_package.php

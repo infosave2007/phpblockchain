@@ -2,7 +2,7 @@
 
 namespace Blockchain\Core\Crypto;
 
-use kornrunner\Keccak;
+use infosave2007\Keccak;
 
 /**
  * Cryptographic Hash utilities

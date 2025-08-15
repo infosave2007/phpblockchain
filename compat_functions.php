@@ -32,8 +32,8 @@ if (!function_exists('hash_pbkdf2')) {
 // Keccak256 compatibility (for Ethereum)
 if (!function_exists('keccak256')) {
     function keccak256($data) {
-        // Simple implementation - in production use proper keccak256
-        return hash('sha3-256', $data);
+        // Use optimized infosave2007/keccak library for proper Keccak-256
+        return \infosave2007\Keccak::hash($data, 256);
     }
 }
 

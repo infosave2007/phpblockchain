@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Blockchain\Core\Crypto;
 
-use kornrunner\Keccak;
+use infosave2007\Keccak;
 use kornrunner\Secp256k1;
 use Mdanter\Ecc\Curves\CurveFactory;
 use Mdanter\Ecc\Curves\SecgCurve;

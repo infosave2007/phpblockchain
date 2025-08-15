@@ -19,7 +19,7 @@
         "ext-openssl": "*",
         "ext-pdo": "*",
         "guzzlehttp/guzzle": "^7.5",
-        "kornrunner/keccak": "^1.1",
+        "infosave2007/keccak": "dev-master",
         "kornrunner/secp256k1": "^0.3",
         "monolog/monolog": "^3.0",
         "psr/log": "^3.0",
@@ -86,12 +86,18 @@
         "node-start": "php cli.php node start",
         "wallet-create": "php cli.php wallet create"
     },
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/infosave2007/keccak"
+        }
+    ],
     "config": {
         "optimize-autoloader": true,
         "sort-packages": true,
         "platform": { "php": "8.1.0" }
     },
-    "minimum-stability": "stable",
+    "minimum-stability": "dev",
     "prefer-stable": true,
     "bin": [
         "cli.php"

@@ -9,6 +9,8 @@ use Exception;
  * Message Encryption Class
  * 
  * Handles encryption and decryption of messages using secp256k1 ECIES
+ * NOTE: Implementation is designed to work on basic hosting without native secp256k1.
+ * It uses deterministic, pure-PHP fallbacks for ECDH-like keying and HMAC-based signing.
  */
 class MessageEncryption
 {
@@ -58,6 +60,9 @@ class MessageEncryption
         $iv = random_bytes(16);
         
         // Encrypt message with AES-256-CBC
+        if (!function_exists('openssl_encrypt')) {
+            throw new Exception('OpenSSL extension is required for AES-256-CBC');
+        }
         $encryptedMessage = openssl_encrypt($message, 'AES-256-CBC', $encryptionKey, OPENSSL_RAW_DATA, $iv);
         
         if ($encryptedMessage === false) {
@@ -267,6 +272,9 @@ class MessageEncryption
         }
 
         // Decrypt message
+        if (!function_exists('openssl_decrypt')) {
+            throw new Exception('OpenSSL extension is required for AES-256-CBC');
+        }
         $decryptedMessage = openssl_decrypt($encryptedMessage, 'AES-256-CBC', $encryptionKey, OPENSSL_RAW_DATA, $iv);
         
         if ($decryptedMessage === false) {

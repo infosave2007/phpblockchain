@@ -247,10 +247,13 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
     $input = json_decode($rawBody, true);
     $jsonError = json_last_error();
 
-    // For GET requests use $_GET
+    // For GET requests use $_GET and log parameters
     if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $input = $_GET;
         $jsonError = JSON_ERROR_NONE;
+        // Log GET parameters as request body
+        $rawBodyEarly = http_build_query($_GET);
+        $GLOBALS['__RAW_BODY'] = $rawBodyEarly;
     }
 
     // Simple request logging
@@ -711,15 +714,20 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
 
             // Server-side compatibility: inject recipient_public_key if missing
             try {
-                $secureObj = json_decode($encryptedMessage, true);
-                if (json_last_error() === JSON_ERROR_NONE && is_array($secureObj) && isset($secureObj['encrypted_data']) && is_array($secureObj['encrypted_data'])) {
+                // Support both string JSON and array input
+                if (is_array($encryptedMessage)) {
+                    $secureObj = $encryptedMessage;
+                } else {
+                    $secureObj = json_decode((string)$encryptedMessage, true);
+                }
+                if (is_array($secureObj) && isset($secureObj['encrypted_data']) && is_array($secureObj['encrypted_data'])) {
                     $enc =& $secureObj['encrypted_data'];
                     if (empty($enc['recipient_public_key'])) {
-                        // Derive recipient public key from provided private key
-                        $kp = \Blockchain\Core\Cryptography\KeyPair::fromPrivateKey(str_replace('0x','',$privateKey));
+                        // Derive recipient public key from provided private key (use cleaned key)
+                        $kp = \Blockchain\Core\Cryptography\KeyPair::fromPrivateKey($cleanKey);
                         $enc['recipient_public_key'] = $kp->getPublicKey();
-                        $encryptedMessage = json_encode($secureObj);
                     }
+                    $encryptedMessage = json_encode($secureObj);
                 }
             } catch (\Throwable $e) {
                 // Best-effort; proceed without modification
@@ -735,7 +743,8 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
                     throw new Exception('Encrypted message must be a JSON string or array');
                 }
 
-                $result = decryptMessage($encryptedMessage, $privateKey, $senderPublicKey);
+                // Use cleaned private key for decryption to avoid format issues (e.g., 0x prefix)
+                $result = decryptMessage($encryptedMessage, $cleanKey, $senderPublicKey);
                 
             } catch (JsonException $e) {
                 throw new Exception('Failed to encode encrypted message: ' . $e->getMessage());
@@ -4415,81 +4424,9 @@ function queueRawTransaction(string $txHash, string $rawHex, array $parsed = [])
  * Recover the 'from' address from an EIP-1559 transaction signature
  */
 function recoverEIP1559FromAddress($chainIdHex, $nonceHex, $maxPriorityFeePerGasHex, $maxFeePerGasHex, $gasHex, $toHex, $valueHex, $inputHex, $accessList, $vRaw, $rRaw, $sRaw): ?string {
-    try {
-        // Convert hex values to integers
-        $chainId = hexdec(ltrim($chainIdHex, '0x'));
-        $nonce = hexdec(ltrim($nonceHex, '0x'));
-        $maxPriorityFeePerGas = hexdec(ltrim($maxPriorityFeePerGasHex, '0x'));
-        $maxFeePerGas = hexdec(ltrim($maxFeePerGasHex, '0x'));
-        $gasLimit = hexdec(ltrim($gasHex, '0x'));
-        $value = hexdec(ltrim($valueHex, '0x'));
-        
-        // Convert to addresses/data
-        $to = ltrim($toHex, '0x');
-        $input = ltrim($inputHex, '0x');
-        
-        // Build RLP encoding for signing (without signature)
-        $unsignedTxData = [
-            intToRLP($chainId),
-            intToRLP($nonce),
-            intToRLP($maxPriorityFeePerGas),
-            intToRLP($maxFeePerGas),
-            intToRLP($gasLimit),
-            hex2bin(str_pad($to, 40, '0', STR_PAD_LEFT)),
-            intToRLP($value),
-            hex2bin($input),
-            [] // accessList (simplified as empty)
-        ];
-        
-        // RLP encode the unsigned transaction
-        $rlpEncoded = rlpEncode($unsignedTxData);
-        
-        // Prepend transaction type (0x02 for EIP-1559)
-        $messageHash = \Blockchain\Core\Crypto\Hash::keccak256(hex2bin('02') . $rlpEncoded);
-        
-        // Extract signature components
-        $vBin = is_string($vRaw) ? $vRaw : '';
-        $rBin = is_string($rRaw) ? $rRaw : '';
-        $sBin = is_string($sRaw) ? $sRaw : '';
-        
-        if (strlen($vBin) === 0 || strlen($rBin) === 0 || strlen($sBin) === 0) {
-            return null;
-        }
-        
-        // For EIP-1559, v is either 0 or 1 (recovery id)
-        $recoveryId = ord($vBin);
-        
-        // Convert r and s to hex
-        $rHex = bin2hex($rBin);
-        $sHex = bin2hex($sBin);
-        
-        // Use secp256k1 recovery (if available and constants defined)
-        if (
-            function_exists('secp256k1_ecdsa_recover') &&
-            function_exists('secp256k1_ecdsa_recoverable_signature_parse_compact') &&
-            function_exists('secp256k1_ec_pubkey_serialize') &&
-            function_exists('secp256k1_context_create') &&
-            defined('SECP256K1_CONTEXT_SIGN') &&
-            defined('SECP256K1_CONTEXT_VERIFY') &&
-            defined('SECP256K1_EC_UNCOMPRESSED')
-        ) {
-            $flags = constant('SECP256K1_CONTEXT_SIGN') | constant('SECP256K1_CONTEXT_VERIFY');
-            $context = secp256k1_context_create($flags);
-            $signature = pack('H*', $rHex . $sHex);
-            $recoverableSignature = secp256k1_ecdsa_recoverable_signature_parse_compact($context, $signature, $recoveryId);
-            $publicKey = secp256k1_ecdsa_recover($context, $recoverableSignature, hex2bin($messageHash));
-            $publicKeySerialize = secp256k1_ec_pubkey_serialize($context, $publicKey, constant('SECP256K1_EC_UNCOMPRESSED'));
-            $publicKeyHash = \Blockchain\Core\Crypto\Hash::keccak256(substr($publicKeySerialize, 1));
-            $address = '0x' . substr($publicKeyHash, -40);
-            return strtolower($address);
-        }
-        
-        // Fallback: simplified recovery (may not be accurate)
-        return null;
-        
-    } catch (\Throwable $e) {
-        return null;
-    }
+    // NOTE: Public key recovery for EIP-1559 is not supported in this build without the secp256k1 extension.
+    // This stub avoids syntax/runtime issues and returns null to indicate recovery is unavailable.
+    return null;
 }
 
 /**
