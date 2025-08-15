@@ -10,6 +10,13 @@ namespace Blockchain\Core\Contracts;
 interface BlockInterface
 {
     /**
+     * Get block index/height
+     *
+     * @return int Block index
+     */
+    public function getIndex(): int;
+
+    /**
      * Get block hash
      *
      * @return string Block hash
@@ -57,6 +64,13 @@ interface BlockInterface
      * @return string Block difficulty
      */
     public function getDifficulty(): string;
+
+    /**
+     * Get block Merkle root
+     *
+     * @return string Block Merkle root
+     */
+    public function getMerkleRoot(): string;
 
     /**
      * Validate block

@@ -204,6 +204,9 @@ class BlockStorage
                 $this->writeLog("BlockStorage::saveToDatabaseStorage - Using existing transaction, not committing", 'DEBUG');
             }
             
+            // Clean up mempool by removing confirmed transactions
+            $this->cleanMempoolAfterBlockSave($block);
+            
             $this->writeLog("BlockStorage::saveToDatabaseStorage - Block saved successfully: " . $block->getHash(), 'INFO');
             return true;
             
@@ -371,9 +374,7 @@ class BlockStorage
         
         // Use block height if available, otherwise use 0
         $blockHeight = 0;
-        if (method_exists($block, 'getHeight')) {
-            $blockHeight = $block->getHeight();
-        } elseif (method_exists($block, 'getIndex')) {
+        if (method_exists($block, 'getIndex')) {
             $blockHeight = $block->getIndex();
         }
         
@@ -622,5 +623,49 @@ class BlockStorage
             }
         }
         return file_put_contents($this->storageFile, json_encode($blockData, JSON_PRETTY_PRINT)) !== false;
+    }
+    
+    /**
+     * Clean up mempool by removing transactions that were confirmed in the block
+     */
+    private function cleanMempoolAfterBlockSave(BlockInterface $block): void
+    {
+        if (!$this->database) {
+            $this->writeLog("BlockStorage::cleanMempoolAfterBlockSave - No database connection, skipping mempool cleanup", 'WARNING');
+            return;
+        }
+        
+        try {
+            $this->writeLog("BlockStorage::cleanMempoolAfterBlockSave - Starting mempool cleanup for block " . $block->getHash(), 'DEBUG');
+            
+            // Get all transaction hashes from the block
+            $transactionHashes = [];
+            foreach ($block->getTransactions() as $transaction) {
+                // Handle both Transaction objects and arrays
+                if ($transaction instanceof \Blockchain\Core\Transaction\Transaction) {
+                    $txHash = $transaction->getHash();
+                } else {
+                    $txHash = $transaction['hash'] ?? hash('sha256', json_encode($transaction));
+                }
+                $transactionHashes[] = $txHash;
+            }
+            
+            if (empty($transactionHashes)) {
+                $this->writeLog("BlockStorage::cleanMempoolAfterBlockSave - No transactions to clean from mempool", 'DEBUG');
+                return;
+            }
+            
+            // Remove these transactions from mempool
+            $placeholders = str_repeat('?,', count($transactionHashes) - 1) . '?';
+            $deleteStmt = $this->database->prepare("DELETE FROM mempool WHERE tx_hash IN ($placeholders)");
+            $deleteStmt->execute($transactionHashes);
+            
+            $deletedCount = $deleteStmt->rowCount();
+            $this->writeLog("BlockStorage::cleanMempoolAfterBlockSave - Removed $deletedCount transactions from mempool", 'INFO');
+            
+        } catch (\Exception $e) {
+            $this->writeLog("BlockStorage::cleanMempoolAfterBlockSave - ERROR cleaning mempool: " . $e->getMessage(), 'ERROR');
+            // Don't throw exception to avoid blocking block save
+        }
     }
 }
