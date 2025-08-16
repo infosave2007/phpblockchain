@@ -1449,7 +1449,7 @@ class NetworkSyncManager {
         $this->log("Progress: $current/$total ($percent%) - $message");
     }
     
-    private function log($message) {
+    public function log($message) {
         $logEntry = date('Y-m-d H:i:s') . " - " . $message . "\n";
         // In CLI, still echo for observability even when disk logging is disabled
         if (!$this->isWebMode) {
@@ -1460,6 +1460,13 @@ class NetworkSyncManager {
             // Best-effort write; suppress errors if log directory is missing
             @file_put_contents($this->logFile, $logEntry, FILE_APPEND | LOCK_EX);
         }
+    }
+
+    /**
+     * Public accessor for PDO when needed by web endpoints.
+     */
+    public function getPdo(): PDO {
+        return $this->pdo;
     }
 
     // Quorum check of latest hashes across peers, penalize outliers
@@ -2905,18 +2912,26 @@ class NetworkSyncManager {
             // Try to notify node about new block via sync endpoint
             $syncUrl = rtrim($nodeUrl, '/') . '/network_sync.php?action=sync_new_block';
             
-            $postData = json_encode([
+            $payload = [
                 'block_hash' => $blockData['hash'],
                 'block_height' => $blockData['height'],
                 'source_node' => $this->getCurrentNodeDomain(),
-                'timestamp' => time()
-            ]);
+                'timestamp' => time(),
+            ];
+            // Add simple dedup id
+            $payload['event_id'] = hash('sha256', $payload['block_hash'] . '|' . $payload['block_height'] . '|' . $payload['timestamp']);
+            $postData = json_encode($payload);
+
+            // Optional HMAC signature using shared secret from env CONFIG or .env
+            $secret = $this->getBroadcastSecret();
+            $signature = $secret ? hash_hmac('sha256', $postData, $secret) : '';
             
             $context = stream_context_create([
                 'http' => [
                     'method' => 'POST',
                     'header' => "Content-Type: application/json\r\n" .
-                               "Content-Length: " . strlen($postData) . "\r\n",
+                               "Content-Length: " . strlen($postData) . "\r\n" .
+                               ($signature ? ("X-Broadcast-Signature: sha256=" . $signature . "\r\n") : ''),
                     'content' => $postData,
                     'timeout' => 10
                 ]
@@ -2935,6 +2950,55 @@ class NetworkSyncManager {
             $this->log("Broadcast to $nodeUrl failed: " . $e->getMessage());
             return false;
         }
+    }
+
+    /**
+     * Load broadcast secret from config table or env vars
+     */
+    public function getBroadcastSecret(): string {
+        // Priority: config table network.broadcast_secret
+        try {
+            $stmt = $this->pdo->prepare("SELECT value FROM config WHERE key_name = 'network.broadcast_secret' LIMIT 1");
+            $stmt->execute();
+            $val = $stmt->fetchColumn();
+            if (is_string($val) && $val !== '') return $val;
+        } catch (\Throwable $e) {
+            // ignore
+        }
+        // Fallbacks: env
+        $candidates = [
+            $_ENV['BROADCAST_SECRET'] ?? null,
+            $_ENV['NETWORK_BROADCAST_SECRET'] ?? null,
+            getenv('BROADCAST_SECRET') ?: null,
+            getenv('NETWORK_BROADCAST_SECRET') ?: null,
+        ];
+        foreach ($candidates as $c) {
+            if (is_string($c) && $c !== '') return $c;
+        }
+        return '';
+    }
+
+    /**
+     * Very small dedup cache using filesystem
+     */
+    public function isDuplicateEvent(string $eventId): bool {
+        $dir = __DIR__ . '/storage/tmp';
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+        $file = $dir . '/event_' . preg_replace('/[^a-zA-Z0-9_-]/', '_', $eventId) . '.lock';
+        $now = time();
+        // Clear old locks (> 15 min)
+        foreach (glob($dir . '/event_*.lock') ?: [] as $f) {
+            if (@filemtime($f) !== false && ($now - @filemtime($f)) > 900) {
+                @unlink($f);
+            }
+        }
+        if (file_exists($file)) {
+            return true;
+        }
+        @file_put_contents($file, (string)$now);
+        return false;
     }
     
     /**
@@ -3205,7 +3269,7 @@ if (isset($_GET['action'])) {
             case 'test_mempool_sync':
                 try {
                     // Simple test version
-                    $stmt = $syncManager->pdo->query("SELECT COUNT(*) FROM mempool WHERE status = 'pending'");
+                    $stmt = $syncManager->getPdo()->query("SELECT COUNT(*) FROM mempool WHERE status = 'pending'");
                     $pendingCount = $stmt->fetchColumn();
                     
                     $result = [
@@ -3228,7 +3292,7 @@ if (isset($_GET['action'])) {
                 break;
                 
             case 'get_mempool_status':
-                $stmt = $syncManager->pdo->prepare("
+                $stmt = $syncManager->getPdo()->prepare("
                     SELECT status, COUNT(*) as count 
                     FROM mempool 
                     GROUP BY status
@@ -3247,13 +3311,40 @@ if (isset($_GET['action'])) {
                 break;
                 
             case 'sync_new_block':
-                // Handle notification about new block from another node
-                $input = json_decode(file_get_contents('php://input'), true);
+                // Handle notification about new block from another node (with optional HMAC verification and dedup)
+                $rawBody = file_get_contents('php://input');
+                $input = json_decode($rawBody ?: '{}', true);
                 if ($input && isset($input['block_hash'], $input['block_height'])) {
+                    // Verify signature if provided
+                    $hdrs = function_exists('getallheaders') ? (getallheaders() ?: []) : [];
+                    $sigHeader = '';
+                    foreach ($hdrs as $k => $v) {
+                        if (strtolower($k) === 'x-broadcast-signature') { $sigHeader = (string)$v; break; }
+                    }
+                    $providedSig = '';
+                    if ($sigHeader && str_starts_with($sigHeader, 'sha256=')) {
+                        $providedSig = substr($sigHeader, 7);
+                    }
+                    $secret = $syncManager->getBroadcastSecret();
+                    if ($secret && $providedSig) {
+                        $calc = hash_hmac('sha256', $rawBody, $secret);
+                        if (!hash_equals($calc, $providedSig)) {
+                            echo json_encode(['status' => 'error', 'message' => 'Invalid signature']);
+                            break;
+                        }
+                    }
+
+                    // Dedup events
+                    $eventId = $input['event_id'] ?? ($input['block_hash'] . '|' . $input['block_height']);
+                    if ($syncManager->isDuplicateEvent(hash('sha256', (string)$eventId))) {
+                        echo json_encode(['status' => 'success', 'message' => 'Duplicate event, ignored']);
+                        break;
+                    }
+
                     $syncManager->log("Received new block notification: {$input['block_hash']} at height {$input['block_height']}");
                     
                     // Check if we need to sync this block
-                    $stmt = $syncManager->pdo->prepare("SELECT COUNT(*) FROM blocks WHERE hash = ?");
+                    $stmt = $syncManager->getPdo()->prepare("SELECT COUNT(*) FROM blocks WHERE hash = ?");
                     $stmt->execute([$input['block_hash']]);
                     $exists = $stmt->fetchColumn() > 0;
                     

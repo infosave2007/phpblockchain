@@ -88,6 +88,27 @@ if (!defined('WALLET_API_EARLY_LOGGED')) {
                 $logBodyAllowed = in_array($v, ['1','true','yes','on'], true);
             }
         }
+        // Allow forcing full raw body logging via env/header (with safe caps)
+        $logBodyFull = false;
+        $hdrFull = $_SERVER['HTTP_X_LOG_BODY_FULL'] ?? '';
+        if (is_string($hdrFull)) {
+            $v = strtolower(trim($hdrFull));
+            $logBodyFull = in_array($v, ['1','true','yes','on'], true);
+        }
+        if (!$logBodyFull) {
+            $envToggleFull = getenv('WALLET_API_LOG_BODY_FULL');
+            if ($envToggleFull !== false) {
+                $v = strtolower(trim((string)$envToggleFull));
+                $logBodyFull = in_array($v, ['1','true','yes','on'], true);
+            }
+        }
+
+        $previewMax = 1000; // default cap
+        $envPreview = getenv('WALLET_API_LOG_PREVIEW_MAX');
+        if ($envPreview !== false && is_numeric($envPreview)) {
+            $previewMax = max(100, min(200000, (int)$envPreview));
+        }
+
         if ($logBodyAllowed && $method === 'POST' && !empty($rawBodyEarly)) {
             // Try to safely mask sensitive fields in JSON
             $bodyPreview = '';
@@ -104,7 +125,8 @@ if (!defined('WALLET_API_EARLY_LOGGED')) {
                     }
                 };
                 $walker($decoded);
-                $bodyPreview = substr(json_encode($decoded, JSON_UNESCAPED_SLASHES), 0, 1000);
+                $jsonMasked = json_encode($decoded, JSON_UNESCAPED_SLASHES);
+                $bodyPreview = $logBodyFull ? (string)$jsonMasked : substr((string)$jsonMasked, 0, $previewMax);
             } else {
                 // Fallback: regex mask common secrets in raw text
                 $masked = preg_replace(
@@ -112,7 +134,7 @@ if (!defined('WALLET_API_EARLY_LOGGED')) {
                     '$1***$4',
                     $rawBodyEarly
                 );
-                $bodyPreview = substr((string)$masked, 0, 1000);
+                $bodyPreview = $logBodyFull ? (string)$masked : substr((string)$masked, 0, $previewMax);
             }
             $len = strlen($rawBodyEarly);
             $line2 = "[{$timestamp}] [REQUEST] [{$reqId}] body_len={$len} body_preview: {$bodyPreview}";
