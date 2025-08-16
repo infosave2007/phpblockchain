@@ -403,10 +403,17 @@ class WalletManager
             $upd->execute([$placeholderPubKey, $address]);
             
             if ($upd->rowCount() === 0) {
-                // No existing record found, INSERT new one
+                // No existing record found, INSERT new one with ON DUPLICATE KEY UPDATE for safety
                 $ins = $this->database->prepare("
                     INSERT INTO wallets (address, public_key, balance, staked_balance, nonce, created_at, updated_at)
                     VALUES (?, ?, 0.0, 0.0, 0, NOW(), NOW())
+                    ON DUPLICATE KEY UPDATE
+                    public_key = CASE 
+                        WHEN public_key IS NULL OR public_key = '' OR public_key = 'placeholder_public_key' 
+                        THEN VALUES(public_key)
+                        ELSE public_key
+                    END,
+                    updated_at = NOW()
                 ");
                 $ok = $ins->execute([$address, $placeholderPubKey]);
                 writeWalletLog("WalletManager::autoCreateWallet - INSERT for $address result=" . json_encode($ok) . ", affected_rows=" . $ins->rowCount(), 'DEBUG');

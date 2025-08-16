@@ -497,17 +497,21 @@ class BlockStorage
         
         $this->writeLog("BlockStorage::updateWalletBalance - Updating balance for $address by $amount", 'DEBUG');
         try {
-            // Prefer UPDATE-first to avoid consuming auto_increment on existing rows
-            $upd = $this->database->prepare("UPDATE wallets SET balance = balance + ?, updated_at = NOW() WHERE address = ?");
-            $upd->execute([$amount, $address]);
-            $affected = $upd->rowCount();
-            if ($affected === 0) {
-                // Insert if row not found
-                $ins = $this->database->prepare("INSERT INTO wallets (address, public_key, balance, created_at, updated_at) VALUES (?, 'placeholder_public_key', ?, NOW(), NOW())");
-                $ok = $ins->execute([$address, $amount]);
-                $this->writeLog("BlockStorage::updateWalletBalance - Inserted new wallet row: result=" . json_encode($ok) . ", affected_rows=" . $ins->rowCount(), 'DEBUG');
+            // Use INSERT ... ON DUPLICATE KEY UPDATE to avoid race conditions
+            $stmt = $this->database->prepare("
+                INSERT INTO wallets (address, public_key, balance, created_at, updated_at) 
+                VALUES (?, 'placeholder_public_key', ?, NOW(), NOW())
+                ON DUPLICATE KEY UPDATE 
+                balance = balance + VALUES(balance),
+                updated_at = NOW()
+            ");
+            $ok = $stmt->execute([$address, $amount]);
+            $affected = $stmt->rowCount();
+            
+            if ($affected === 1) {
+                $this->writeLog("BlockStorage::updateWalletBalance - Inserted new wallet row for $address with balance $amount", 'DEBUG');
             } else {
-                $this->writeLog("BlockStorage::updateWalletBalance - Updated existing wallet row, affected_rows=$affected", 'DEBUG');
+                $this->writeLog("BlockStorage::updateWalletBalance - Updated existing wallet row for $address, affected_rows=$affected", 'DEBUG');
             }
         } catch (\Throwable $e) {
             $this->writeLog("BlockStorage::updateWalletBalance - ERROR: " . $e->getMessage(), 'ERROR');

@@ -863,7 +863,17 @@ class WalletBlockchainManager
                             $upd = $this->database->prepare("UPDATE wallets SET public_key = CASE WHEN public_key = 'placeholder_public_key' OR public_key = '' OR public_key IS NULL THEN ? ELSE public_key END, updated_at = NOW() WHERE address = ?");
                             $upd->execute([$publicKey, $walletAddress]);
                             if ($upd->rowCount() === 0) {
-                                $ins = $this->database->prepare("INSERT INTO wallets (address, public_key, balance, created_at, updated_at) VALUES (?, ?, 0, NOW(), NOW())");
+                                $ins = $this->database->prepare("
+                                    INSERT INTO wallets (address, public_key, balance, created_at, updated_at) 
+                                    VALUES (?, ?, 0, NOW(), NOW())
+                                    ON DUPLICATE KEY UPDATE
+                                    public_key = CASE 
+                                        WHEN public_key = 'placeholder_public_key' OR public_key = '' OR public_key IS NULL 
+                                        THEN VALUES(public_key)
+                                        ELSE public_key
+                                    END,
+                                    updated_at = NOW()
+                                ");
                                 $walletResult = $ins->execute([$walletAddress, $publicKey]);
                                 \WalletLogger::info("Wallet record inserted in database for address: $walletAddress, result: " . json_encode($walletResult));
                             } else {

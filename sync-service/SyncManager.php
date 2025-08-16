@@ -789,6 +789,11 @@ class SyncManager {
                     $stmt = $this->pdo->prepare("
                         INSERT INTO wallets (address, public_key, balance, staked_balance, nonce)
                         VALUES (?, ?, ?, ?, ?)
+                        ON DUPLICATE KEY UPDATE
+                        balance = VALUES(balance),
+                        staked_balance = VALUES(staked_balance), 
+                        nonce = VALUES(nonce),
+                        updated_at = NOW()
                     ");
                     $stmt->execute([
                         $wallet['address'],
