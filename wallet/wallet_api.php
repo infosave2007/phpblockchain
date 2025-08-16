@@ -5531,24 +5531,35 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
         $pdo = $walletManager->getDatabase();
         $currentNodeId = getCurrentNodeId($pdo);
         
-        // If this is a local submission (self), and external tx hash is provided, force it
+        // ALWAYS use provided hash if valid (CRITICAL: preserves eth_sendRawTransaction hashes)
         $isLocalSource = ($sourceNode === 'self');
-        if ($isLocalSource && !empty($transaction['hash']) && is_string($transaction['hash'])) {
+        if (!empty($transaction['hash']) && is_string($transaction['hash'])) {
             $ext = strtolower(trim($transaction['hash']));
             if (!str_starts_with($ext, '0x')) { $ext = '0x' . $ext; }
             if (preg_match('/^0x[a-f0-9]{64}$/', $ext)) {
+                writeLog("HASH PRESERVATION: Using provided hash {$ext} (source: {$sourceNode}) instead of computed hash", 'INFO');
                 if (method_exists($tx, 'forceHash')) { $tx->forceHash($ext); }
                 $txHash = $ext;
+                
+                // Log the hash difference for debugging
+                $computedHash = $tx->getHash();
+                if ($computedHash !== $ext) {
+                    writeLog("HASH MISMATCH DETECTED: provided={$ext}, computed={$computedHash} - using provided", 'WARNING');
+                } else {
+                    writeLog("HASH MATCH: provided and computed hashes are identical", 'DEBUG');
+                }
+            } else {
+                writeLog("Invalid hash format provided: {$ext}, using computed hash", 'WARNING');
             }
         }
 
         // Debug logging
         $debugLog = __DIR__ . '/../logs/debug.log';
         $logTimestamp = date('Y-m-d H:i:s');
-        $debugMsg = "[{$logTimestamp}] receiveBroadcastedTransaction: REAL_hash={$txHash}, IGNORED_broadcast_hash=" . ($transaction['hash'] ?? 'none') . ", source={$sourceNode}, hops={$hopCount}" . PHP_EOL;
+        $debugMsg = "[{$logTimestamp}] receiveBroadcastedTransaction: USING_hash={$txHash}, provided_hash=" . ($transaction['hash'] ?? 'none') . ", source={$sourceNode}, hops={$hopCount}" . PHP_EOL;
         @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         
-        writeLog('receiveBroadcastedTransaction: Using REAL hash ' . $txHash . ' (IGNORED broadcast hash: ' . ($transaction['hash'] ?? 'none') . ')', 'INFO');
+        writeLog('receiveBroadcastedTransaction: Using hash ' . $txHash . ' (provided hash: ' . ($transaction['hash'] ?? 'none') . ')', 'INFO');
         writeLog('Transaction data: ' . json_encode($transaction), 'DEBUG');
         
         // Check broadcast tracking table to prevent duplicate processing
@@ -5715,13 +5726,21 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
                 $gasLimit,
                 $gasPrice
             );
-            // Preserve external/local hash if local source provided it; else use computed
-            if ($isLocalSource && !empty($transaction['hash']) && preg_match('/^0x[a-f0-9]{64}$/', strtolower($transaction['hash'])) && method_exists($tx, 'forceHash')) {
+            // CRITICAL: Always preserve provided hash after fee recalculation (maintains eth_sendRawTransaction consistency)
+            if (!empty($transaction['hash']) && preg_match('/^0x[a-f0-9]{64}$/', strtolower($transaction['hash'])) && method_exists($tx, 'forceHash')) {
                 $forced = strtolower($transaction['hash']);
                 $tx->forceHash($forced);
                 $txHash = str_starts_with($forced, '0x') ? $forced : ('0x' . $forced);
+                writeLog("HASH PRESERVATION (post-fee): Re-applied provided hash {$txHash}", 'INFO');
+                
+                // Debug: check if hash would have changed
+                $wouldBeHash = $tx->getHash();
+                if ($wouldBeHash !== $txHash) {
+                    writeLog("HASH PRESERVATION CRITICAL: Without forcing, hash would be {$wouldBeHash} instead of {$txHash}", 'WARNING');
+                }
             } else {
                 $txHash = $tx->getHash();
+                writeLog("Using computed hash after fee adjustment: {$txHash}", 'INFO');
             }
         }
 
@@ -5743,9 +5762,35 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
     $debugMsg = "[{$timestamp}] Transaction object details: REAL_hash=" . $tx->getHash() . ", chosen_hash={$txHash}, from=" . $tx->getFrom() . ", to=" . $tx->getTo() . ", amount=" . $tx->getAmount() . ", nonce=" . $tx->getNonce() . PHP_EOL;
         @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
         
-        $mempool = new \Blockchain\Core\Transaction\MempoolManager($pdo, ['min_fee' => 0.001]);
-        $added = $mempool->addTransaction($tx);
-        writeLog('MempoolManager.addTransaction result: ' . ($added ? 'true' : 'false'), 'INFO');
+        // MASSIVE DEBUG - ensure this runs
+        writeLog("🔥 ABOUT TO START RBF CHECK FOR TX {$txHash} 🔥", 'INFO');
+        @file_put_contents($debugLog, "[{$timestamp}] 🔥 ABOUT TO START RBF CHECK FOR TX {$txHash} 🔥" . PHP_EOL, FILE_APPEND);
+        
+        // Check for transaction replacement (RBF - Replace By Fee) BEFORE trying to add
+        writeLog("🔥 Starting RBF check for tx {$txHash} with nonce {$tx->getNonce()}", 'INFO');
+        @file_put_contents($debugLog, "[{$timestamp}] 🔥 Starting RBF check for tx {$txHash} with nonce {$tx->getNonce()}" . PHP_EOL, FILE_APPEND);
+        
+        $replacementResult = checkAndHandleTransactionReplacement($pdo, $tx, $txHash);
+        
+        writeLog("🔥 RBF check completed, action: {$replacementResult['action']}", 'INFO');
+        @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF check completed, action: {$replacementResult['action']}" . PHP_EOL, FILE_APPEND);
+        
+        if ($replacementResult['action'] === 'replaced') {
+            writeLog("RBF SUCCESS: old tx {$replacementResult['old_hash']} replaced by new tx {$txHash} (higher gas price)", 'INFO');
+            $added = true; // Replacement counts as successful addition
+        } elseif ($replacementResult['action'] === 'rejected') {
+            writeLog("RBF REJECTED: new tx {$txHash} rejected (reason: {$replacementResult['reason']})", 'INFO');
+            $added = false;
+        } elseif ($replacementResult['action'] === 'duplicate') {
+            writeLog("RBF DUPLICATE: identical transaction already exists {$replacementResult['existing_hash']}", 'DEBUG');
+            $added = true; // Treat duplicate as success (idempotent)
+        } else {
+            // No replacement needed, add normally via MempoolManager
+            $mempool = new \Blockchain\Core\Transaction\MempoolManager($pdo, ['min_fee' => 0.001]);
+            $added = $mempool->addTransaction($tx);
+        }
+        
+        writeLog('MempoolManager transaction processing result: ' . ($added ? 'true' : 'false') . " (action: {$replacementResult['action']})", 'INFO');
         
         // Debug: log mempool result
         $debugMsg = "[{$timestamp}] MempoolManager.addTransaction result: " . ($added ? 'true' : 'false') . PHP_EOL;
@@ -6761,5 +6806,151 @@ function isValidPrivateKey(string $privateKey): bool {
     } catch (\Throwable $e) {
         // Any exception means invalid key
         return false;
+    }
+}
+
+/**
+ * Check and handle transaction replacement (RBF - Replace By Fee)
+ * Implements EIP-1559 style transaction replacement for cancel operations
+ */
+function checkAndHandleTransactionReplacement(PDO $pdo, $newTransaction, string $newTxHash): array {
+    try {
+        $fromAddress = $newTransaction->getFrom();
+        $nonce = $newTransaction->getNonce();
+        $newGasPrice = $newTransaction->getGasPrice();
+        
+        // Force logging for debugging
+        writeLog("🔥 RBF Check: from={$fromAddress}, nonce={$nonce}, new_gas_price={$newGasPrice}", 'INFO');
+        
+        // Debug log the SQL query
+        $debugLog = __DIR__ . '/../logs/debug.log';
+        $timestamp = date('Y-m-d H:i:s');
+        @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: Searching for conflicts with from_address={$fromAddress}, nonce={$nonce}" . PHP_EOL, FILE_APPEND);
+        
+        // Check for existing transactions with same from_address and nonce
+        $stmt = $pdo->prepare("
+            SELECT tx_hash, gas_price, amount, to_address, created_at 
+            FROM mempool 
+            WHERE from_address = ? AND nonce = ? 
+            ORDER BY gas_price DESC
+        ");
+        $stmt->execute([$fromAddress, $nonce]);
+        $existingTxs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Debug log what we found
+        @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: Found " . count($existingTxs) . " existing transactions with same nonce" . PHP_EOL, FILE_APPEND);
+        if (!empty($existingTxs)) {
+            foreach ($existingTxs as $idx => $tx) {
+                @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: Existing tx {$idx}: hash={$tx['tx_hash']}, gas_price={$tx['gas_price']}" . PHP_EOL, FILE_APPEND);
+            }
+        }
+        
+        if (empty($existingTxs)) {
+            // No conflict, normal addition
+            writeLog("🔥 RBF: No conflicts found, allowing normal addition", 'INFO');
+            return ['action' => 'add', 'reason' => 'no_conflict'];
+        }
+        
+        // Find transaction with highest gas price
+        $highestGasTx = $existingTxs[0];
+        $existingGasPrice = (float)$highestGasTx['gas_price'];
+        $existingHash = $highestGasTx['tx_hash'];
+        
+        writeLog("RBF: Found existing tx {$existingHash} with gas_price={$existingGasPrice}", 'DEBUG');
+        
+        // Minimum gas price increase (10% by default, EIP-1559 standard)
+        $minGasPriceIncrease = $existingGasPrice * 1.10;
+        
+        if ($newGasPrice > $minGasPriceIncrease) {
+            // New transaction has sufficiently higher gas price - replace all existing ones
+            writeLog("RBF: Replacing transactions with lower gas price (new: {$newGasPrice} > required: {$minGasPriceIncrease})", 'INFO');
+            
+            // Remove all existing transactions with same nonce
+            $deleteStmt = $pdo->prepare("DELETE FROM mempool WHERE from_address = ? AND nonce = ?");
+            $deleteStmt->execute([$fromAddress, $nonce]);
+            $deletedCount = $deleteStmt->rowCount();
+            
+            // Add the new transaction manually to ensure it gets added
+            $insertStmt = $pdo->prepare("
+                INSERT INTO mempool (
+                    tx_hash, from_address, to_address, amount, fee, 
+                    gas_price, gas_limit, nonce, data, signature, 
+                    priority_score, created_at, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), 'pending')
+            ");
+            
+            $priorityScore = $newGasPrice * 1000; // Simple priority calculation
+            $result = $insertStmt->execute([
+                $newTxHash,
+                $newTransaction->getFrom(),
+                $newTransaction->getTo(),
+                $newTransaction->getAmount(),
+                $newTransaction->getFee(),
+                $newGasPrice,
+                $newTransaction->getGasLimit(),
+                $nonce,
+                $newTransaction->getData() ?? '',
+                $newTransaction->getSignature() ?? '',
+                $priorityScore
+            ]);
+            
+            if ($result) {
+                writeLog("RBF SUCCESS: Replaced {$deletedCount} transactions, added new tx {$newTxHash}", 'INFO');
+                return [
+                    'action' => 'replaced',
+                    'old_hash' => $existingHash,
+                    'new_hash' => $newTxHash,
+                    'replaced_count' => $deletedCount,
+                    'reason' => 'higher_gas_price'
+                ];
+            } else {
+                writeLog("RBF FAILED: Could not insert replacement transaction", 'ERROR');
+                return ['action' => 'error', 'reason' => 'insert_failed'];
+            }
+            
+        } elseif ($newGasPrice === $existingGasPrice) {
+            // Same gas price - check if it's an identical transaction (allow idempotent re-submission)
+            $newAmount = $newTransaction->getAmount();
+            $newToAddress = $newTransaction->getTo();
+            
+            foreach ($existingTxs as $existing) {
+                if ((float)$existing['amount'] === $newAmount && $existing['to_address'] === $newToAddress) {
+                    writeLog("RBF: Identical transaction already exists - ignoring duplicate", 'DEBUG');
+                    return [
+                        'action' => 'duplicate',
+                        'existing_hash' => $existing['tx_hash'],
+                        'reason' => 'identical_transaction'
+                    ];
+                }
+            }
+            
+            // Same gas price but different transaction - reject
+            writeLog("RBF REJECTED: Same gas price but different transaction content", 'INFO');
+            return [
+                'action' => 'rejected',
+                'existing_hash' => $existingHash,
+                'reason' => 'insufficient_gas_price_same_nonce'
+            ];
+            
+        } else {
+            // Lower gas price - reject
+            writeLog("RBF REJECTED: New gas price {$newGasPrice} is lower than existing {$existingGasPrice} (required: {$minGasPriceIncrease})", 'INFO');
+            return [
+                'action' => 'rejected',
+                'existing_hash' => $existingHash,
+                'existing_gas_price' => $existingGasPrice,
+                'new_gas_price' => $newGasPrice,
+                'required_gas_price' => $minGasPriceIncrease,
+                'reason' => 'insufficient_gas_price'
+            ];
+        }
+        
+    } catch (Exception $e) {
+        writeLog("RBF ERROR: " . $e->getMessage(), 'ERROR');
+        return [
+            'action' => 'error',
+            'error' => $e->getMessage(),
+            'reason' => 'exception'
+        ];
     }
 }

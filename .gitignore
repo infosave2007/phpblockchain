@@ -116,7 +116,7 @@ recovery_cli.php
 dual_quick_sync.php
 
 # Apache/nginx
-.htaccess
+# .htaccess
 storage/blockchain_runtime.json
 storage/sync_autostart.flag
 storage/blockchain/blockchain.bin

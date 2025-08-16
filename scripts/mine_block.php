@@ -96,18 +96,46 @@ try {
         exit(0);
     }
 
-    // Get original hashes from mempool for cleanup
+    // Get original hashes from mempool with NONCE CONFLICT PROTECTION
     $stmt = $pdo->prepare("
-        SELECT tx_hash FROM mempool 
-        ORDER BY priority_score DESC, created_at ASC 
-        LIMIT :max_count
+        SELECT 
+            tx_hash,
+            from_address,
+            nonce,
+            priority_score,
+            created_at
+        FROM mempool 
+        ORDER BY priority_score DESC, created_at ASC
     ");
-    $stmt->bindParam(':max_count', $opts['max'], PDO::PARAM_INT);
     $stmt->execute();
+    
     $originalHashes = [];
-    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+    $nonceTracker = []; // Track used nonces by address
+    $included = 0;
+    
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC) && $included < $opts['max']) {
+        $fromAddress = $row['from_address'];
+        $nonce = (int)$row['nonce'];
+        
+        // CRITICAL: Ensure only ONE transaction per nonce per address in a block
+        if (isset($nonceTracker[$fromAddress][$nonce])) {
+            out("[NONCE CONFLICT] Skipping duplicate nonce {$nonce} for address {$fromAddress}", true);
+            continue;
+        }
+        
+        // Track this nonce as used for this address
+        if (!isset($nonceTracker[$fromAddress])) {
+            $nonceTracker[$fromAddress] = [];
+        }
+        $nonceTracker[$fromAddress][$nonce] = true;
+        
         $originalHashes[] = $row['tx_hash'];
+        $included++;
+        
+        out("[NONCE OK] Including tx " . substr($row['tx_hash'], 0, 10) . "... with nonce {$nonce} from " . substr($fromAddress, 0, 10) . "...", true);
     }
+    
+    out("[MINING] Selected {$included} transactions with nonce conflict protection", true);
 
     out('Preparing block height ' . $height . ' with ' . count($txs) . ' tx(s)', true);
 

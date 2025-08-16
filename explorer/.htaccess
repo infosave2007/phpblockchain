@@ -1,0 +1,15 @@
+RewriteEngine On
+
+# Transaction details
+RewriteRule ^tx/([a-fA-F0-9x]+)/?$ tx.php [L,QSA]
+
+# Block details (for будущего использования)
+RewriteRule ^block/(\d+)/?$ block.php [L,QSA]
+
+# Address details (для будущего использования)
+RewriteRule ^address/([a-fA-F0-9x]+)/?$ address.php [L,QSA]
+
+# API endpoints
+RewriteRule ^api/tx/([a-fA-F0-9x]+)/?$ tx.php?format=json [L,QSA]
+RewriteRule ^api/block/(\d+)/?$ block.php?format=json [L,QSA]
+RewriteRule ^api/address/([a-fA-F0-9x]+)/?$ address.php?format=json [L,QSA]
