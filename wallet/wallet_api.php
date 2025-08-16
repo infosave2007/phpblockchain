@@ -1930,9 +1930,12 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
                 throw new Exception("Insufficient balance. Current: $currentBalance, Required: $totalDeduction");
             }
             
-            // Auto-create recipient wallet if doesn't exist
-            $stmt = $pdo->prepare("INSERT IGNORE INTO wallets (address, public_key, balance) VALUES (?, 'placeholder_public_key', 0)");
-            $stmt->execute([$toAddress]);
+            // Auto-create recipient wallet if doesn't exist (for MetaMask/external wallets)
+            if (!$walletManager->walletExists($toAddress)) {
+                writeLog("Auto-creating wallet for recipient address: $toAddress (likely MetaMask wallet)", 'INFO');
+                $createResult = $walletManager->createPlaceholderWallet($toAddress);
+                writeLog("Wallet auto-creation result: " . json_encode($createResult), 'DEBUG');
+            }
             
             // Deduct from sender
             $stmt = $pdo->prepare("UPDATE wallets SET balance = balance - ?, updated_at = NOW() WHERE address = ?");
@@ -2928,7 +2931,13 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                     if ($row && isset($row['balance'])) {
                         $balDec = (float)$row['balance'];
                     } else {
-                        // 2) If no cache, compute once and, if wallet exists, persist
+                        // 2) Auto-create wallet for MetaMask/external addresses  
+                        if (!$walletManager->walletExists($address)) {
+                            writeLog("eth_getBalance: Auto-creating wallet for address $address (MetaMask request)", 'INFO');
+                            $walletManager->createPlaceholderWallet($address);
+                        }
+                        
+                        // 3) If no cache, compute once and persist
                         $balDec = computeWalletBalanceDecimal($pdo, $address);
                         try {
                             $upd = $pdo->prepare("UPDATE wallets SET balance = ?, updated_at = NOW() WHERE address = ?");
@@ -2962,9 +2971,16 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
 
             case 'eth_getTransactionCount': {
                 // params: [address, blockTag]
-                $address = $params[0] ?? '';
+                $address = normalizeHexAddress($params[0] ?? '');
                 $blockTag = strtolower($params[1] ?? 'latest');
                 if (!$address) return '0x0';
+                
+                // Auto-create wallet for MetaMask/external addresses if needed
+                if (!$walletManager->walletExists($address)) {
+                    writeLog("eth_getTransactionCount: Auto-creating wallet for address $address (MetaMask nonce request)", 'INFO');
+                    $walletManager->createPlaceholderWallet($address);
+                }
+                
                 // Use WalletManager nonce; treat it as next nonce, return as is for 'pending' and for 'latest'
                 $next = 0;
                 try { $next = (int)$walletManager->getNextNonce($address); } catch (Throwable $e) {}

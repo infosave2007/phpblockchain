@@ -368,6 +368,44 @@ class WalletManager
     }
     
     /**
+     * Check if wallet exists in database
+     */
+    public function walletExists(string $address): bool
+    {
+        try {
+            $stmt = $this->database->prepare("SELECT COUNT(*) FROM wallets WHERE address = ?");
+            $stmt->execute([strtolower($address)]);
+            return $stmt->fetchColumn() > 0;
+        } catch (Exception $e) {
+            writeWalletLog("WalletManager::walletExists - Error checking wallet existence: " . $e->getMessage(), 'ERROR');
+            return false;
+        }
+    }
+
+    /**
+     * Create placeholder wallet for MetaMask/external addresses
+     */
+    public function createPlaceholderWallet(string $address): array
+    {
+        try {
+            $created = $this->autoCreateWallet($address);
+            return [
+                'success' => $created,
+                'address' => $address,
+                'type' => 'placeholder',
+                'message' => $created ? 'Placeholder wallet created for MetaMask/external address' : 'Failed to create wallet'
+            ];
+        } catch (Exception $e) {
+            writeWalletLog("WalletManager::createPlaceholderWallet - Error: " . $e->getMessage(), 'ERROR');
+            return [
+                'success' => false,
+                'address' => $address,
+                'error' => $e->getMessage()
+            ];
+        }
+    }
+
+    /**
      * Auto-create wallet for MetaMask addresses
      */
     private function autoCreateWallet(string $address): bool
@@ -507,11 +545,14 @@ class WalletManager
         return $transaction;
     }
     
-    /**
-     * Get next nonce for address
+        /**
+* Get next nonce for address
      */
     public function getNextNonce(string $address): int
     {
+        // Normalize address
+        $address = strtolower($address);
+        
         // Get current nonce from wallet
         $stmt = $this->database->prepare("
             SELECT nonce FROM wallets WHERE address = ?
@@ -520,7 +561,14 @@ class WalletManager
         $stmt->execute([$address]);
         $result = $stmt->fetch();
         
-        $currentNonce = $result ? (int)$result['nonce'] : 0;
+        if (!$result) {
+            // Auto-create wallet for MetaMask/external addresses
+            writeWalletLog("WalletManager::getNextNonce - Auto-creating wallet for address $address", 'DEBUG');
+            $this->autoCreateWallet($address);
+            $currentNonce = 0;
+        } else {
+            $currentNonce = (int)$result['nonce'];
+        }
         
         // Check for pending transactions with higher nonce
         $stmt = $this->database->prepare("
