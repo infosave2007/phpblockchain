@@ -7,7 +7,7 @@
 header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Node-ID');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Node-ID, X-Broadcast-Signature');
 
 // Handle preflight requests
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -33,10 +33,45 @@ function writeLog($message, $level = 'INFO') {
     error_log($logMessage, 3, __DIR__ . '/wallet_sync.log');
 }
 
+// Load broadcast secret from config or env
+function getBroadcastSecret(PDO $pdo): string {
+    try {
+        $stmt = $pdo->prepare("SELECT value FROM config WHERE key_name = 'network.broadcast_secret' LIMIT 1");
+        $stmt->execute();
+        $val = $stmt->fetchColumn();
+        if ($val) return (string)$val;
+    } catch (Exception $e) {}
+    $candidates = [
+        $_ENV['BROADCAST_SECRET'] ?? null,
+        $_ENV['NETWORK_BROADCAST_SECRET'] ?? null,
+        getenv('BROADCAST_SECRET') ?: null,
+        getenv('NETWORK_BROADCAST_SECRET') ?: null,
+    ];
+    foreach ($candidates as $c) { if ($c) return (string)$c; }
+    return '';
+}
+
+// Simple file-based dedup for events (15 min TTL)
+function isDuplicateEvent(string $eventId): bool {
+    // Use project root as base to ensure correct storage path regardless of include context
+    $base = dirname(__DIR__, 2);
+    $tmpDir = $base . '/storage/tmp';
+    if (!is_dir($tmpDir)) { @mkdir($tmpDir, 0777, true); }
+    $lockFile = $tmpDir . '/wallet_event_' . preg_replace('/[^a-z0-9_-]/i','', $eventId) . '.lock';
+    // If exists and fresh -> duplicate
+    if (file_exists($lockFile)) {
+        $age = time() - (int)@filemtime($lockFile);
+        if ($age < 900) { return true; }
+    }
+    // Touch to mark
+    @file_put_contents($lockFile, (string)time());
+    return false;
+}
+
 try {
-    // Load environment variables
-    require_once '../core/Environment/EnvironmentLoader.php';
-    \Blockchain\Core\Environment\EnvironmentLoader::load(dirname(__DIR__));
+    // Load environment variables (absolute paths from project root)
+    require_once dirname(__DIR__, 2) . '/core/Environment/EnvironmentLoader.php';
+    \Blockchain\Core\Environment\EnvironmentLoader::load(dirname(__DIR__, 2));
     
     // Get request data
     $input = json_decode(file_get_contents('php://input'), true);
@@ -49,13 +84,13 @@ try {
     writeLog("Wallet sync API called with action: $action");
     
     // Load DatabaseManager
-    require_once '../core/Database/DatabaseManager.php';
+    require_once dirname(__DIR__, 2) . '/core/Database/DatabaseManager.php';
     
     // Connect to database using DatabaseManager
     $pdo = \Blockchain\Core\Database\DatabaseManager::getConnection();
     
     // Load blockchain manager
-    require_once 'WalletBlockchainManager.php';
+    require_once dirname(__DIR__, 2) . '/wallet/WalletBlockchainManager.php';
     $blockchainManager = new \Blockchain\Wallet\WalletBlockchainManager($pdo, []);
     
     $result = [];
@@ -63,6 +98,56 @@ try {
     switch ($action) {
         case 'receive_wallet_transaction':
             $result = receiveWalletTransaction($pdo, $input);
+            break;
+        case 'receive_wallet_update':
+            // Verify optional HMAC signature and deduplicate events
+            $rawBody = file_get_contents('php://input');
+            $sigHeader = '';
+            foreach (getallheaders() as $k => $v) {
+                if (strtolower($k) === 'x-broadcast-signature') { $sigHeader = (string)$v; break; }
+            }
+            $secret = getBroadcastSecret($pdo);
+            if ($secret && $sigHeader) {
+                $calc = hash_hmac('sha256', $rawBody, $secret);
+                $provided = '';
+                if (stripos($sigHeader, 'sha256=') === 0) { $provided = substr($sigHeader, 7); } else { $provided = $sigHeader; }
+                if (!hash_equals($calc, $provided)) {
+                    writeLog('Invalid wallet update signature', 'WARNING');
+                    handleError('Invalid signature', 401);
+                }
+            }
+
+            $eventId = $input['event_id'] ?? null;
+            if (!$eventId) {
+                $addr = $input['address'] ?? '';
+                $ut = $input['update_type'] ?? '';
+                $txh = $input['data']['transaction']['hash'] ?? '';
+                $ts = (string)($input['timestamp'] ?? time());
+                $eventId = hash('sha256', $ut.'|'.$addr.'|'.$txh.'|'.$ts);
+            }
+            if (isDuplicateEvent($eventId)) {
+                writeLog("Duplicate wallet event skipped: $eventId", 'INFO');
+                $result = ['status' => 'duplicate', 'event_id' => $eventId];
+                break;
+            }
+
+            // Minimal processing: log and optionally ensure wallet exists on create/restore
+            $updateType = $input['update_type'] ?? '';
+            $address = $input['address'] ?? '';
+            writeLog("Received wallet event: $updateType for $address, event_id=$eventId", 'INFO');
+
+            if (in_array($updateType, ['create_wallet','restore_wallet'], true) && $address) {
+                try {
+                    $stmt = $pdo->prepare("INSERT INTO wallets (address, public_key, balance, created_at, updated_at) VALUES (?, ?, 0, NOW(), NOW()) ON DUPLICATE KEY UPDATE updated_at = NOW()");
+                    $pub = $input['data']['public_key'] ?? '';
+                    $stmt->execute([$address, $pub]);
+                } catch (Exception $e) {
+                    // Best-effort; don't fail the webhook
+                    writeLog('ensure wallet on event failed: ' . $e->getMessage(), 'WARNING');
+                }
+            }
+
+            $result = ['status' => 'ok', 'event_id' => $eventId];
             break;
             
         case 'sync_wallet_with_node':

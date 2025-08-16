@@ -999,7 +999,16 @@ function createWallet($walletManager, $blockchainManager) {
     // 2. Record wallet creation in blockchain
         $blockchainResult = $blockchainManager->createWalletWithBlockchain($walletData);
         writeLog("Blockchain recording result: " . json_encode($blockchainResult['blockchain_recorded']), 'INFO');
-        
+
+        // Emit wallet event (best-effort)
+        try {
+            emitWalletEvent($walletManager, [
+                'update_type' => 'create_wallet',
+                'address' => $walletData['address'] ?? '',
+                'data' => [ 'public_key' => $walletData['public_key'] ?? null ]
+            ]);
+        } catch (Exception $e) { writeLog('emitWalletEvent(create_wallet) failed: ' . $e->getMessage(), 'WARNING'); }
+
     // 3. Return combined result
         return [
             'wallet' => $walletData,
@@ -1210,6 +1219,20 @@ function stakeTokens($walletManager, $address, $amount, $period, $privateKey) {
         $availableBalance = $walletManager->getAvailableBalance($address);
         $stakedBalance = $walletManager->getStakedBalance($address);
         
+        // Emit wallet event (best-effort)
+        try {
+            emitWalletEvent($walletManager, [
+                'update_type' => 'stake',
+                'address' => $address,
+                'data' => [
+                    'amount' => $amount,
+                    'period' => $period,
+                    'contracts_deployed' => $contractAddresses,
+                    'validator_added' => $validatorResult['success'] ?? false
+                ]
+            ]);
+        } catch (Exception $e) { writeLog('emitWalletEvent(stake legacy) failed: ' . $e->getMessage(), 'WARNING'); }
+
         return [
             'staked' => [
                 'success' => true,
@@ -1323,6 +1346,15 @@ function createWalletFromMnemonic($walletManager, $blockchainManager, array $mne
             // Don't throw - wallet should still be created even if blockchain fails
         }
         
+        // Emit wallet event (best-effort)
+        try {
+            emitWalletEvent($walletManager, [
+                'update_type' => 'create_wallet',
+                'address' => $walletData['address'] ?? '',
+                'data' => [ 'public_key' => $walletData['public_key'] ?? null ]
+            ]);
+        } catch (Exception $e) { writeLog('emitWalletEvent(create from mnemonic) failed: ' . $e->getMessage(), 'WARNING'); }
+
         // 4. Return combined result
         $result = [
             'wallet' => $walletData,
@@ -1401,6 +1433,15 @@ function restoreWalletFromMnemonic($walletManager, $blockchainManager, array $mn
             $blockchainRegistered = $isVerified; // Already verified
         }
         
+        // Emit wallet event (best-effort)
+        try {
+            emitWalletEvent($walletManager, [
+                'update_type' => 'restore_wallet',
+                'address' => $walletData['address'] ?? '',
+                'data' => [ 'public_key' => $walletData['public_key'] ?? null ]
+            ]);
+        } catch (Exception $e) { writeLog('emitWalletEvent(restore_wallet) failed: ' . $e->getMessage(), 'WARNING'); }
+
         // 4. Return result with blockchain registration status
         $result = [
             'wallet' => $walletData,
@@ -2001,6 +2042,20 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
         }
         
         writeLog("Token transfer completed successfully", 'INFO');
+
+        // Emit wallet events (best-effort)
+        try {
+            emitWalletEvent($walletManager, [
+                'update_type' => 'transfer',
+                'address' => $fromAddress,
+                'data' => [ 'transaction' => $transferTx ]
+            ]);
+            emitWalletEvent($walletManager, [
+                'update_type' => 'transfer',
+                'address' => $toAddress,
+                'data' => [ 'transaction' => $transferTx ]
+            ]);
+        } catch (Exception $e) { writeLog('emitWalletEvent(transfer) failed: ' . $e->getMessage(), 'WARNING'); }
         
         return [
             'transaction' => $transferTx,
@@ -2169,6 +2224,15 @@ function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $a
         // 8. Update transaction status
         $stakeTx['status'] = 'confirmed';
         
+        // Emit wallet event (best-effort)
+        try {
+            emitWalletEvent($walletManager, [
+                'update_type' => 'stake',
+                'address' => $address,
+                'data' => [ 'transaction' => $stakeTx ]
+            ]);
+        } catch (Exception $e) { writeLog('emitWalletEvent(stake) failed: ' . $e->getMessage(), 'WARNING'); }
+
         writeLog("Token staking completed successfully", 'INFO');
         
         return [
@@ -2313,6 +2377,15 @@ function unstakeTokens($walletManager, $blockchainManager, string $address, floa
         
     // 7. Record in blockchain
         $blockchainResult = $blockchainManager->recordTransactionInBlockchain($unstakeTx);
+
+        // Emit wallet event (best-effort)
+        try {
+            emitWalletEvent($walletManager, [
+                'update_type' => 'unstake',
+                'address' => $address,
+                'data' => [ 'transaction' => $unstakeTx ]
+            ]);
+        } catch (Exception $e) { writeLog('emitWalletEvent(unstake) failed: ' . $e->getMessage(), 'WARNING'); }
         
         return [
             'transaction' => $unstakeTx,
@@ -2650,6 +2723,15 @@ function deleteWallet($walletManager, string $address) {
             $pdo->commit();
             
             writeLog("Wallet deleted successfully: " . $address, 'INFO');
+
+            // Emit wallet event (best-effort)
+            try {
+                emitWalletEvent($walletManager, [
+                    'update_type' => 'delete_wallet',
+                    'address' => $address,
+                    'data' => []
+                ]);
+            } catch (Exception $e) { writeLog('emitWalletEvent(delete_wallet) failed: ' . $e->getMessage(), 'WARNING'); }
             
             return [
                 'deleted' => true,
@@ -4950,6 +5032,80 @@ function getNetworkNodesFromDatabase(PDO $pdo): array {
     } catch (Exception $e) {
         writeLog("Error getting network nodes from database: " . $e->getMessage(), 'ERROR');
         return [];
+    }
+}
+
+/**
+ * Emit wallet event to peers (HMAC-signed, best-effort)
+ */
+function emitWalletEvent($walletManager, array $payload): array {
+    try {
+        $pdo = $walletManager->getDatabase();
+        $config = getNetworkConfigFromDatabase($pdo);
+
+        // Build event payload
+        $event = [
+            'action' => 'receive_wallet_update',
+            'update_type' => $payload['update_type'] ?? 'unknown',
+            'address' => $payload['address'] ?? '',
+            'data' => $payload['data'] ?? [],
+            'timestamp' => time()
+        ];
+        $txh = '';
+        if (isset($event['data']['transaction']) && is_array($event['data']['transaction'])) {
+            $txh = (string)($event['data']['transaction']['hash'] ?? '');
+        }
+        $event['event_id'] = hash('sha256', ($event['update_type'] ?? 'u') . '|' . ($event['address'] ?? '') . '|' . $txh . '|' . $event['timestamp']);
+
+        // Resolve nodes from DB
+        $nodes = getNetworkNodesFromDatabase($pdo);
+        if (empty($nodes)) {
+            return ['sent' => 0, 'ok' => 0, 'event_id' => $event['event_id']];
+        }
+
+        // Resolve broadcast secret
+        $secret = '';
+        if (!empty($config['network.broadcast_secret'])) {
+            $secret = (string)$config['network.broadcast_secret'];
+        } else {
+            $secret = $_ENV['BROADCAST_SECRET'] ?? ($_ENV['NETWORK_BROADCAST_SECRET'] ?? (getenv('BROADCAST_SECRET') ?: getenv('NETWORK_BROADCAST_SECRET') ?: ''));
+        }
+
+        $timeout = (int)($config['broadcast.timeout'] ?? 8);
+        $sent = 0; $ok = 0;
+        $body = json_encode($event);
+
+        foreach ($nodes as $node) {
+            $url = rtrim($node['url'] ?? '', '/') . '/api/sync/wallet';
+            if ($url === '/api/sync/wallet' || $url === '') { continue; }
+
+            $headers = ['Content-Type: application/json'];
+            if ($secret) {
+                $sig = hash_hmac('sha256', $body, $secret);
+                $headers[] = 'X-Broadcast-Signature: sha256=' . $sig;
+            }
+
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $url,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => $body,
+                CURLOPT_HTTPHEADER => $headers,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => $timeout
+            ]);
+            curl_exec($ch);
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            $sent++;
+            if ((int)$code === 200) { $ok++; }
+        }
+
+        return ['sent' => $sent, 'ok' => $ok, 'event_id' => $event['event_id']];
+    } catch (Throwable $e) {
+        // Best-effort: do not fail the main flow
+        try { writeLog('emitWalletEvent error: ' . $e->getMessage(), 'WARNING'); } catch (Throwable $ignore) {}
+        return ['sent' => 0, 'ok' => 0];
     }
 }
 

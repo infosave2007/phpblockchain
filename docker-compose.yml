@@ -7,13 +7,14 @@ services:
       - ./logs:/var/www/html/logs
       - ./config:/var/www/html/config
     environment:
-      - PHP_ENV=development
-      - BLOCKCHAIN_NETWORK=testnet
-      - DB_HOST=database
-      - DB_PORT=3306
-      - DB_NAME=blockchain
-      - DB_USER=blockchain
-      - DB_PASSWORD=blockchain123
+      PHP_ENV: development
+      BLOCKCHAIN_NETWORK: testnet
+      DB_HOST: database
+      DB_PORT: 3306
+      DB_NAME: blockchain
+      DB_USER: blockchain
+      DB_PASSWORD: blockchain123
+      BROADCAST_SECRET: dev-broadcast-secret
     depends_on:
       - database
     networks:

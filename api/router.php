@@ -32,6 +32,10 @@ try {
             // Forward to explorer API
             include_once 'explorer/index.php';
             break;
+        case 'sync':
+            // Forward to wallet sync API (handles its own output)
+            include_once 'sync/wallet.php';
+            exit(0);
             
         case 'blockchain':
             // Handle blockchain API requests
