@@ -408,6 +408,15 @@ class Migration
             ('auto_mine.max_transactions_per_block', '100', 'Maximum transactions per block', 0),
             ('auto_mine.max_blocks_per_minute', '2', 'Maximum blocks to mine per minute', 0),
             
+            -- Parameters for automatic blockchain synchronization
+            ('auto_sync.enabled', '1', 'Enable automatic blockchain synchronization', 0),
+            ('auto_sync.trigger_on_transaction', '1', 'Trigger sync on new transactions', 0),
+            ('auto_sync.trigger_on_block', '1', 'Trigger sync on new blocks', 0),
+            ('auto_sync.max_height_difference', '5', 'Maximum height difference before forced sync', 0),
+            ('auto_sync.check_interval', '30', 'Sync check interval in seconds', 0),
+            ('auto_sync.max_sync_attempts', '3', 'Maximum sync attempts per trigger', 0),
+            ('auto_sync.min_nodes_online', '2', 'Minimum nodes online to trigger sync', 0),
+            
             -- Parameters for multi_curl optimization
             ('network.multi_curl.max_concurrent', '50', 'Maximum concurrent connections for multi_curl', 0),
             ('network.multi_curl.timeout', '30', 'Timeout for multi_curl requests', 0),
@@ -463,15 +472,35 @@ class Migration
                 UNIQUE KEY unique_tx_source_current (transaction_hash, source_node_id, current_node_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             
-            -- Broadcast statistics table
+                        -- Broadcast statistics table
             CREATE TABLE IF NOT EXISTS broadcast_stats (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
                 node_id VARCHAR(64) NOT NULL,
                 metric_type VARCHAR(50) NOT NULL,
-                metric_value INT NOT NULL DEFAULT 1,
-                recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                INDEX idx_node_metric (node_id, metric_type),
-                INDEX idx_recorded (recorded_at)
+                metric_value DECIMAL(10,4) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_node_id (node_id),
+                INDEX idx_metric_type (metric_type),
+                INDEX idx_created_at (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            
+            -- Sync monitoring table
+            CREATE TABLE IF NOT EXISTS sync_monitoring (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                event_type ENUM('height_check', 'sync_triggered', 'sync_completed', 'sync_failed', 'alert_raised') NOT NULL,
+                local_height BIGINT NOT NULL,
+                network_max_height BIGINT NULL,
+                height_difference BIGINT NULL,
+                nodes_checked INT NULL,
+                nodes_responding INT NULL,
+                sync_duration DECIMAL(8,3) NULL,
+                error_message TEXT NULL,
+                metadata JSON NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_event_type (event_type),
+                INDEX idx_local_height (local_height),
+                INDEX idx_height_difference (height_difference),
+                INDEX idx_created_at (created_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         ";
     }

@@ -109,6 +109,16 @@ try {
                 echo json_encode(getConsensusTipReport($pdo, $network, $count));
                 exit;
 
+            case 'height_monitor':
+                // Monitor blockchain heights across network nodes
+                echo json_encode(getHeightMonitorReport($pdo, $network));
+                exit;
+
+            case 'sync_status':
+                // Get detailed synchronization status
+                echo json_encode(getSyncStatus($pdo, $network));
+                exit;
+
             case 'has_state_snapshot':
                 $height = (int)($params['height'] ?? 0);
                 echo json_encode(hasStateSnapshot($network, $height));
@@ -2622,6 +2632,181 @@ function getStakingRecords(PDO $pdo, string $network, int $page = 0, int $limit 
             'error' => $e->getMessage(),
             'data' => [],
             'pagination' => ['page' => $page, 'limit' => $limit, 'total' => 0, 'has_more' => false]
+        ];
+    }
+}
+
+/**
+ * Monitor blockchain heights across network nodes
+ */
+function getHeightMonitorReport($pdo, $network = 'mainnet') {
+    try {
+        // Get local blockchain height
+        $stmt = $pdo->query("SELECT MAX(height) as local_height FROM blocks");
+        $localHeight = $stmt->fetchColumn() ?: 0;
+        
+        // Get active nodes
+        $stmt = $pdo->prepare("SELECT node_id, metadata FROM nodes WHERE status = 'active'");
+        $stmt->execute();
+        $nodes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        $nodeHeights = [];
+        $responsiveNodes = 0;
+        $totalNodes = count($nodes);
+        
+        foreach ($nodes as $node) {
+            $metadata = json_decode($node['metadata'], true) ?: [];
+            $protocol = $metadata['protocol'] ?? 'https';
+            $domain = $metadata['domain'] ?? null;
+            
+            if (!$domain) continue;
+            
+            $nodeUrl = $protocol . '://' . $domain;
+            
+            try {
+                $context = stream_context_create([
+                    'http' => [
+                        'timeout' => 3,
+                        'ignore_errors' => true
+                    ],
+                    'ssl' => [
+                        'verify_peer' => false,
+                        'verify_peer_name' => false
+                    ]
+                ]);
+                
+                $response = @file_get_contents($nodeUrl . '/api/?action=get_blockchain_stats', false, $context);
+                if ($response) {
+                    $data = json_decode($response, true);
+                    if (isset($data['stats']['height'])) {
+                        $remoteHeight = (int)$data['stats']['height'];
+                        $nodeHeights[$domain] = [
+                            'height' => $remoteHeight,
+                            'node_id' => $node['node_id'],
+                            'difference' => $remoteHeight - $localHeight,
+                            'status' => 'responsive'
+                        ];
+                        $responsiveNodes++;
+                    }
+                }
+            } catch (Exception $e) {
+                $nodeHeights[$domain] = [
+                    'height' => null,
+                    'node_id' => $node['node_id'],
+                    'difference' => null,
+                    'status' => 'unresponsive',
+                    'error' => $e->getMessage()
+                ];
+            }
+        }
+        
+        // Calculate statistics
+        $heights = array_filter(array_column($nodeHeights, 'height'));
+        $statistics = [];
+        
+        if (!empty($heights)) {
+            $statistics = [
+                'min_height' => min($heights),
+                'max_height' => max($heights),
+                'avg_height' => round(array_sum($heights) / count($heights), 2),
+                'height_spread' => max($heights) - min($heights)
+            ];
+        }
+        
+        // Determine overall status
+        $status = 'healthy';
+        $alerts = [];
+        
+        if (!empty($heights)) {
+            $heightSpread = max($heights) - min($heights);
+            if ($heightSpread > 10) {
+                $status = 'desync_detected';
+                $alerts[] = "Network desync detected: height spread {$heightSpread}";
+            }
+            
+            $maxHeight = max($heights);
+            $localDesync = abs($localHeight - $maxHeight);
+            if ($localDesync > 10) {
+                $status = 'local_desync';
+                $alerts[] = "Local node desync: {$localDesync} blocks behind";
+            }
+        }
+        
+        if ($responsiveNodes < $totalNodes * 0.5) {
+            $status = 'network_issues';
+            $alerts[] = "Only {$responsiveNodes}/{$totalNodes} nodes responsive";
+        }
+        
+        return [
+            'success' => true,
+            'status' => $status,
+            'local_height' => $localHeight,
+            'node_heights' => $nodeHeights,
+            'statistics' => $statistics,
+            'responsive_nodes' => $responsiveNodes,
+            'total_nodes' => $totalNodes,
+            'alerts' => $alerts,
+            'timestamp' => time()
+        ];
+        
+    } catch (Exception $e) {
+        return [
+            'success' => false,
+            'error' => $e->getMessage(),
+            'status' => 'error'
+        ];
+    }
+}
+
+/**
+ * Get detailed synchronization status
+ */
+function getSyncStatus($pdo, $network = 'mainnet') {
+    try {
+        // Get last sync time from logs or config
+        $stmt = $pdo->prepare("SELECT value FROM config WHERE key_name = 'last_sync_time'");
+        $stmt->execute();
+        $lastSyncTime = $stmt->fetchColumn();
+        
+        // Get auto-sync configuration
+        $stmt = $pdo->prepare("SELECT key_name, value FROM config WHERE key_name LIKE '%sync%' OR key_name LIKE '%monitor%'");
+        $stmt->execute();
+        $configData = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+        
+        // Get recent sync activity from logs
+        $recentActivity = [];
+        $logFile = '../../logs/network_sync.log';
+        if (file_exists($logFile)) {
+            $lines = array_slice(file($logFile, FILE_IGNORE_NEW_LINES), -10);
+            foreach ($lines as $line) {
+                if (strpos($line, '[') === 0) {
+                    $recentActivity[] = trim($line);
+                }
+            }
+        }
+        
+        // Get blockchain stats
+        $stmt = $pdo->query("SELECT MAX(height) as height, COUNT(*) as total_blocks FROM blocks");
+        $blockchainStats = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        // Get mempool stats
+        $stmt = $pdo->query("SELECT status, COUNT(*) as count FROM mempool GROUP BY status");
+        $mempoolStats = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+        
+        return [
+            'success' => true,
+            'last_sync_time' => $lastSyncTime,
+            'sync_config' => $configData,
+            'blockchain_stats' => $blockchainStats,
+            'mempool_stats' => $mempoolStats,
+            'recent_activity' => $recentActivity,
+            'timestamp' => time()
+        ];
+        
+    } catch (Exception $e) {
+        return [
+            'success' => false,
+            'error' => $e->getMessage()
         ];
     }
 }

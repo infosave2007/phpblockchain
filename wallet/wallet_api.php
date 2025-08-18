@@ -527,6 +527,25 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
                 writeLog("Auto-mine result after wallet creation: " . json_encode($autoMineResult), 'INFO');
                 $result['auto_mine'] = $autoMineResult;
             }
+
+            // Trigger auto-sync after wallet creation if enabled
+            if ($config['auto_sync.enabled'] ?? true) {
+                writeLog("Attempting auto-sync after wallet creation", 'INFO');
+                $autoSyncResult = autoSyncBlockchain($walletManager, $config);
+                if ($autoSyncResult['synced']) {
+                    writeLog("Auto-sync triggered after wallet creation: " . json_encode($autoSyncResult), 'INFO');
+                    $result['auto_sync'] = $autoSyncResult;
+                }
+            }
+
+            // Monitor blockchain height after wallet creation
+            if ($config['monitor.enabled'] ?? true) {
+                $monitorResult = monitorBlockchainHeight($walletManager, $config);
+                if ($monitorResult['status'] !== 'healthy') {
+                    writeLog("Height monitor alert after wallet creation: " . json_encode($monitorResult), 'WARNING');
+                    $result['height_monitor'] = $monitorResult;
+                }
+            }
             break;
         case 'ensure_wallet':
             // Ensure a wallet record exists for the provided address (auto-create if missing)
@@ -2110,6 +2129,23 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
             writeLog("Attempting auto-mine after transfer", 'INFO');
             $autoMineResult = autoMineBlocks($walletManager, $config);
             writeLog("Auto-mine result: " . json_encode($autoMineResult), 'INFO');
+        }
+
+        // 11. Auto-sync after transfer if enabled
+        if ($config['auto_sync.enabled'] ?? true) {
+            writeLog("Checking auto-sync after transfer", 'INFO');
+            $autoSyncResult = autoSyncBlockchain($walletManager, $config);
+            if ($autoSyncResult['synced']) {
+                writeLog("Auto-sync triggered after transfer: " . json_encode($autoSyncResult), 'INFO');
+            }
+        }
+
+        // 12. Monitor blockchain height after transfer
+        if ($config['monitor.enabled'] ?? true) {
+            $monitorResult = monitorBlockchainHeight($walletManager, $config);
+            if ($monitorResult['status'] !== 'healthy') {
+                writeLog("Height monitor alert after transfer: " . json_encode($monitorResult), 'WARNING');
+            }
         }
         
         writeLog("Token transfer completed successfully", 'INFO');
@@ -6362,6 +6398,268 @@ function mineBlock(array $transactions, PDO $pdo, array $config): array {
     } catch (Exception $e) {
         writeLog("Error mining block: " . $e->getMessage(), 'ERROR');
         throw $e;
+    }
+}
+
+/**
+ * Auto-sync blockchain with network when needed
+ * Event-driven synchronization to replace cron-based sync
+ */
+function autoSyncBlockchain($walletManager, array $config): array {
+    try {
+        $pdo = $walletManager->getDatabase();
+        
+        writeLog("autoSyncBlockchain: Starting sync check", 'INFO');
+        
+        // Check if auto-sync is enabled
+        $autoSyncEnabled = $config['auto_sync.enabled'] ?? true;
+        if (!$autoSyncEnabled) {
+            writeLog("autoSyncBlockchain: Auto-sync disabled", 'INFO');
+            return [
+                'synced' => false,
+                'reason' => 'Auto-sync disabled'
+            ];
+        }
+        
+        // Get current local blockchain height
+        $stmt = $pdo->query("SELECT MAX(height) FROM blocks");
+        $localHeight = $stmt->fetchColumn() ?: 0;
+        
+        writeLog("autoSyncBlockchain: Local blockchain height: {$localHeight}", 'INFO');
+        
+        // Get active nodes for comparison
+        $stmt = $pdo->prepare("SELECT metadata FROM nodes WHERE status = 'active' LIMIT 3");
+        $stmt->execute();
+        $nodes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        if (empty($nodes)) {
+            writeLog("autoSyncBlockchain: No active nodes found", 'INFO');
+            return [
+                'synced' => false,
+                'reason' => 'No active nodes',
+                'local_height' => $localHeight
+            ];
+        }
+        
+        // Check if sync is needed by comparing heights with other nodes
+        $maxRemoteHeight = $localHeight;
+        $heightDifferences = [];
+        
+        foreach ($nodes as $node) {
+            $metadata = json_decode($node['metadata'], true) ?: [];
+            $protocol = $metadata['protocol'] ?? 'https';
+            $domain = $metadata['domain'] ?? null;
+            
+            if (!$domain) continue;
+            
+            $nodeUrl = $protocol . '://' . $domain;
+            
+            try {
+                // Quick height check via API
+                $context = stream_context_create([
+                    'http' => [
+                        'timeout' => 5,
+                        'ignore_errors' => true
+                    ],
+                    'ssl' => [
+                        'verify_peer' => false,
+                        'verify_peer_name' => false
+                    ]
+                ]);
+                
+                $response = @file_get_contents($nodeUrl . '/api/?action=get_blockchain_stats', false, $context);
+                if ($response) {
+                    $data = json_decode($response, true);
+                    if (isset($data['stats']['height'])) {
+                        $remoteHeight = (int)$data['stats']['height'];
+                        $heightDifferences[$domain] = $remoteHeight;
+                        $maxRemoteHeight = max($maxRemoteHeight, $remoteHeight);
+                        
+                        writeLog("autoSyncBlockchain: Node {$domain} height: {$remoteHeight}", 'INFO');
+                    }
+                }
+            } catch (Exception $e) {
+                writeLog("autoSyncBlockchain: Failed to check height for {$domain}: " . $e->getMessage(), 'WARNING');
+            }
+        }
+        
+        // Determine if sync is needed
+        $heightThreshold = (int)($config['auto_sync.height_threshold'] ?? 5);
+        $heightDiff = $maxRemoteHeight - $localHeight;
+        
+        writeLog("autoSyncBlockchain: Max remote height: {$maxRemoteHeight}, difference: {$heightDiff}", 'INFO');
+        
+        if ($heightDiff < $heightThreshold) {
+            writeLog("autoSyncBlockchain: Sync not needed (diff: {$heightDiff} < threshold: {$heightThreshold})", 'INFO');
+            return [
+                'synced' => false,
+                'reason' => 'Heights in sync',
+                'local_height' => $localHeight,
+                'max_remote_height' => $maxRemoteHeight,
+                'height_difference' => $heightDiff,
+                'threshold' => $heightThreshold
+            ];
+        }
+        
+        // Trigger sync using NetworkSyncManager
+        writeLog("autoSyncBlockchain: Starting blockchain sync (height diff: {$heightDiff})", 'INFO');
+        
+        // Include NetworkSyncManager
+        $baseDir = dirname(__DIR__);
+        require_once $baseDir . '/network_sync.php';
+        
+        $syncManager = new NetworkSyncManager(false);
+        $syncResult = $syncManager->syncAll();
+        
+        writeLog("autoSyncBlockchain: Sync completed with result: " . json_encode($syncResult), 'INFO');
+        
+        return [
+            'synced' => true,
+            'local_height_before' => $localHeight,
+            'max_remote_height' => $maxRemoteHeight,
+            'height_difference' => $heightDiff,
+            'sync_result' => $syncResult,
+            'nodes_checked' => array_keys($heightDifferences)
+        ];
+        
+    } catch (Exception $e) {
+        writeLog("autoSyncBlockchain error: " . $e->getMessage(), 'ERROR');
+        return [
+            'synced' => false,
+            'reason' => 'Sync failed',
+            'error' => $e->getMessage()
+        ];
+    }
+}
+
+/**
+ * Monitor blockchain height and emit alerts when desync detected
+ */
+function monitorBlockchainHeight($walletManager, array $config): array {
+    try {
+        $pdo = $walletManager->getDatabase();
+        
+        writeLog("monitorBlockchainHeight: Starting height monitoring", 'INFO');
+        
+        // Get current local height
+        $stmt = $pdo->query("SELECT MAX(height) FROM blocks");
+        $localHeight = $stmt->fetchColumn() ?: 0;
+        
+        // Get active nodes
+        $stmt = $pdo->prepare("SELECT node_id, metadata FROM nodes WHERE status = 'active'");
+        $stmt->execute();
+        $nodes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        $nodeHeights = [];
+        $totalNodes = 0;
+        $responsiveNodes = 0;
+        
+        foreach ($nodes as $node) {
+            $totalNodes++;
+            $metadata = json_decode($node['metadata'], true) ?: [];
+            $protocol = $metadata['protocol'] ?? 'https';
+            $domain = $metadata['domain'] ?? null;
+            
+            if (!$domain) continue;
+            
+            $nodeUrl = $protocol . '://' . $domain;
+            
+            try {
+                $context = stream_context_create([
+                    'http' => [
+                        'timeout' => 3,
+                        'ignore_errors' => true
+                    ],
+                    'ssl' => [
+                        'verify_peer' => false,
+                        'verify_peer_name' => false
+                    ]
+                ]);
+                
+                $response = @file_get_contents($nodeUrl . '/api/?action=get_blockchain_stats', false, $context);
+                if ($response) {
+                    $data = json_decode($response, true);
+                    if (isset($data['stats']['height'])) {
+                        $remoteHeight = (int)$data['stats']['height'];
+                        $nodeHeights[$domain] = $remoteHeight;
+                        $responsiveNodes++;
+                        
+                        writeLog("monitorBlockchainHeight: Node {$domain} height: {$remoteHeight}", 'DEBUG');
+                    }
+                }
+            } catch (Exception $e) {
+                writeLog("monitorBlockchainHeight: Failed to check {$domain}: " . $e->getMessage(), 'WARNING');
+            }
+        }
+        
+        if (empty($nodeHeights)) {
+            writeLog("monitorBlockchainHeight: No responsive nodes found", 'WARNING');
+            return [
+                'status' => 'warning',
+                'reason' => 'No responsive nodes',
+                'local_height' => $localHeight,
+                'responsive_nodes' => 0,
+                'total_nodes' => $totalNodes
+            ];
+        }
+        
+        // Calculate statistics
+        $heights = array_values($nodeHeights);
+        $minHeight = min($heights);
+        $maxHeight = max($heights);
+        $avgHeight = round(array_sum($heights) / count($heights), 2);
+        
+        // Check for desync
+        $desyncThreshold = (int)($config['monitor.desync_threshold'] ?? 10);
+        $heightSpread = $maxHeight - $minHeight;
+        $localDesync = max(abs($localHeight - $minHeight), abs($localHeight - $maxHeight));
+        
+        $status = 'healthy';
+        $alerts = [];
+        
+        if ($heightSpread > $desyncThreshold) {
+            $status = 'desync_detected';
+            $alerts[] = "Network desync detected: height spread {$heightSpread} > threshold {$desyncThreshold}";
+        }
+        
+        if ($localDesync > $desyncThreshold) {
+            $status = 'local_desync';
+            $alerts[] = "Local node desync: {$localDesync} blocks difference";
+        }
+        
+        if ($responsiveNodes < $totalNodes * 0.5) {
+            $status = 'network_issues';
+            $alerts[] = "Only {$responsiveNodes}/{$totalNodes} nodes responsive";
+        }
+        
+        // Log alerts
+        foreach ($alerts as $alert) {
+            writeLog("monitorBlockchainHeight ALERT: {$alert}", 'WARNING');
+        }
+        
+        return [
+            'status' => $status,
+            'local_height' => $localHeight,
+            'network_heights' => $nodeHeights,
+            'statistics' => [
+                'min_height' => $minHeight,
+                'max_height' => $maxHeight,
+                'avg_height' => $avgHeight,
+                'height_spread' => $heightSpread
+            ],
+            'responsive_nodes' => $responsiveNodes,
+            'total_nodes' => $totalNodes,
+            'alerts' => $alerts,
+            'desync_threshold' => $desyncThreshold,
+            'local_desync' => $localDesync
+        ];
+        
+    } catch (Exception $e) {
+        writeLog("monitorBlockchainHeight error: " . $e->getMessage(), 'ERROR');
+        return [
+            'status' => 'error',
+            'error' => $e->getMessage()
+        ];
     }
 }
 
