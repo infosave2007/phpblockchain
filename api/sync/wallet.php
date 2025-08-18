@@ -100,14 +100,18 @@ try {
             $result = receiveWalletTransaction($pdo, $input);
             break;
         case 'receive_wallet_update':
-            // Verify optional HMAC signature and deduplicate events
+            // Verify HMAC signature (required when secret configured) and deduplicate events
             $rawBody = file_get_contents('php://input');
             $sigHeader = '';
             foreach (getallheaders() as $k => $v) {
                 if (strtolower($k) === 'x-broadcast-signature') { $sigHeader = (string)$v; break; }
             }
             $secret = getBroadcastSecret($pdo);
-            if ($secret && $sigHeader) {
+            if ($secret) {
+                if (!$sigHeader) {
+                    writeLog('Missing broadcast signature while secret configured', 'WARNING');
+                    handleError('Signature required', 401);
+                }
                 $calc = hash_hmac('sha256', $rawBody, $secret);
                 $provided = '';
                 if (stripos($sigHeader, 'sha256=') === 0) { $provided = substr($sigHeader, 7); } else { $provided = $sigHeader; }

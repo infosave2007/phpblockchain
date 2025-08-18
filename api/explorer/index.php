@@ -96,6 +96,19 @@ try {
                 echo json_encode(getBlockHashesRange($pdo, $network, $start, $end));
                 exit;
 
+            case 'get_tip_hashes':
+                // Lightweight: return up to N hashes going backwards from current tip by offset
+                $offset = (int)($params['offset'] ?? 0); // how many blocks down from tip to start
+                $count = min((int)($params['count'] ?? 100), 2000); // cap to 2000
+                echo json_encode(getTipHashes($pdo, $network, $offset, $count));
+                exit;
+
+            case 'consensus_report':
+                // Compare tip windows across active nodes and provide mismatch ratio
+                $count = min((int)($params['count'] ?? 50), 500);
+                echo json_encode(getConsensusTipReport($pdo, $network, $count));
+                exit;
+
             case 'has_state_snapshot':
                 $height = (int)($params['height'] ?? 0);
                 echo json_encode(hasStateSnapshot($network, $height));
@@ -2303,6 +2316,146 @@ function getBlockHashesRange(PDO $pdo, string $network, int $start, int $end): a
             'error' => $e->getMessage(),
             'data' => [ 'hashes' => [], 'range' => ['start' => $start, 'end' => $end] ]
         ];
+    }
+}
+
+/**
+ * Get block hashes from tip with offset/count (tip-offset .. tip-offset-count+1)
+ */
+function getTipHashes(PDO $pdo, string $network, int $offset, int $count): array {
+    try {
+        if ($offset < 0) { $offset = 0; }
+        if ($count < 1) { $count = 1; }
+        if ($count > 2000) { $count = 2000; }
+
+        // Determine current tip height
+        $tip = 0;
+        $stmt = $pdo->query("SHOW TABLES LIKE 'blocks'");
+        if ($stmt->rowCount() > 0) {
+            $q = $pdo->query("SELECT MAX(height) as h FROM blocks");
+            $row = $q->fetch(PDO::FETCH_ASSOC);
+            $tip = (int)($row['h'] ?? 0);
+        } else {
+            $chainFile = '../../storage/blockchain/chain.json';
+            if (file_exists($chainFile)) {
+                $chain = json_decode(file_get_contents($chainFile), true);
+                if (is_array($chain)) { $tip = max(0, count($chain) - 1); }
+            }
+        }
+
+        $startHeight = max(0, $tip - $offset);
+        $endHeight = max(0, $startHeight - $count + 1);
+
+        $hashesByH = [];
+        // Prefer DB
+        $stmt = $pdo->query("SHOW TABLES LIKE 'blocks'");
+        if ($stmt->rowCount() > 0) {
+            $q = $pdo->prepare("SELECT height, hash FROM blocks WHERE height BETWEEN ? AND ? ORDER BY height DESC");
+            $q->execute([$endHeight, $startHeight]);
+            $rows = $q->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($rows as $r) { $hashesByH[(int)$r['height']] = (string)$r['hash']; }
+        } else {
+            $chainFile = '../../storage/blockchain/chain.json';
+            if (file_exists($chainFile)) {
+                $chain = json_decode(file_get_contents($chainFile), true);
+                if (is_array($chain)) {
+                    foreach ($chain as $blk) {
+                        $h = (int)($blk['index'] ?? $blk['height'] ?? -1);
+                        if ($h >= $endHeight && $h <= $startHeight) { $hashesByH[$h] = $blk['hash'] ?? ''; }
+                    }
+                }
+            }
+        }
+
+        // Produce descending by height
+        krsort($hashesByH, SORT_NUMERIC);
+        $hashes = array_values($hashesByH);
+
+        return [
+            'success' => true,
+            'data' => [
+                'tip' => $tip,
+                'offset' => $offset,
+                'count' => $count,
+                'hashes' => $hashes,
+                'range' => ['from' => $startHeight, 'to' => $endHeight]
+            ]
+        ];
+    } catch (Exception $e) {
+        return [
+            'success' => false,
+            'error' => $e->getMessage(),
+            'data' => [ 'hashes' => [], 'tip' => null, 'offset' => $offset, 'count' => $count ]
+        ];
+    }
+}
+
+/**
+ * Build a lightweight consensus report by comparing last N hashes across active nodes
+ */
+function getConsensusTipReport(PDO $pdo, string $network, int $count = 50): array {
+    try {
+        // Get nodes
+        $nodesResp = getNodesListAPI($pdo, $network);
+        $nodes = $nodesResp['data'] ?? [];
+        $urls = [];
+        foreach ($nodes as $n) {
+            $proto = $n['protocol'] ?? 'https';
+            $host = $n['domain'] ?? ($n['ip_address'] ?? null);
+            if (!$host) { continue; }
+            $url = $proto . '://' . $host;
+            if (!empty($n['port']) && $n['port'] != 80 && $n['port'] != 443) { $url .= ':' . $n['port']; }
+            $urls[] = rtrim($url, '/');
+        }
+
+        // Fetch each node's tip hashes
+        $perNode = [];
+        foreach ($urls as $url) {
+            $endpoint = $url . '/api/explorer?action=get_tip_hashes&offset=0&count=' . (int)$count;
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $endpoint,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 6
+            ]);
+            $resp = curl_exec($ch);
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            if ($code !== 200 || $resp === false) { continue; }
+            $json = json_decode($resp, true);
+            if (isset($json['success']) && $json['success'] && isset($json['data']['hashes'])) {
+                $perNode[$url] = $json['data']['hashes'];
+            }
+        }
+
+        // Compute majority baseline (hash by position)
+        $positionCounts = [];
+        foreach ($perNode as $url => $hashes) {
+            foreach ($hashes as $i => $h) {
+                if (!isset($positionCounts[$i])) { $positionCounts[$i] = []; }
+                $positionCounts[$i][$h] = ($positionCounts[$i][$h] ?? 0) + 1;
+            }
+        }
+        $baseline = [];
+        foreach ($positionCounts as $i => $map) {
+            arsort($map);
+            $baseline[$i] = key($map);
+        }
+
+        // Compute mismatch ratios per node
+        $report = [];
+        foreach ($perNode as $url => $hashes) {
+            $mismatch = 0; $total = min(count($hashes), count($baseline));
+            for ($i = 0; $i < $total; $i++) {
+                if (($baseline[$i] ?? null) !== ($hashes[$i] ?? null)) { $mismatch++; }
+            }
+            $ratio = $total > 0 ? round(100.0 * $mismatch / $total, 2) : 0.0;
+            $report[] = [ 'node' => $url, 'mismatch_pct' => $ratio, 'compared' => $total ];
+        }
+
+        return [ 'success' => true, 'data' => [ 'nodes' => array_keys($perNode), 'baseline_size' => count($baseline), 'report' => $report ] ];
+    } catch (Exception $e) {
+        return [ 'success' => false, 'error' => $e->getMessage() ];
     }
 }
 

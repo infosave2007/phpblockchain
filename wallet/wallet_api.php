@@ -503,7 +503,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
         try {
             $safe = $input;
             if (is_array($safe)) {
-                $maskKeys = ['private_key','password'];
+                $maskKeys = ['private_key','privateKey','password','mnemonic','seed','signature','sender_private_key','funder_priv'];
                 foreach ($maskKeys as $k) { if (isset($safe[$k])) { $safe[$k] = '***'; } }
             }
             \Blockchain\Wallet\WalletLogger::info("ACTION $requestId: action=$action");
@@ -518,6 +518,15 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             break;
         case 'create_wallet':
             $result = createWallet($walletManager, $blockchainManager);
+            
+            // Trigger auto-mine after wallet creation if enabled
+            $config = getNetworkConfigFromDatabase($pdo);
+            if ($config['auto_mine.enabled'] ?? true) {
+                writeLog("Attempting auto-mine after wallet creation", 'INFO');
+                $autoMineResult = autoMineBlocks($walletManager, $config);
+                writeLog("Auto-mine result after wallet creation: " . json_encode($autoMineResult), 'INFO');
+                $result['auto_mine'] = $autoMineResult;
+            }
             break;
         case 'ensure_wallet':
             // Ensure a wallet record exists for the provided address (auto-create if missing)
@@ -680,7 +689,25 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             if (!$fromAddress || !$toAddress || !$amount || !$privateKey) {
                 throw new Exception('From address, to address, amount and private key are required');
             }
-            
+            // Clean and validate private key; ensure it matches fromAddress
+            try {
+                $cleanKey = preg_replace('/[^0-9a-f]/i', '', (string)$privateKey);
+                $cleanKey = strtolower(ltrim(str_replace('0x', '', $cleanKey), '0'));
+                if (strlen($cleanKey) < 64) { $cleanKey = str_pad($cleanKey, 64, '0', STR_PAD_LEFT); }
+                if (strlen($cleanKey) !== 64 || !ctype_xdigit($cleanKey) || $cleanKey === str_repeat('0', 64)) {
+                    throw new Exception('Invalid private key format');
+                }
+                $kp = \Blockchain\Core\Cryptography\KeyPair::fromPrivateKey($cleanKey);
+                $addrFromKey = strtolower($kp->getAddress());
+                if (strtolower($fromAddress) !== $addrFromKey) {
+                    throw new Exception('Private key does not correspond to from_address');
+                }
+                // Use cleaned key for downstream operations
+                $privateKey = $cleanKey;
+            } catch (Exception $e) {
+                throw new Exception('Private key validation failed: ' . $e->getMessage());
+            }
+
             $result = transferTokens($walletManager, $blockchainManager, $fromAddress, $toAddress, $amount, $privateKey, $memo);
             break;
             
@@ -1105,6 +1132,16 @@ function stakeTokens($walletManager, $address, $amount, $period, $privateKey) {
         }
         
     // Do NOT auto-deploy contracts here; staking must use existing contract only
+        // Resolve staking contract address (best effort, guarded by config inside resolver)
+        $contractAddresses = [];
+        try {
+            $resolved = getOrDeployStakingContract($pdo, $address);
+            if (is_string($resolved) && str_starts_with($resolved, '0x') && strlen($resolved) === 42) {
+                $contractAddresses['staking'] = strtolower($resolved);
+            }
+        } catch (\Throwable $e) {
+            // keep empty => staking via contract will be skipped
+        }
         
         // Add validator to ValidatorManager (same as genesis installation)
         require_once $baseDir . '/core/Consensus/ValidatorManager.php';
@@ -1169,9 +1206,10 @@ function stakeTokens($walletManager, $address, $amount, $period, $privateKey) {
             }
         }
         
-        // Update wallet balance (subtract staked amount)
+    // Update wallet balance (subtract staked amount)
         $availableBalance = $walletManager->getAvailableBalance($address);
-        $newBalance = $availableBalance - $amount;
+    $newBalance = $availableBalance - $amount;
+    if ($newBalance < 0) { $newBalance = 0; }
         $stmt = $pdo->prepare("
             UPDATE wallets
             SET balance = ?, updated_at = NOW()
@@ -1185,7 +1223,7 @@ function stakeTokens($walletManager, $address, $amount, $period, $privateKey) {
             VALUES (?, ?, 'active', ?, ?, ?)
         ");
         $currentBlock = getCurrentBlockHeight($pdo);
-        $contractAddress = $contractAddresses['staking'] ?? null;
+    $contractAddress = $contractAddresses['staking'] ?? null;
         $stmt->execute([$address, $amount, $currentBlock, $address, $contractAddress]);
         
         // Record staking transaction using public method
@@ -1354,6 +1392,15 @@ function createWalletFromMnemonic($walletManager, $blockchainManager, array $mne
                 'block_height' => isset($blockchainResult) ? ($blockchainResult['block']['height'] ?? null) : null
             ]
         ];
+
+        // Auto-mine check after wallet creation
+        try {
+            global $config;
+            $autoMineResult = autoMineBlocks($walletManager, $config);
+            if (isset($autoMineResult)) {
+                $result['auto_mine'] = $autoMineResult;
+            }
+        } catch (Exception $e) { writeLog('autoMineBlocks(create from mnemonic) failed: ' . $e->getMessage(), 'WARNING'); }
         
         writeLog("Wallet creation from mnemonic completed successfully", 'INFO');
         return $result;
@@ -1450,6 +1497,18 @@ function restoreWalletFromMnemonic($walletManager, $blockchainManager, array $mn
                      'Wallet restored and registered in blockchain successfully.' : 
                      'Wallet restored in database. Blockchain registration may be needed.'
         ];
+
+        // Auto-mine check after wallet restoration (if blockchain registration occurred)
+        try {
+            global $config;
+            if ($blockchainRegistered && !$isVerified) {
+                // Only auto-mine if we actually registered in blockchain (new transaction created)
+                $autoMineResult = autoMineBlocks($walletManager, $config);
+                if (isset($autoMineResult)) {
+                    $result['auto_mine'] = $autoMineResult;
+                }
+            }
+        } catch (Exception $e) { writeLog('autoMineBlocks(restore_wallet) failed: ' . $e->getMessage(), 'WARNING'); }
         
         writeLog("Wallet restoration completed successfully", 'INFO');
         return $result;
@@ -1851,6 +1910,28 @@ function activateRestoredWallet($walletManager, $blockchainManager, string $addr
 function transferTokens($walletManager, $blockchainManager, string $fromAddress, string $toAddress, float $amount, string $privateKey, string $memo = '') {
     try {
         writeLog("Starting token transfer: $fromAddress -> $toAddress, amount: $amount", 'INFO');
+        // Per-sender serialization lock to avoid nonce/balance races under concurrency
+        $baseDir = dirname(__DIR__);
+        $lockDir = $baseDir . '/storage/tmp/locks';
+        if (!is_dir($lockDir)) { @mkdir($lockDir, 0777, true); }
+        $lockKey = preg_replace('/[^a-z0-9]/i', '_', strtolower($fromAddress));
+        $lockFile = $lockDir . '/transfer_' . $lockKey . '.lock';
+        $lockFp = @fopen($lockFile, 'c');
+        $gotLock = false;
+        if ($lockFp) {
+            // Block until we acquire an exclusive lock (short timeout)
+            $waitStart = time();
+            while (!( $gotLock = flock($lockFp, LOCK_EX | LOCK_NB) )) {
+                if (time() - $waitStart > 10) { break; }
+                usleep(100000); // 100ms
+            }
+        }
+        if (!$gotLock) {
+            writeLog("Failed to acquire transfer lock for $fromAddress", 'WARNING');
+            throw new Exception('Busy: concurrent transfers from this address, please retry');
+        }
+        // Ensure lock file timestamp updated (for housekeeping)
+        @ftruncate($lockFp, 0); @fwrite($lockFp, (string)time());
         
         // 0. Check and cleanup any active transactions
         $pdo = $walletManager->getDatabase();
@@ -2012,7 +2093,7 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
             throw new Exception('Failed to update balances: ' . $e->getMessage());
         }
         
-        // 7. Record in blockchain
+    // 7. Record in blockchain
         $blockchainResult = $blockchainManager->recordTransactionInBlockchain($transferTx);
         
         // 8. Update transaction status
@@ -2026,7 +2107,9 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
         $autoMineResult = null;
         
         if ($config['auto_mine.enabled'] ?? true) {
+            writeLog("Attempting auto-mine after transfer", 'INFO');
             $autoMineResult = autoMineBlocks($walletManager, $config);
+            writeLog("Auto-mine result: " . json_encode($autoMineResult), 'INFO');
         }
         
         writeLog("Token transfer completed successfully", 'INFO');
@@ -2045,7 +2128,7 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
             ]);
         } catch (Exception $e) { writeLog('emitWalletEvent(transfer) failed: ' . $e->getMessage(), 'WARNING'); }
         
-        return [
+    $response = [
             'transaction' => $transferTx,
             'blockchain' => $blockchainResult,
             'network_broadcast' => $networkResult,
@@ -2054,9 +2137,14 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
                 'sender' => $walletManager->getBalance($fromAddress),
                 'recipient' => $walletManager->getBalance($toAddress)
             ]
-        ];
+    ];
+    // Release sender lock
+    if (isset($lockFp) && $lockFp) { @flock($lockFp, LOCK_UN); @fclose($lockFp); }
+    return $response;
         
     } catch (Exception $e) {
+    // Release sender lock on error
+    if (isset($lockFp) && $lockFp) { @flock($lockFp, LOCK_UN); @fclose($lockFp); }
         // Ensure any pending transaction is rolled back
         try {
             $pdo = $walletManager->getDatabase();
@@ -2223,7 +2311,7 @@ function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $a
 
         writeLog("Token staking completed successfully", 'INFO');
         
-        return [
+        $result = [
             'transaction' => $stakeTx,
             'blockchain' => $blockchainResult,
             'staking_info' => [
@@ -2236,6 +2324,17 @@ function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $a
             'staking_contract' => $stakingContract,
             'new_balance' => $walletManager->getBalance($address)
         ];
+
+        // Auto-mine check after staking transaction
+        try {
+            global $config;
+            $autoMineResult = autoMineBlocks($walletManager, $config);
+            if (isset($autoMineResult)) {
+                $result['auto_mine'] = $autoMineResult;
+            }
+        } catch (Exception $e) { writeLog('autoMineBlocks(stake) failed: ' . $e->getMessage(), 'WARNING'); }
+
+        return $result;
         
     } catch (Exception $e) {
         // Ensure any pending transaction is rolled back
@@ -2375,7 +2474,7 @@ function unstakeTokens($walletManager, $blockchainManager, string $address, floa
             ]);
         } catch (Exception $e) { writeLog('emitWalletEvent(unstake) failed: ' . $e->getMessage(), 'WARNING'); }
         
-        return [
+        $result = [
             'transaction' => $unstakeTx,
             'blockchain' => $blockchainResult,
             'unstaked_amount' => $amount,
@@ -2383,6 +2482,17 @@ function unstakeTokens($walletManager, $blockchainManager, string $address, floa
             'total_received' => $amount + $totalRewards,
             'new_balance' => $walletManager->getBalance($address)
         ];
+
+        // Auto-mine check after unstaking transaction
+        try {
+            global $config;
+            $autoMineResult = autoMineBlocks($walletManager, $config);
+            if (isset($autoMineResult)) {
+                $result['auto_mine'] = $autoMineResult;
+            }
+        } catch (Exception $e) { writeLog('autoMineBlocks(unstake) failed: ' . $e->getMessage(), 'WARNING'); }
+        
+        return $result;
         
     } catch (Exception $e) {
         writeLog("Error in token unstaking: " . $e->getMessage(), 'ERROR');
@@ -5100,7 +5210,9 @@ function emitWalletEvent($walletManager, array $payload): array {
         }
 
         $timeout = (int)($config['broadcast.timeout'] ?? 8);
-        $sent = 0; $ok = 0;
+        $maxRetries = (int)($config['broadcast.max_retries'] ?? 2);
+        if ($maxRetries < 0) { $maxRetries = 0; }
+        $sent = 0; $ok = 0; $failures = [];
         $body = json_encode($event);
 
         foreach ($nodes as $node) {
@@ -5113,23 +5225,46 @@ function emitWalletEvent($walletManager, array $payload): array {
                 $headers[] = 'X-Broadcast-Signature: sha256=' . $sig;
             }
 
-            $ch = curl_init();
-            curl_setopt_array($ch, [
-                CURLOPT_URL => $url,
-                CURLOPT_POST => true,
-                CURLOPT_POSTFIELDS => $body,
-                CURLOPT_HTTPHEADER => $headers,
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT => $timeout
-            ]);
-            curl_exec($ch);
-            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
+            $attempt = 0; $success = false; $lastErr = null; $lastCode = 0;
+            do {
+                $attempt++;
+                $ch = curl_init();
+                curl_setopt_array($ch, [
+                    CURLOPT_URL => $url,
+                    CURLOPT_POST => true,
+                    CURLOPT_POSTFIELDS => $body,
+                    CURLOPT_HTTPHEADER => $headers,
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_TIMEOUT => $timeout
+                ]);
+                $resp = curl_exec($ch);
+                $lastCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                if ($resp === false) { $lastErr = curl_error($ch); }
+                curl_close($ch);
+
+                if ($lastCode === 200) { $success = true; break; }
+                // small backoff before retry
+                if ($attempt <= $maxRetries) {
+                    $sleepMs = (int)min(1500, 200 * pow(2, $attempt-1));
+                    usleep($sleepMs * 1000);
+                }
+            } while ($attempt <= $maxRetries);
+
             $sent++;
-            if ((int)$code === 200) { $ok++; }
+            if ($success) {
+                $ok++;
+            } else {
+                $failItem = [
+                    'url' => $url,
+                    'code' => $lastCode,
+                    'error' => $lastErr
+                ];
+                try { writeLog('emitWalletEvent: broadcast failed: ' . json_encode($failItem), 'WARNING'); } catch (\Throwable $ignore) {}
+                $failures[] = $failItem;
+            }
         }
 
-        return ['sent' => $sent, 'ok' => $ok, 'event_id' => $event['event_id']];
+        return ['sent' => $sent, 'ok' => $ok, 'event_id' => $event['event_id'], 'failures' => $failures];
     } catch (Throwable $e) {
         // Best-effort: do not fail the main flow
         try { writeLog('emitWalletEvent error: ' . $e->getMessage(), 'WARNING'); } catch (Throwable $ignore) {}
@@ -6066,13 +6201,18 @@ function autoMineBlocks($walletManager, array $config): array {
     try {
         $pdo = $walletManager->getDatabase();
         
+        writeLog("autoMineBlocks: Starting auto-mine check", 'INFO');
+        
         // Check number of transactions in mempool
-        $stmt = $pdo->query("SELECT COUNT(*) FROM mempool");
+        $stmt = $pdo->query("SELECT COUNT(*) FROM mempool WHERE status='pending'");
         $mempoolCount = $stmt->fetchColumn();
+        
+        writeLog("autoMineBlocks: Found {$mempoolCount} pending transactions in mempool", 'INFO');
         
         // If transactions are less than threshold, don't mine
         $minTransactions = $config['auto_mine.min_transactions'] ?? 10;
         if ($mempoolCount < $minTransactions) {
+            writeLog("autoMineBlocks: Not enough transactions ({$mempoolCount} < {$minTransactions})", 'INFO');
             return [
                 'mined' => false,
                 'reason' => 'Not enough transactions',
@@ -6086,15 +6226,22 @@ function autoMineBlocks($walletManager, array $config): array {
         $mempool = new \Blockchain\Core\Transaction\MempoolManager($pdo, ['min_fee' => 0.001]);
         $transactions = $mempool->getTransactionsForBlock($maxTransactions);
         
+        writeLog("autoMineBlocks: Retrieved " . count($transactions) . " transactions for mining", 'INFO');
+        
         if (empty($transactions)) {
+            writeLog("autoMineBlocks: No valid transactions to mine", 'WARNING');
             return [
                 'mined' => false,
                 'reason' => 'No valid transactions to mine'
             ];
         }
         
+        writeLog("autoMineBlocks: Starting block mining with " . count($transactions) . " transactions", 'INFO');
+        
         // Mine block
         $blockResult = mineBlock($transactions, $pdo, $config);
+        
+        writeLog("autoMineBlocks: Block mined successfully - height: " . $blockResult['height'] . ", hash: " . $blockResult['hash'], 'INFO');
         // Update cached balances for affected addresses after mining
         try {
             $addresses = [];
@@ -6118,6 +6265,7 @@ function autoMineBlocks($walletManager, array $config): array {
         ];
         
     } catch (Exception $e) {
+        writeLog("autoMineBlocks: Error occurred - " . $e->getMessage(), 'ERROR');
         return [
             'mined' => false,
             'error' => $e->getMessage()
