@@ -1104,19 +1104,7 @@ function stakeTokens($walletManager, $address, $amount, $period, $privateKey) {
             $config = require $configFile;
         }
         
-        // Deploy standard contracts (same as genesis installation)
-        writeLog("Deploying standard contracts for wallet staking", 'INFO');
-        $results = $contractManager->deployStandardContracts($address);
-        
-        $contractAddresses = [];
-        foreach ($results as $contractType => $result) {
-            if (!empty($result['success']) && !empty($result['address'])) {
-                $contractAddresses[$contractType] = $result['address'];
-                writeLog("Deployed $contractType contract: " . $result['address'], 'INFO');
-            } else {
-                writeLog("Failed to deploy $contractType contract: " . ($result['error'] ?? 'Unknown error'), 'WARNING');
-            }
-        }
+    // Do NOT auto-deploy contracts here; staking must use existing contract only
         
         // Add validator to ValidatorManager (same as genesis installation)
         require_once $baseDir . '/core/Consensus/ValidatorManager.php';
@@ -4906,6 +4894,23 @@ function getContractCodeHex(PDO $pdo, string $address): string {
  *    so as a fallback we just return empty and let node bootstrap handle deployment.
  */
 function getOrDeployStakingContract(PDO $pdo, string $deployerAddress): string {
+    // 0) Prefer explicitly configured address from config table
+    try {
+        $stmt = $pdo->query("SHOW TABLES LIKE 'config'");
+        if ($stmt && $stmt->rowCount() > 0) {
+            $stmt = $pdo->prepare("SELECT value FROM config WHERE key_name = 'staking.contract_address' LIMIT 1");
+            $stmt->execute();
+            $val = $stmt->fetchColumn();
+            if ($val && is_string($val)) {
+                $v = strtolower(trim($val));
+                if (str_starts_with($v, '0x') && strlen($v) === 42) {
+                    return $v;
+                }
+            }
+        }
+    } catch (\Throwable $e) {
+        // ignore
+    }
     // 1) DB: try to find contract with name 'Staking'
     try {
         $stmt = $pdo->query("SHOW TABLES LIKE 'smart_contracts'");
@@ -4934,6 +4939,29 @@ function getOrDeployStakingContract(PDO $pdo, string $deployerAddress): string {
     }
 
     // 3) Try to deploy now using SmartContractManager (no mocks)
+    // Guarded by config flag contracts.auto_deploy.enabled to avoid unintended deployments
+    try {
+        $autoDeploy = false;
+        $stmt = $pdo->query("SHOW TABLES LIKE 'config'");
+        if ($stmt && $stmt->rowCount() > 0) {
+            $stmt = $pdo->prepare("SELECT value FROM config WHERE key_name = 'contracts.auto_deploy.enabled' LIMIT 1");
+            $stmt->execute();
+            $val = $stmt->fetchColumn();
+            if ($val !== false && $val !== null) {
+                $s = strtolower(trim((string)$val));
+                $autoDeploy = in_array($s, ['1','true','yes','on'], true);
+            }
+        }
+        if (!$autoDeploy) {
+            // Skip auto-deploy unless explicitly enabled
+            return '';
+        }
+    } catch (\Throwable $e) {
+        // If config not available, be conservative and do not auto-deploy
+        return '';
+    }
+
+    // Proceed with deployment only if enabled
     try {
         // Minimal logger implementation
         $logger = new class implements \Psr\Log\LoggerInterface {

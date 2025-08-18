@@ -117,14 +117,13 @@ class Application
         $stateStorage = new \Blockchain\Core\Storage\StateStorage($this->database);
         $this->contractManager = new SmartContractManager($vm, $stateStorage, $logger, $this->config);
 
-        // Optional: deploy standard contracts if staking contract address is not configured yet.
+        // Optional: deploy standard contracts only if explicitly enabled
         try {
             $stakingAddr = $this->config['staking']['contract_address'] ?? '';
-            if (empty($stakingAddr)) {
-                // Deploy Staking contract template with sane defaults
+            $autoDeploy = (bool)($this->config['contracts']['auto_deploy']['enabled'] ?? false);
+            if (empty($stakingAddr) && $autoDeploy) {
                 $results = $this->contractManager->deployStandardContracts($this->config['admin']['deployer'] ?? '');
                 if (!empty($results['staking']['success']) && !empty($results['staking']['address'])) {
-                    // Persist address to a small local cache to avoid changing the main config structure here
                     $cachePath = dirname(__DIR__) . '/../storage/contract_addresses.json';
                     $existing = [];
                     if (is_file($cachePath)) {

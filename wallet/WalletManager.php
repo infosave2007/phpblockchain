@@ -900,19 +900,8 @@ class WalletManager
                 $config = require $configFile;
             }
             
-            // Deploy standard contracts (same as genesis installation)
-            writeWalletLog("Deploying standard contracts for wallet staking", 'INFO');
-            $results = $contractManager->deployStandardContracts($address);
-            
-            $contractAddresses = [];
-            foreach ($results as $contractType => $result) {
-                if (!empty($result['success']) && !empty($result['address'])) {
-                    $contractAddresses[$contractType] = $result['address'];
-                    writeWalletLog("Deployed $contractType contract: " . $result['address'], 'INFO');
-                } else {
-                    writeWalletLog("Failed to deploy $contractType contract: " . ($result['error'] ?? 'Unknown error'), 'WARNING');
-                }
-            }
+            // Do NOT auto-deploy contracts here; staking must use existing contract
+            // Any deployment should be performed explicitly via admin/API with proper gating
             
             // Add validator to ValidatorManager (same as genesis installation)
             require_once $baseDir . '/core/Consensus/ValidatorManager.php';
