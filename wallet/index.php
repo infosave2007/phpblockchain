@@ -1522,6 +1522,33 @@ function getLanguageOptions($currentLang) {
         let itemsPerPage = 10;
         let totalTransactions = 0;
         
+        // Extract last JSON object from response text (handles progress + final response)
+        function extractLastJsonObject(text) {
+            let depth = 0, start = -1, last = null, inStr = false, esc = false;
+            for (let i = 0; i < text.length; i++) {
+                const ch = text[i];
+                if (inStr) {
+                    if (esc) { esc = false; continue; }
+                    if (ch === '\\') { esc = true; continue; }
+                    if (ch === '"') { inStr = false; }
+                    continue;
+                }
+                if (ch === '"') { inStr = true; continue; }
+                if (ch === '{') { if (depth === 0) start = i; depth++; }
+                else if (ch === '}') {
+                    if (depth > 0) depth--;
+                    if (depth === 0 && start !== -1) {
+                        last = text.slice(start, i + 1);
+                        start = -1;
+                    }
+                }
+            }
+            if (last) {
+                try { return JSON.parse(last); } catch (e) {}
+            }
+            return null;
+        }
+        
         // Language and translation
         const translations = <?php echo json_encode(['current_lang' => $language, 'translations' => $t]); ?>;
         const t = translations.translations;
@@ -1806,7 +1833,9 @@ function getLanguageOptions($currentLang) {
                     })
                 });
                 
-                const data = await response.json();
+                // Handle multiple JSON objects in response (progress + final result)
+                const responseText = await response.text();
+                const data = extractLastJsonObject(responseText) || JSON.parse(responseText);
                 
                 if (data.success) {
                     currentWalletData = data.wallet;
@@ -2613,7 +2642,9 @@ function getLanguageOptions($currentLang) {
                     })
                 });
                 
-                const data = await response.json();
+                // Handle multiple JSON objects in response (progress + final result)
+                const responseText = await response.text();
+                const data = extractLastJsonObject(responseText) || JSON.parse(responseText);
                 
                 if (data.success) {
                     document.getElementById('transferResult').innerHTML = `

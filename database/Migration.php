@@ -401,6 +401,8 @@ class Migration
             ('broadcast.timeout', '10', 'Timeout for broadcast requests in seconds', 0),
             ('broadcast.max_retries', '3', 'Maximum retry attempts for failed broadcasts', 0),
             ('broadcast.min_success_rate', '50', 'Minimum success rate percentage for broadcast', 0),
+            -- Shared HMAC secret for inter-node broadcast authentication (set per environment)
+            ('network.broadcast_secret', '', 'Shared HMAC secret for inter-node broadcast (X-Broadcast-Signature)', 1),
             
             -- Parameters for automatic block mining
             ('auto_mine.enabled', '1', 'Enable automatic block mining', 0),
@@ -437,6 +439,7 @@ class Migration
                 source_node_id VARCHAR(64) NOT NULL,
                 target_node_id VARCHAR(64) NOT NULL,
                 connection_strength INT DEFAULT 1,
+                connection_type VARCHAR(50) NOT NULL DEFAULT 'pos_peer',
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 ttl_expires_at TIMESTAMP NULL,
                 INDEX idx_source (source_node_id),
@@ -479,6 +482,7 @@ class Migration
                 metric_type VARCHAR(50) NOT NULL,
                 metric_value DECIMAL(10,4) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_node_id (node_id),
                 INDEX idx_metric_type (metric_type),
                 INDEX idx_created_at (created_at)

@@ -531,11 +531,9 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             // Trigger auto-sync after wallet creation if enabled
             if ($config['auto_sync.enabled'] ?? true) {
                 writeLog("Attempting auto-sync after wallet creation", 'INFO');
-                $autoSyncResult = autoSyncBlockchain($walletManager, $config);
-                if ($autoSyncResult['synced']) {
-                    writeLog("Auto-sync triggered after wallet creation: " . json_encode($autoSyncResult), 'INFO');
-                    $result['auto_sync'] = $autoSyncResult;
-                }
+                $autoSyncResult = autoSyncNetwork($walletManager, $config);
+                writeLog("Auto-sync result after wallet creation: " . json_encode($autoSyncResult), 'INFO');
+                $result['auto_sync'] = $autoSyncResult;
             }
 
             // Monitor blockchain height after wallet creation
@@ -728,6 +726,16 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             }
 
             $result = transferTokens($walletManager, $blockchainManager, $fromAddress, $toAddress, $amount, $privateKey, $memo);
+            
+            // FAST RESPONSE: Send response immediately to client, then continue with background sync
+            if (function_exists('fastcgi_finish_request')) {
+                echo json_encode($result);
+                fastcgi_finish_request();
+                
+                // Now perform background sync after response is sent
+                performBackgroundSync($walletManager, $config ?? []);
+                exit; // Important: exit after background processing
+            }
             break;
             
         case 'decrypt_message':
@@ -970,6 +978,55 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             }
             $rpcResult = handleRpcRequest($pdo, $walletManager, $networkConfig, $rpcMethod, $rpcParams);
             $result = ['rpc' => $rpcResult];
+            break;
+
+        case 'trigger_auto_sync':
+            // Manual trigger for auto-synchronization
+            $result = ['auto_sync' => 'not_implemented_yet'];
+            try {
+                $syncResult = autoSyncNetwork($walletManager, $config ?? []);
+                $result = ['auto_sync' => $syncResult];
+            } catch (Exception $e) {
+                $result = [
+                    'auto_sync' => [
+                        'triggered' => false,
+                        'error' => $e->getMessage()
+                    ]
+                ];
+            }
+            break;
+            
+        case 'debug_mempool':
+            // Debug mempool status
+            try {
+                $stmt = $pdo->query("SELECT COUNT(*) as total FROM mempool");
+                $total = $stmt->fetchColumn();
+                
+                $stmt = $pdo->query("SELECT COUNT(*) as pending FROM mempool WHERE status='pending'");
+                $pending = $stmt->fetchColumn();
+                
+                $stmt = $pdo->query("SELECT COUNT(*) as confirmed FROM mempool WHERE status='confirmed'");
+                $confirmed = $stmt->fetchColumn();
+                
+                $stmt = $pdo->query("SELECT tx_hash, from_address, to_address, amount, status, created_at FROM mempool ORDER BY created_at DESC LIMIT 10");
+                $recent = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                
+                // Check for duplicates
+                $stmt = $pdo->query("SELECT tx_hash, COUNT(*) as count FROM mempool GROUP BY tx_hash HAVING COUNT(*) > 1");
+                $duplicates = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                
+                $result = [
+                    'mempool_status' => [
+                        'total' => $total,
+                        'pending' => $pending, 
+                        'confirmed' => $confirmed
+                    ],
+                    'recent_transactions' => $recent,
+                    'duplicates' => $duplicates
+                ];
+            } catch (Exception $e) {
+                $result = ['error' => $e->getMessage()];
+            }
             break;
             
         default:
@@ -2131,23 +2188,6 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
             writeLog("Auto-mine result: " . json_encode($autoMineResult), 'INFO');
         }
 
-        // 11. Auto-sync after transfer if enabled
-        if ($config['auto_sync.enabled'] ?? true) {
-            writeLog("Checking auto-sync after transfer", 'INFO');
-            $autoSyncResult = autoSyncBlockchain($walletManager, $config);
-            if ($autoSyncResult['synced']) {
-                writeLog("Auto-sync triggered after transfer: " . json_encode($autoSyncResult), 'INFO');
-            }
-        }
-
-        // 12. Monitor blockchain height after transfer
-        if ($config['monitor.enabled'] ?? true) {
-            $monitorResult = monitorBlockchainHeight($walletManager, $config);
-            if ($monitorResult['status'] !== 'healthy') {
-                writeLog("Height monitor alert after transfer: " . json_encode($monitorResult), 'WARNING');
-            }
-        }
-        
         writeLog("Token transfer completed successfully", 'INFO');
 
         // Emit wallet events (best-effort)
@@ -2164,7 +2204,9 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
             ]);
         } catch (Exception $e) { writeLog('emitWalletEvent(transfer) failed: ' . $e->getMessage(), 'WARNING'); }
         
-    $response = [
+        // FAST RESPONSE: Return immediately with transaction details
+        $fastResponse = [
+            'success' => true,
             'transaction' => $transferTx,
             'blockchain' => $blockchainResult,
             'network_broadcast' => $networkResult,
@@ -2173,10 +2215,13 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
                 'sender' => $walletManager->getBalance($fromAddress),
                 'recipient' => $walletManager->getBalance($toAddress)
             ]
-    ];
-    // Release sender lock
-    if (isset($lockFp) && $lockFp) { @flock($lockFp, LOCK_UN); @fclose($lockFp); }
-    return $response;
+        ];
+        
+        // Release sender lock
+        if (isset($lockFp) && $lockFp) { @flock($lockFp, LOCK_UN); @fclose($lockFp); }
+        
+        // Background sync will be handled by the main action handler
+        return $fastResponse;
         
     } catch (Exception $e) {
     // Release sender lock on error
@@ -5168,8 +5213,7 @@ function getNetworkNodesFromDatabase(PDO $pdo): array {
                 reputation_score,
                 ping_time
             FROM nodes 
-            WHERE status = 'active' 
-            AND reputation_score > 50
+            WHERE status = 'active'
             ORDER BY reputation_score DESC, ping_time ASC
         ");
         $stmt->execute();
@@ -6310,6 +6354,201 @@ function autoMineBlocks($walletManager, array $config): array {
 }
 
 /**
+ * Automatically synchronize blockchain with network nodes
+ */
+function autoSyncNetwork($walletManager, array $config): array {
+    try {
+        $pdo = $walletManager->getDatabase();
+        
+        writeLog("autoSyncNetwork: Starting comprehensive auto-sync check", 'INFO');
+        
+        // Check if auto-sync is enabled
+        $autoSyncEnabled = $config['auto_sync.enabled'] ?? '1';
+        if ($autoSyncEnabled !== '1') {
+            writeLog("autoSyncNetwork: Auto-sync is disabled", 'INFO');
+            return [
+                'triggered' => false,
+                'reason' => 'Auto-sync disabled'
+            ];
+        }
+        
+        // Create NetworkSyncManager for full sync
+        require_once __DIR__ . '/../network_sync.php';
+        $syncManager = new NetworkSyncManager(true); // web mode
+        
+        // Get current local height
+        $stmt = $pdo->query("SELECT MAX(height) FROM blocks");
+        $localHeight = (int)$stmt->fetchColumn();
+        
+        writeLog("autoSyncNetwork: Local height: {$localHeight}", 'INFO');
+        
+        // Get network nodes
+        $stmt = $pdo->query("SELECT * FROM nodes WHERE status='active'");
+        $nodes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        if (empty($nodes)) {
+            writeLog("autoSyncNetwork: No active nodes found", 'WARNING');
+            return [
+                'triggered' => false,
+                'reason' => 'No active nodes'
+            ];
+        }
+        
+        $maxHeight = $localHeight;
+        $nodeHeights = [];
+        $respondingNodes = 0;
+        
+        // Check heights from other nodes
+        foreach ($nodes as $node) {
+            $nodeMetadata = json_decode($node['metadata'], true);
+            $domain = $nodeMetadata['domain'] ?? null;
+            $protocol = $nodeMetadata['protocol'] ?? 'https';
+
+            if (!$domain) continue;
+
+            // Prefer 'get_network_stats' (returns current_height), fallback to 'stats'
+            $urls = [
+                $protocol . '://' . $domain . '/api/explorer/?action=get_network_stats',
+                $protocol . '://' . $domain . '/api/explorer/?action=stats',
+            ];
+
+            try {
+                $nodeHeight = null;
+                foreach ($urls as $url) {
+                    $ch = curl_init();
+                    curl_setopt($ch, CURLOPT_URL, $url);
+                    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+                    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+                    $response = curl_exec($ch);
+                    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                    curl_close($ch);
+                    if ($httpCode === 200 && $response) {
+                        $data = json_decode($response, true);
+                        if (is_array($data)) {
+                            // Accept both keys: current_height (preferred) and height (legacy)
+                            if (isset($data['current_height'])) {
+                                $nodeHeight = (int)$data['current_height'];
+                            } elseif (isset($data['height'])) {
+                                $nodeHeight = (int)$data['height'];
+                            }
+                            if ($nodeHeight !== null) {
+                                break;
+                            }
+                        }
+                    }
+                }
+                if ($nodeHeight !== null) {
+                    $nodeHeights[] = $nodeHeight;
+                    $maxHeight = max($maxHeight, $nodeHeight);
+                    $respondingNodes++;
+                    writeLog("autoSyncNetwork: Node {$domain} height: {$nodeHeight}", 'INFO');
+                }
+            } catch (Exception $e) {
+                writeLog("autoSyncNetwork: Failed to check node {$domain}: " . $e->getMessage(), 'WARNING');
+            }
+        }
+        
+        $heightDifference = $maxHeight - $localHeight;
+        $maxDifference = (int)($config['auto_sync.max_height_difference'] ?? 5);
+        
+        writeLog("autoSyncNetwork: Height difference: {$heightDifference}, max allowed: {$maxDifference}", 'INFO');
+        
+        // Try to record sync monitoring event (ignore if table doesn't exist)
+        try {
+            $stmt = $pdo->prepare("INSERT INTO sync_monitoring (event_type, local_height, network_max_height, height_difference, nodes_checked, nodes_responding) VALUES (?, ?, ?, ?, ?, ?)");
+            $stmt->execute(['height_check', $localHeight, $maxHeight, $heightDifference, count($nodes), $respondingNodes]);
+        } catch (Exception $e) {
+            writeLog("autoSyncNetwork: Failed to record monitoring event: " . $e->getMessage(), 'DEBUG');
+        }
+        
+        if ($heightDifference <= $maxDifference) {
+            // Even if height is OK, sync mempool and missing data
+            writeLog("autoSyncNetwork: Height OK, but performing enhanced mempool sync", 'INFO');
+            
+            try {
+                $mempoolResult = $syncManager->enhancedMempoolSync();
+                writeLog("autoSyncNetwork: Enhanced mempool sync result: " . json_encode($mempoolResult), 'INFO');
+                
+                return [
+                    'triggered' => true,
+                    'reason' => 'Enhanced mempool sync performed',
+                    'local_height' => $localHeight,
+                    'network_max_height' => $maxHeight,
+                    'height_difference' => $heightDifference,
+                    'responding_nodes' => $respondingNodes,
+                    'mempool_sync' => $mempoolResult
+                ];
+            } catch (Exception $e) {
+                writeLog("autoSyncNetwork: Enhanced mempool sync failed: " . $e->getMessage(), 'WARNING');
+                return [
+                    'triggered' => false,
+                    'reason' => 'Height difference within range, mempool sync failed',
+                    'local_height' => $localHeight,
+                    'network_max_height' => $maxHeight,
+                    'height_difference' => $heightDifference,
+                    'responding_nodes' => $respondingNodes,
+                    'error' => $e->getMessage()
+                ];
+            }
+        }
+        
+        writeLog("autoSyncNetwork: Full sync needed - height difference {$heightDifference} > {$maxDifference}", 'INFO');
+        
+        // Perform full synchronization
+        try {
+            $syncResult = $syncManager->syncAll();
+            writeLog("autoSyncNetwork: Full sync completed: " . json_encode($syncResult), 'INFO');
+            
+            // Record sync completion
+            try {
+                $stmt = $pdo->prepare("INSERT INTO sync_monitoring (event_type, local_height, network_max_height, height_difference, nodes_checked, nodes_responding, sync_duration) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                $stmt->execute(['sync_completed', $localHeight, $maxHeight, $heightDifference, count($nodes), $respondingNodes, 0]);
+            } catch (Exception $e) {
+                writeLog("autoSyncNetwork: Failed to record sync completion: " . $e->getMessage(), 'DEBUG');
+            }
+            
+            return [
+                'triggered' => true,
+                'reason' => 'Full sync performed due to height difference',
+                'local_height' => $localHeight,
+                'network_max_height' => $maxHeight,
+                'height_difference' => $heightDifference,
+                'responding_nodes' => $respondingNodes,
+                'full_sync' => $syncResult
+            ];
+            
+        } catch (Exception $e) {
+            writeLog("autoSyncNetwork: Full sync failed: " . $e->getMessage(), 'ERROR');
+            
+            // Record sync failure
+            try {
+                $stmt = $pdo->prepare("INSERT INTO sync_monitoring (event_type, local_height, network_max_height, height_difference, nodes_checked, nodes_responding, error_message) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                $stmt->execute(['sync_failed', $localHeight, $maxHeight, $heightDifference, count($nodes), $respondingNodes, $e->getMessage()]);
+            } catch (Exception $e2) {
+                writeLog("autoSyncNetwork: Failed to record sync failure: " . $e2->getMessage(), 'DEBUG');
+            }
+            
+            return [
+                'triggered' => false,
+                'error' => $e->getMessage(),
+                'local_height' => $localHeight,
+                'network_max_height' => $maxHeight,
+                'height_difference' => $heightDifference,
+                'responding_nodes' => $respondingNodes
+            ];
+        }
+        
+    } catch (Exception $e) {
+        writeLog("autoSyncNetwork: Error occurred - " . $e->getMessage(), 'ERROR');
+        return [
+            'triggered' => false,
+            'error' => $e->getMessage()
+        ];
+    }
+}
+
+/**
  * Mine a single block with given transactions
  */
 function mineBlock(array $transactions, PDO $pdo, array $config): array {
@@ -6398,137 +6637,6 @@ function mineBlock(array $transactions, PDO $pdo, array $config): array {
     } catch (Exception $e) {
         writeLog("Error mining block: " . $e->getMessage(), 'ERROR');
         throw $e;
-    }
-}
-
-/**
- * Auto-sync blockchain with network when needed
- * Event-driven synchronization to replace cron-based sync
- */
-function autoSyncBlockchain($walletManager, array $config): array {
-    try {
-        $pdo = $walletManager->getDatabase();
-        
-        writeLog("autoSyncBlockchain: Starting sync check", 'INFO');
-        
-        // Check if auto-sync is enabled
-        $autoSyncEnabled = $config['auto_sync.enabled'] ?? true;
-        if (!$autoSyncEnabled) {
-            writeLog("autoSyncBlockchain: Auto-sync disabled", 'INFO');
-            return [
-                'synced' => false,
-                'reason' => 'Auto-sync disabled'
-            ];
-        }
-        
-        // Get current local blockchain height
-        $stmt = $pdo->query("SELECT MAX(height) FROM blocks");
-        $localHeight = $stmt->fetchColumn() ?: 0;
-        
-        writeLog("autoSyncBlockchain: Local blockchain height: {$localHeight}", 'INFO');
-        
-        // Get active nodes for comparison
-        $stmt = $pdo->prepare("SELECT metadata FROM nodes WHERE status = 'active' LIMIT 3");
-        $stmt->execute();
-        $nodes = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
-        if (empty($nodes)) {
-            writeLog("autoSyncBlockchain: No active nodes found", 'INFO');
-            return [
-                'synced' => false,
-                'reason' => 'No active nodes',
-                'local_height' => $localHeight
-            ];
-        }
-        
-        // Check if sync is needed by comparing heights with other nodes
-        $maxRemoteHeight = $localHeight;
-        $heightDifferences = [];
-        
-        foreach ($nodes as $node) {
-            $metadata = json_decode($node['metadata'], true) ?: [];
-            $protocol = $metadata['protocol'] ?? 'https';
-            $domain = $metadata['domain'] ?? null;
-            
-            if (!$domain) continue;
-            
-            $nodeUrl = $protocol . '://' . $domain;
-            
-            try {
-                // Quick height check via API
-                $context = stream_context_create([
-                    'http' => [
-                        'timeout' => 5,
-                        'ignore_errors' => true
-                    ],
-                    'ssl' => [
-                        'verify_peer' => false,
-                        'verify_peer_name' => false
-                    ]
-                ]);
-                
-                $response = @file_get_contents($nodeUrl . '/api/?action=get_blockchain_stats', false, $context);
-                if ($response) {
-                    $data = json_decode($response, true);
-                    if (isset($data['stats']['height'])) {
-                        $remoteHeight = (int)$data['stats']['height'];
-                        $heightDifferences[$domain] = $remoteHeight;
-                        $maxRemoteHeight = max($maxRemoteHeight, $remoteHeight);
-                        
-                        writeLog("autoSyncBlockchain: Node {$domain} height: {$remoteHeight}", 'INFO');
-                    }
-                }
-            } catch (Exception $e) {
-                writeLog("autoSyncBlockchain: Failed to check height for {$domain}: " . $e->getMessage(), 'WARNING');
-            }
-        }
-        
-        // Determine if sync is needed
-        $heightThreshold = (int)($config['auto_sync.height_threshold'] ?? 5);
-        $heightDiff = $maxRemoteHeight - $localHeight;
-        
-        writeLog("autoSyncBlockchain: Max remote height: {$maxRemoteHeight}, difference: {$heightDiff}", 'INFO');
-        
-        if ($heightDiff < $heightThreshold) {
-            writeLog("autoSyncBlockchain: Sync not needed (diff: {$heightDiff} < threshold: {$heightThreshold})", 'INFO');
-            return [
-                'synced' => false,
-                'reason' => 'Heights in sync',
-                'local_height' => $localHeight,
-                'max_remote_height' => $maxRemoteHeight,
-                'height_difference' => $heightDiff,
-                'threshold' => $heightThreshold
-            ];
-        }
-        
-        // Trigger sync using NetworkSyncManager
-        writeLog("autoSyncBlockchain: Starting blockchain sync (height diff: {$heightDiff})", 'INFO');
-        
-        // Include NetworkSyncManager
-        $baseDir = dirname(__DIR__);
-        require_once $baseDir . '/network_sync.php';
-        
-        $syncManager = new NetworkSyncManager(false);
-        $syncResult = $syncManager->syncAll();
-        
-        writeLog("autoSyncBlockchain: Sync completed with result: " . json_encode($syncResult), 'INFO');
-        
-        return [
-            'synced' => true,
-            'local_height_before' => $localHeight,
-            'max_remote_height' => $maxRemoteHeight,
-            'height_difference' => $heightDiff,
-            'sync_result' => $syncResult,
-            'nodes_checked' => array_keys($heightDifferences)
-        ];
-        
-    } catch (Exception $e) {
-        writeLog("autoSyncBlockchain error: " . $e->getMessage(), 'ERROR');
-        return [
-            'synced' => false,
-            'reason' => 'Sync failed',
-            'error' => $e->getMessage()
-        ];
     }
 }
 
@@ -7604,5 +7712,36 @@ function checkAndHandleTransactionReplacement(PDO $pdo, $newTransaction, string 
             'error' => $e->getMessage(),
             'reason' => 'exception'
         ];
+    }
+}
+
+/**
+ * Perform background synchronization after transfer (non-blocking)
+ */
+function performBackgroundSync($walletManager, array $config): void {
+    try {
+        writeLog("Starting background sync after transfer", 'INFO');
+        
+        // Auto-sync after transfer if enabled
+        if ($config['auto_sync.enabled'] ?? true) {
+            writeLog("Checking auto-sync in background", 'INFO');
+            $autoSyncResult = autoSyncNetwork($walletManager, $config);
+            if ($autoSyncResult['triggered']) {
+                writeLog("Background auto-sync triggered: " . json_encode($autoSyncResult), 'INFO');
+            }
+        }
+
+        // Monitor blockchain height after transfer
+        if ($config['monitor.enabled'] ?? true) {
+            $monitorResult = monitorBlockchainHeight($walletManager, $config);
+            if ($monitorResult['status'] !== 'healthy') {
+                writeLog("Background height monitor alert: " . json_encode($monitorResult), 'WARNING');
+            }
+        }
+        
+        writeLog("Background sync completed", 'INFO');
+        
+    } catch (Exception $e) {
+        writeLog("Background sync failed: " . $e->getMessage(), 'ERROR');
     }
 }

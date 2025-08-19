@@ -7,6 +7,7 @@ use Blockchain\Core\Contracts\NodeInterface;
 use Blockchain\Core\Contracts\BlockInterface;
 use Blockchain\Core\Contracts\TransactionInterface;
 use Blockchain\Core\Network\MultiCurl;
+use Blockchain\Core\Database\DatabaseManager;
 use Blockchain\Core\Events\EventDispatcher;
 use Psr\Log\LoggerInterface;
 
@@ -102,16 +103,33 @@ class NodeManager
         }
 
         $requests = [];
+        $currentNodeId = $this->getCurrentNodeId();
+        $secret = $this->getBroadcastSecret();
+        $payload = [
+            'block_hash' => $block->getHash(),
+            'block_height' => method_exists($block, 'getIndex') ? $block->getIndex() : 0,
+            'source_node' => $currentNodeId,
+            'timestamp' => time(),
+        ];
+        $payload['event_id'] = hash('sha256', $payload['block_hash'] . '|' . $payload['block_height'] . '|' . $payload['timestamp']);
+        $body = json_encode($payload);
+
         foreach ($activeNodes as $nodeId => $node) {
+            $url = rtrim($node->getApiUrl(), '/') . '/network_sync.php?action=block';
+            $headers = [
+                'Content-Type: application/json',
+                'User-Agent: ' . $this->getUserAgent(),
+                'X-Node-Id: ' . $currentNodeId
+            ];
+            if ($secret !== '') {
+                $sig = hash_hmac('sha256', (string)$body, $secret);
+                $headers[] = 'X-Broadcast-Signature: sha256=' . $sig;
+            }
             $requests[$nodeId] = [
-                'url' => $node->getApiUrl() . '/block',
+                'url' => $url,
                 'method' => 'POST',
-                'data' => json_encode($block->toArray()),
-                'headers' => [
-                    'Content-Type: application/json',
-                    'User-Agent: ' . $this->getUserAgent(),
-                    'X-Node-Id: ' . $this->getCurrentNodeId()
-                ]
+                'data' => $body,
+                'headers' => $headers
             ];
         }
 
@@ -125,6 +143,44 @@ class NodeManager
         ]);
 
         return $results;
+    }
+
+    /**
+     * Resolve shared HMAC secret for inter-node broadcast from config/env
+     */
+    private function getBroadcastSecret(): string
+    {
+        // 1) Database config has highest priority
+        try {
+            $pdo = DatabaseManager::getConnection();
+            $stmt = $pdo->prepare("SELECT value FROM config WHERE key_name = 'network.broadcast_secret' LIMIT 1");
+            $stmt->execute();
+            $val = $stmt->fetchColumn();
+            if (is_string($val) && $val !== '') {
+                return (string)$val;
+            }
+        } catch (\Throwable $e) {
+            // ignore and fallback
+        }
+
+        // 2) App config
+        if (!empty($this->config['network']['broadcast_secret']) && is_string($this->config['network']['broadcast_secret'])) {
+            return (string)$this->config['network']['broadcast_secret'];
+        }
+
+        // 3) Environment variables
+        $candidates = [
+            $_ENV['BROADCAST_SECRET'] ?? null,
+            $_ENV['NETWORK_BROADCAST_SECRET'] ?? null,
+            getenv('BROADCAST_SECRET') ?: null,
+            getenv('NETWORK_BROADCAST_SECRET') ?: null,
+        ];
+        foreach ($candidates as $val) {
+            if (is_string($val) && $val !== '') {
+                return $val;
+            }
+        }
+        return '';
     }
 
     /**

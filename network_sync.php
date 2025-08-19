@@ -27,6 +27,50 @@ class NetworkSyncManager {
     }
 
     /**
+     * Get active node base URLs from database (fallback used by mempool sync)
+     * Returns array of strings like https://domain or http://ip:port
+     */
+    private function getActiveNodes(): array {
+        try {
+            $nodes = [];
+            // Prefer nodes table if exists
+            $stmt = $this->pdo->query("SHOW TABLES LIKE 'nodes'");
+            if ($stmt && $stmt->rowCount() > 0) {
+                $q = $this->pdo->query("SELECT ip_address, port, status, metadata FROM nodes WHERE status='active'");
+                while ($row = $q->fetch(PDO::FETCH_ASSOC)) {
+                    $meta = [];
+                    if (!empty($row['metadata'])) {
+                        try { $meta = json_decode($row['metadata'], true) ?: []; } catch (\Throwable $e) {}
+                    }
+                    $domain = $meta['domain'] ?? '';
+                    $protocol = $meta['protocol'] ?? '';
+                    if ($domain !== '') {
+                        $scheme = ($protocol === 'http' || $protocol === 'https') ? $protocol : 'https';
+                        $nodes[] = $scheme . '://' . $domain;
+                    } else if (!empty($row['ip_address']) && !empty($row['port'])) {
+                        $nodes[] = 'http://' . $row['ip_address'] . ':' . (int)$row['port'];
+                    }
+                }
+            }
+            // Fallback to config network_nodes if DB empty
+            if (empty($nodes) && !empty($this->config['network_nodes'])) {
+                $list = $this->config['network_nodes'];
+                if (is_string($list)) { $list = explode(',', $list); }
+                if (is_array($list)) {
+                    foreach ($list as $u) {
+                        $u = trim((string)$u);
+                        if ($u !== '') { $nodes[] = rtrim($u, '/'); }
+                    }
+                }
+            }
+            return array_values(array_unique($nodes));
+        } catch (\Throwable $e) {
+            $this->log('getActiveNodes failed: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
      * Parse various truthy/falsy representations to boolean.
      */
     private function boolFrom($value, bool $default = false): bool {
@@ -3308,6 +3352,77 @@ if (isset($_GET['action'])) {
                     'mempool_stats' => $mempoolStats,
                     'timestamp' => date('Y-m-d H:i:s')
                 ]);
+                break;
+            
+            case 'block':
+                // Compatibility alias for older broadcasts that POST full block to /block
+                $rawBodyOriginal = file_get_contents('php://input');
+                $payload = json_decode($rawBodyOriginal ?: '{}', true) ?: [];
+                
+                // Try to extract hash and height from various possible shapes
+                $hash = $payload['hash']
+                    ?? ($payload['block']['hash'] ?? null)
+                    ?? ($payload['data']['hash'] ?? null);
+                $height = $payload['height']
+                    ?? ($payload['index'] ?? null)
+                    ?? ($payload['block']['height'] ?? ($payload['block']['index'] ?? null))
+                    ?? ($payload['data']['height'] ?? ($payload['data']['index'] ?? null));
+                $sourceNode = $payload['source_node'] ?? ($payload['sourceNode'] ?? null);
+                $timestamp = time();
+                
+                if (!$hash || $height === null) {
+                    echo json_encode(['status' => 'error', 'message' => 'Invalid block payload']);
+                    break;
+                }
+                
+                // Optional HMAC verification against original body if provided
+                $hdrs = function_exists('getallheaders') ? (getallheaders() ?: []) : [];
+                $sigHeader = '';
+                foreach ($hdrs as $k => $v) {
+                    if (strtolower($k) === 'x-broadcast-signature') { $sigHeader = (string)$v; break; }
+                }
+                $providedSig = '';
+                if ($sigHeader && str_starts_with($sigHeader, 'sha256=')) {
+                    $providedSig = substr($sigHeader, 7);
+                }
+                $secret = $syncManager->getBroadcastSecret();
+                if ($secret && $providedSig) {
+                    $calc = hash_hmac('sha256', $rawBodyOriginal, $secret);
+                    if (!hash_equals($calc, $providedSig)) {
+                        echo json_encode(['status' => 'error', 'message' => 'Invalid signature']);
+                        break;
+                    }
+                }
+                
+                // Dedup by normalized event id
+                $eventId = hash('sha256', (string)$hash . '|' . (string)$height . '|' . (string)$timestamp);
+                if ($syncManager->isDuplicateEvent($eventId)) {
+                    echo json_encode(['status' => 'success', 'message' => 'Duplicate event, ignored']);
+                    break;
+                }
+                
+                $syncManager->log("Received block (compat) notification: {$hash} at height {$height}");
+                
+                // Check if we need to sync this block
+                $stmt = $syncManager->getPdo()->prepare("SELECT COUNT(*) FROM blocks WHERE hash = ?");
+                $stmt->execute([$hash]);
+                $exists = $stmt->fetchColumn() > 0;
+                
+                if (!$exists) {
+                    $syncManager->log("Block not found locally (compat), triggering sync...");
+                    try {
+                        if ($sourceNode) {
+                            $result = $syncManager->syncBlocksOnly($sourceNode);
+                            echo json_encode(['status' => 'success', 'message' => 'Sync completed', 'result' => $result]);
+                        } else {
+                            echo json_encode(['status' => 'success', 'message' => 'Block notification received']);
+                        }
+                    } catch (Exception $e) {
+                        echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+                    }
+                } else {
+                    echo json_encode(['status' => 'success', 'message' => 'Block already exists']);
+                }
                 break;
                 
             case 'sync_new_block':
