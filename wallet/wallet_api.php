@@ -519,32 +519,16 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
         case 'create_wallet':
             $result = createWallet($walletManager, $blockchainManager);
             
-            // Trigger auto-mine after wallet creation if enabled
+            // Send immediate response
+            echo json_encode($result);
+            if (function_exists('fastcgi_finish_request')) {
+                fastcgi_finish_request();
+            }
+            
+            // Background processing
             $config = getNetworkConfigFromDatabase($pdo);
-            if ($config['auto_mine.enabled'] ?? true) {
-                writeLog("Attempting auto-mine after wallet creation", 'INFO');
-                $autoMineResult = autoMineBlocks($walletManager, $config);
-                writeLog("Auto-mine result after wallet creation: " . json_encode($autoMineResult), 'INFO');
-                $result['auto_mine'] = $autoMineResult;
-            }
-
-            // Trigger auto-sync after wallet creation if enabled
-            if ($config['auto_sync.enabled'] ?? true) {
-                writeLog("Attempting auto-sync after wallet creation", 'INFO');
-                $autoSyncResult = autoSyncNetwork($walletManager, $config);
-                writeLog("Auto-sync result after wallet creation: " . json_encode($autoSyncResult), 'INFO');
-                $result['auto_sync'] = $autoSyncResult;
-            }
-
-            // Monitor blockchain height after wallet creation
-            if ($config['monitor.enabled'] ?? true) {
-                $monitorResult = monitorBlockchainHeight($walletManager, $config);
-                if ($monitorResult['status'] !== 'healthy') {
-                    writeLog("Height monitor alert after wallet creation: " . json_encode($monitorResult), 'WARNING');
-                    $result['height_monitor'] = $monitorResult;
-                }
-            }
-            break;
+            performBackgroundSync($walletManager, $config);
+            return;
         case 'ensure_wallet':
             // Ensure a wallet record exists for the provided address (auto-create if missing)
             $address = $input['address'] ?? '';
