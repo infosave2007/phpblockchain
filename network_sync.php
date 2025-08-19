@@ -3279,20 +3279,101 @@ if (isset($_GET['action'])) {
     header('Content-Type: application/json');
     
     try {
-        $syncManager = new NetworkSyncManager(true);
-        
         switch ($_GET['action']) {
             case 'sync':
+                $syncManager = new NetworkSyncManager(true);
                 $result = $syncManager->syncAll();
                 echo json_encode($result);
                 break;
                 
+            case 'enhanced_sync':
+                // Use enhanced sync manager for better performance
+                require_once __DIR__ . '/core/Sync/EnhancedSyncManager.php';
+                require_once __DIR__ . '/core/Logging/NullLogger.php';
+                
+                $enhancedConfig = [
+                    'batch_processing' => true,
+                    'rate_limiting' => true,
+                    'load_balancing' => true,
+                    'auto_recovery' => true
+                ];
+                
+                $enhancedSync = new \Blockchain\Core\Sync\EnhancedSyncManager($enhancedConfig, new \Blockchain\Core\Logging\NullLogger());
+                
+                $result = $enhancedSync->processSyncEvent('full_sync', ['operation' => 'sync_all', 'timestamp' => time()], 'network_sync', 5);
+                echo json_encode($result);
+                return; // Prevent further execution
+                break;
+                
             case 'status':
+                $syncManager = new NetworkSyncManager(true);
                 $status = $syncManager->getStatus();
                 echo json_encode(['status' => 'success', 'data' => $status]);
                 break;
                 
+            case 'enhanced_status':
+                // Enhanced status with load balancer and health info
+                require_once __DIR__ . '/core/Sync/EnhancedSyncManager.php';
+                require_once __DIR__ . '/core/Logging/NullLogger.php';
+                
+                $enhancedConfig = [
+                    'health_monitoring' => true,
+                    'load_balancing' => true,
+                    'circuit_breaker' => [],
+                    'health_monitor' => [],
+                    'load_balancer' => []
+                ];
+                
+                $enhancedSync = new \Blockchain\Core\Sync\EnhancedSyncManager($enhancedConfig, new \Blockchain\Core\Logging\NullLogger());
+                $enhancedStats = $enhancedSync->getStatus();
+                $healthChecks = $enhancedSync->getHealthCheck();
+                
+                echo json_encode([
+                    'status' => 'success',
+                    'enhanced_stats' => $enhancedStats,
+                    'health_checks' => $healthChecks
+                ]);
+                break;
+                
+            case 'health_check':
+                // Health check endpoint
+                require_once __DIR__ . '/core/Sync/EnhancedSyncManager.php';
+                require_once __DIR__ . '/core/Logging/NullLogger.php';
+                
+                $enhancedConfig = [
+                    'health_monitoring' => true,
+                    'load_balancing' => true
+                ];
+                
+                $enhancedSync = new \Blockchain\Core\Sync\EnhancedSyncManager($enhancedConfig, new \Blockchain\Core\Logging\NullLogger());
+                $health = $enhancedSync->getHealthCheck();
+                
+                echo json_encode([
+                    'status' => 'success',
+                    'health' => $health
+                ]);
+                break;
+                
+            case 'load_balancer_stats':
+                // Load balancer statistics
+                require_once __DIR__ . '/core/Sync/EnhancedSyncManager.php';
+                require_once __DIR__ . '/core/Logging/NullLogger.php';
+                
+                $enhancedConfig = [
+                    'load_balancing' => true
+                ];
+                
+                $enhancedSync = new \Blockchain\Core\Sync\EnhancedSyncManager($enhancedConfig, new \Blockchain\Core\Logging\NullLogger());
+                $lbStats = $enhancedSync->getLoadBalancerStats();
+                
+                echo json_encode([
+                    'status' => 'success',
+                    'load_balancer' => $lbStats
+                ]);
+                break;
+                
             case 'mempool_maintenance':
+                $syncManager = new NetworkSyncManager(true);
                 $result = $syncManager->runMempoolMaintenance();
                 echo json_encode($result);
                 break;

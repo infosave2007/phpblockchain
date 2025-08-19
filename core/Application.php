@@ -18,6 +18,7 @@ use Blockchain\Core\Network\MultiCurl;
 use Blockchain\Contracts\SmartContractManager;
 use Blockchain\Core\Consensus\ProofOfStake;
 use Blockchain\Core\Logging\NullLogger;
+use Blockchain\Core\Database\DatabaseManager;
 use Blockchain\Core\Cryptography\MessageEncryption;
 use Blockchain\Core\Recovery\BlockchainRecoveryManager;
 use Blockchain\Wallet\WalletManager;
@@ -150,12 +151,16 @@ class Application
         // Create a simple WalletManager instance
         $walletManager = new WalletManager($this->database, $this->config);
         
+        // Create DatabaseManager instance
+        $databaseManager = new DatabaseManager();
+        
         $this->api = new BlockchainAPI(
             $this->blockchain,
             $this->contractManager,
             $this->nodeManager,
             $this->consensus,
             $walletManager,
+            $databaseManager,
             $logger,
             $this->config
         );
@@ -173,10 +178,10 @@ class Application
         // Start consensus engine
         $this->consensus->start();
         
-        // Start node manager
-        $this->nodeManager->start();
+        // Initialize node manager (no start method needed)
         
-        // Keep the application running
+        // Keep the application running (daemon mode)
+        // @phpstan-ignore-next-line - This is intentional infinite loop for daemon process
         while (true) {
             sleep(1);
             $this->processBlockchain();
@@ -285,10 +290,11 @@ class Application
         echo "====================\n";
         echo "Version: " . BLOCKCHAIN_VERSION . "\n";
         echo "Blockchain height: " . $this->blockchain->getHeight() . "\n";
-        echo "Connected nodes: " . count($this->nodeManager->getConnectedNodes()) . "\n";
+        echo "Connected nodes: " . count($this->nodeManager->getActiveNodes()) . "\n";
         echo "Consensus: " . $this->config['blockchain']['consensus_algorithm'] . "\n";
         echo "Token Symbol: " . ($this->config['blockchain']['token_symbol'] ?? 'MBC') . "\n";
-        echo "Total Supply: " . $this->blockchain->getTotalSupply() . " " . ($this->config['blockchain']['token_symbol'] ?? 'MBC') . "\n";
+        $stats = $this->blockchain->getStats();
+        echo "Total Volume: " . ($stats['totalVolume'] ?? 'N/A') . " " . ($this->config['blockchain']['token_symbol'] ?? 'MBC') . "\n";
     }
 
     /**
@@ -452,8 +458,8 @@ class Application
             
             if ($encrypt) {
                 // Get recipient's public key and sender's private key
-                $recipientPublicKey = $this->getPublicKey($to);
-                $senderPrivateKey = $this->getPrivateKey($from);
+                $recipientPublicKey = $this->getWalletPublicKey($to);
+                $senderPrivateKey = $this->getWalletPrivateKey($from);
                 
                 if (!$recipientPublicKey) {
                     echo "Error: Could not find public key for recipient address: {$to}\n";
@@ -520,7 +526,7 @@ class Application
                 if ($messageData['encrypted'] && $privateKey) {
                     try {
                         // Get sender's public key for signature verification
-                        $senderPublicKey = $this->getPublicKey($message['from_address']);
+                        $senderPublicKey = $this->getWalletPublicKey($message['from_address']);
                         
                         if ($senderPublicKey) {
                             $decryptedContent = MessageEncryption::decryptSecureMessage(
@@ -573,12 +579,61 @@ class Application
     }
     
     /**
+     * Get wallet public key by address
+     */
+    private function getWalletPublicKey(string $address): ?string
+    {
+        try {
+            $pdo = DatabaseManager::getConnection();
+            $stmt = $pdo->prepare("SELECT public_key FROM wallets WHERE address = ?");
+            $stmt->execute([$address]);
+            return $stmt->fetchColumn() ?: null;
+        } catch (Exception $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Get wallet private key by address
+     */
+    private function getWalletPrivateKey(string $address): ?string
+    {
+        try {
+            $pdo = DatabaseManager::getConnection();
+            $stmt = $pdo->prepare("SELECT private_key FROM wallets WHERE address = ?");
+            $stmt->execute([$address]);
+            return $stmt->fetchColumn() ?: null;
+        } catch (Exception $e) {
+            return null;
+        }
+    }
+
+    /**
      * Generate new RSA key pair
      */
     private function generateKeyPair(): void
     {
         try {
-            $keyPair = MessageEncryption::generateRSAKeyPair(2048);
+            // Generate RSA key pair using OpenSSL
+            $config = [
+                "digest_alg" => "sha256",
+                "private_key_bits" => 2048,
+                "private_key_type" => OPENSSL_KEYTYPE_RSA,
+            ];
+            
+            $res = openssl_pkey_new($config);
+            if (!$res) {
+                throw new \Exception("Failed to generate key pair: " . openssl_error_string());
+            }
+            
+            openssl_pkey_export($res, $privateKey);
+            $publicKey = openssl_pkey_get_details($res);
+            $publicKeyPem = $publicKey["key"];
+            
+            $keyPair = [
+                'public_key' => $publicKeyPem,
+                'private_key' => $privateKey
+            ];
             
             echo "RSA Key Pair Generated Successfully!\n";
             echo "=====================================\n";
@@ -600,8 +655,26 @@ class Application
     private function createWallet(string $name): void
     {
         try {
-            // Generate key pair
-            $keyPair = MessageEncryption::generateRSAKeyPair(2048);
+            // Generate key pair using OpenSSL
+            $config = [
+                "digest_alg" => "sha256",
+                "private_key_bits" => 2048,
+                "private_key_type" => OPENSSL_KEYTYPE_RSA,
+            ];
+            
+            $res = openssl_pkey_new($config);
+            if (!$res) {
+                throw new \Exception("Failed to generate key pair: " . openssl_error_string());
+            }
+            
+            openssl_pkey_export($res, $privateKey);
+            $publicKey = openssl_pkey_get_details($res);
+            $publicKeyPem = $publicKey["key"];
+            
+            $keyPair = [
+                'public_key' => $publicKeyPem,
+                'private_key' => $privateKey
+            ];
             
             // Generate address from public key
             $address = $this->generateAddressFromPublicKey($keyPair['public_key']);

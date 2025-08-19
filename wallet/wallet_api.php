@@ -975,6 +975,82 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             }
             break;
             
+        case 'enhanced_sync':
+            // Enhanced sync with load balancing and rate limiting
+            try {
+                require_once '../core/Sync/EnhancedSyncManager.php';
+                require_once '../core/Logging/NullLogger.php';
+                
+                $enhancedConfig = [
+                    'batch_processing' => true,
+                    'rate_limiting' => true,
+                    'load_balancing' => true,
+                    'auto_recovery' => true
+                ];
+                
+                $enhancedSync = new \Blockchain\Core\Sync\EnhancedSyncManager($enhancedConfig, new \Blockchain\Core\Logging\NullLogger());
+                
+                $syncOperation = function($node, $data) use ($walletManager, $config) {
+                    return autoSyncNetwork($walletManager, $config ?? []);
+                };
+                
+                $result = $enhancedSync->processSyncEvent('wallet_sync', ['operation' => 'sync_wallets'], 'wallet_api', 5);
+            } catch (Exception $e) {
+                $result = [
+                    'success' => false,
+                    'error' => $e->getMessage()
+                ];
+            }
+            break;
+            
+        case 'health_check':
+            // Node health check and recovery
+            try {
+                require_once '../core/Sync/EnhancedSyncManager.php';
+                require_once '../core/Logging/NullLogger.php';
+                
+                $enhancedConfig = [
+                    'auto_recovery' => true,
+                    'rate_limiting' => true,
+                    'circuit_breaker' => [],
+                    'health_monitor' => [],
+                    'load_balancer' => []
+                ];
+                
+                $enhancedSync = new \Blockchain\Core\Sync\EnhancedSyncManager($enhancedConfig, new \Blockchain\Core\Logging\NullLogger());
+                $result = $enhancedSync->getHealthCheck();
+            } catch (Exception $e) {
+                $result = [
+                    'success' => false,
+                    'error' => $e->getMessage()
+                ];
+            }
+            break;
+            
+        case 'load_balancer_stats':
+            // Get load balancer and health statistics
+            try {
+                require_once '../core/Sync/EnhancedSyncManager.php';
+                require_once '../core/Logging/NullLogger.php';
+                
+                $enhancedConfig = [
+                    'load_balancing' => true,
+                    'health_monitoring' => true,
+                    'circuit_breaker' => [],
+                    'health_monitor' => [],
+                    'load_balancer' => []
+                ];
+                
+                $enhancedSync = new \Blockchain\Core\Sync\EnhancedSyncManager($enhancedConfig, new \Blockchain\Core\Logging\NullLogger());
+                $result = $enhancedSync->getLoadBalancerStats();
+            } catch (Exception $e) {
+                $result = [
+                    'success' => false,
+                    'error' => $e->getMessage()
+                ];
+            }
+            break;
+            
         case 'debug_mempool':
             // Debug mempool status
             try {
@@ -2196,7 +2272,7 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
                 'instant' => true
             ];
         }
-
+        
         writeLog("Token transfer completed successfully", 'INFO');
 
         // Emit wallet events (best-effort)
@@ -2224,10 +2300,10 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
                 'sender' => $walletManager->getBalance($fromAddress),
                 'recipient' => $walletManager->getBalance($toAddress)
             ]
-        ];
+    ];
         
-        // Release sender lock
-        if (isset($lockFp) && $lockFp) { @flock($lockFp, LOCK_UN); @fclose($lockFp); }
+    // Release sender lock
+    if (isset($lockFp) && $lockFp) { @flock($lockFp, LOCK_UN); @fclose($lockFp); }
         
         // Background sync will be handled by the main action handler
         return $fastResponse;
@@ -5188,7 +5264,7 @@ function getOrDeployStakingContract(PDO $pdo, string $deployerAddress): string {
     // Proceed with deployment only if enabled
     try {
         // Minimal logger implementation
-        $logger = new class implements \Psr\Log\LoggerInterface {
+        $logger = new class implements \Blockchain\Core\Logging\LoggerInterface {
             public function emergency($message, array $context = []): void {}
             public function alert($message, array $context = []): void {}
             public function critical($message, array $context = []): void {}
@@ -5246,7 +5322,7 @@ function getNetworkNodesFromDatabase(PDO $pdo): array {
                 reputation_score,
                 ping_time
             FROM nodes 
-            WHERE status = 'active'
+            WHERE status = 'active' 
             ORDER BY reputation_score DESC, ping_time ASC
         ");
         $stmt->execute();

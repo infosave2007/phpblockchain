@@ -9,6 +9,12 @@ namespace Blockchain\Core\Events;
 class EventDispatcher
 {
     private array $listeners = [];
+    private $logger;
+    
+    public function __construct($logger = null)
+    {
+        $this->logger = $logger;
+    }
     
     public function addEventListener(string $eventName, callable $listener): void
     {
@@ -17,6 +23,11 @@ class EventDispatcher
         }
         
         $this->listeners[$eventName][] = $listener;
+    }
+    
+    public function on(string $eventName, callable $listener): void
+    {
+        $this->addEventListener($eventName, $listener);
     }
     
     public function dispatch(string $eventName, array $data = []): void

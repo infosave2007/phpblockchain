@@ -889,7 +889,7 @@ class WalletManager
             
             // Initialize SmartContractManager
             $stateStorage = new \Blockchain\Core\Storage\StateStorage($pdo);
-            $vm = new \Blockchain\Core\SmartContract\VirtualMachine($pdo);
+            $vm = new \Blockchain\Core\SmartContract\VirtualMachine(8000000); // Gas limit
             $logger = new \Blockchain\Core\Logging\NullLogger();
             $contractManager = new \Blockchain\Contracts\SmartContractManager($vm, $stateStorage, $logger);
             

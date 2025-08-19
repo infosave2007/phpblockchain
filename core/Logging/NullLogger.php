@@ -3,18 +3,28 @@ declare(strict_types=1);
 
 namespace Blockchain\Core\Logging;
 
-use Psr\Log\LoggerInterface;
-use Stringable;
+interface LoggerInterface
+{
+    public function emergency(string $message, array $context = []): void;
+    public function alert(string $message, array $context = []): void;
+    public function critical(string $message, array $context = []): void;
+    public function error(string $message, array $context = []): void;
+    public function warning(string $message, array $context = []): void;
+    public function notice(string $message, array $context = []): void;
+    public function info(string $message, array $context = []): void;
+    public function debug(string $message, array $context = []): void;
+    public function log($level, string $message, array $context = []): void;
+}
 
 class NullLogger implements LoggerInterface
 {
-    public function emergency(Stringable|string $message, array $context = []): void {}
-    public function alert(Stringable|string $message, array $context = []): void {}
-    public function critical(Stringable|string $message, array $context = []): void {}
-    public function error(Stringable|string $message, array $context = []): void {}
-    public function warning(Stringable|string $message, array $context = []): void {}
-    public function notice(Stringable|string $message, array $context = []): void {}
-    public function info(Stringable|string $message, array $context = []): void {}
-    public function debug(Stringable|string $message, array $context = []): void {}
-    public function log($level, Stringable|string $message, array $context = []): void {}
+    public function emergency(string $message, array $context = []): void {}
+    public function alert(string $message, array $context = []): void {}
+    public function critical(string $message, array $context = []): void {}
+    public function error(string $message, array $context = []): void {}
+    public function warning(string $message, array $context = []): void {}
+    public function notice(string $message, array $context = []): void {}
+    public function info(string $message, array $context = []): void {}
+    public function debug(string $message, array $context = []): void {}
+    public function log($level, string $message, array $context = []): void {}
 }

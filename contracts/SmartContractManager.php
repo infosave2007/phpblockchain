@@ -7,7 +7,7 @@ use Blockchain\Core\Contracts\SmartContractInterface;
 use Blockchain\Core\Contracts\TransactionInterface;
 use Blockchain\Core\SmartContract\VirtualMachine;
 use Blockchain\Core\Storage\StateStorage;
-use Psr\Log\LoggerInterface;
+use Blockchain\Core\Logging\LoggerInterface;
 
 /**
  * Smart contract manager

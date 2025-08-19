@@ -9,7 +9,7 @@ use Blockchain\Core\Contracts\TransactionInterface;
 use Blockchain\Core\Network\MultiCurl;
 use Blockchain\Core\Database\DatabaseManager;
 use Blockchain\Core\Events\EventDispatcher;
-use Psr\Log\LoggerInterface;
+use Blockchain\Core\Logging\LoggerInterface;
 use Exception;
 
 /**
@@ -92,7 +92,7 @@ class NodeManager
     }
 
     /**
-     * Broadcast block to all nodes
+     * Broadcast block to all nodes with enhanced processing
      */
     public function broadcastBlock(BlockInterface $block): array
     {
@@ -103,6 +103,42 @@ class NodeManager
             return [];
         }
 
+        // Try enhanced broadcast first
+        try {
+            require_once __DIR__ . '/../core/Sync/EnhancedSyncManager.php';
+            require_once __DIR__ . '/../core/Logging/NullLogger.php';
+            
+            $enhancedSync = new \Blockchain\Core\Sync\EnhancedSyncManager([
+                'batch_processing' => true,
+                'load_balancing' => true
+            ], new \Blockchain\Core\Logging\NullLogger());
+            
+            // Process as batch event
+            $eventResult = $enhancedSync->processSyncEvent('block.added', [
+                'block_hash' => $block->getHash(),
+                'block_height' => method_exists($block, 'getIndex') ? $block->getIndex() : 0,
+                'broadcast_nodes' => array_keys($activeNodes)
+            ], $this->getCurrentNodeId(), 1);
+            
+            if ($eventResult['success']) {
+                $this->logger->info('Enhanced block broadcast queued', [
+                    'block_hash' => $block->getHash(),
+                    'processing_method' => $eventResult['processing_method']
+                ]);
+                
+                // Return success result for enhanced processing
+                return [
+                    'enhanced' => true,
+                    'success' => true,
+                    'processing_method' => $eventResult['processing_method'],
+                    'nodes_count' => count($activeNodes)
+                ];
+            }
+        } catch (Exception $e) {
+            $this->logger->warning('Enhanced broadcast failed, falling back to traditional: ' . $e->getMessage());
+        }
+
+        // Fallback to traditional broadcast
         $requests = [];
         $currentNodeId = $this->getCurrentNodeId();
         $secret = $this->getBroadcastSecret();
@@ -137,13 +173,13 @@ class NodeManager
         $results = $this->multiCurl->executeRequests($requests);
         $this->processNodeResponses($results, 'block_broadcast');
 
-        $this->logger->info('Block broadcast completed', [
+        $this->logger->info('Traditional block broadcast completed', [
             'block_hash' => $block->getHash(),
             'nodes_count' => count($activeNodes),
             'successful' => count(array_filter($results, fn($r) => $r['success']))
         ]);
 
-        return $results;
+        return array_merge($results, ['enhanced' => false]);
     }
 
     /**
@@ -468,7 +504,7 @@ class NodeManager
         
         // Provide detailed sync recommendation
         $recommendation = [
-            'success' => true,
+                'success' => true,
             'action' => 'sync_recommended',
             'sync_source' => [
                 'node_id' => $nodeId,

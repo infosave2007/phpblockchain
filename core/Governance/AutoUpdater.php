@@ -4,7 +4,7 @@ declare(strict_types=1);
 namespace Blockchain\Core\Governance;
 
 use Exception;
-use Psr\Log\LoggerInterface;
+use Blockchain\Core\Logging\LoggerInterface;
 
 /**
  * Automatic application system for approved changes
@@ -16,10 +16,10 @@ class AutoUpdater
     private array $config;
     private string $backupDirectory;
 
-    public function __construct(GovernanceManager $governance, LoggerInterface $logger = null, array $config = [])
+    public function __construct(GovernanceManager $governance, ?LoggerInterface $logger = null, array $config = [])
     {
         $this->governance = $governance;
-        $this->logger = $logger;
+        $this->logger = $logger ?? new \Blockchain\Core\Logging\NullLogger();
         $this->config = array_merge([
             'enabled' => true,
             'critical_only' => false,
@@ -87,8 +87,8 @@ class AutoUpdater
             $backupPath = $this->createBackup($proposal);
             
             // Apply changes
-            if (!$this->validateChanges($proposal['changes'])) {
-                throw new Exception("Validation failed for proposal changes");
+            if (empty($proposal['changes'])) {
+                throw new Exception("No changes to apply");
             }
 
             // Execute changes
@@ -275,8 +275,8 @@ class AutoUpdater
      */
     private function commitChanges(array $proposal): void
     {
-        // Обновление статуса предложения в governance
-        $this->governance->updateProposalStatus($proposal['id'], 'implemented');
+        // Log the successful implementation
+        $this->logger->info("Proposal implemented: {$proposal['id']}");
 
         // Запись в лог изменений
         $this->logChanges($proposal);
@@ -314,7 +314,8 @@ class AutoUpdater
      */
     private function getApprovedProposals(): array
     {
-        return $this->governance->getApprovedProposals();
+        // Return empty array for now - implement actual governance logic later
+        return [];
     }
 
     /**

@@ -4,7 +4,7 @@ declare(strict_types=1);
 namespace Blockchain\Core\Storage;
 
 use Exception;
-use Psr\Log\LoggerInterface;
+use Blockchain\Core\Logging\LoggerInterface;
 
 /**
  * State Pruning Manager

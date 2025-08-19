@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Blockchain\Core\Monitoring;
 
-use Psr\Log\LoggerInterface;
+use Blockchain\Core\Logging\LoggerInterface;
 use Exception;
 
 /**
