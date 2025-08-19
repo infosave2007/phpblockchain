@@ -762,12 +762,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             }
             
             // 3. Validate final format
-            \Blockchain\Wallet\WalletLogger::debug("Key validation steps", [
-                'original' => $privateKey,
-                'cleaned' => $cleanKey,
-                'length' => strlen($cleanKey),
-                'is_zero' => $cleanKey === str_repeat('0', 64)
-            ]);
+            \Blockchain\Wallet\WalletLogger::debug("Key validation: original={$privateKey} cleaned={$cleanKey} length=" . strlen($cleanKey));
             
             if (strlen($cleanKey) !== 64 || !ctype_xdigit($cleanKey)) {
                 throw new Exception('Invalid key format. Expected 64 hex chars after cleaning');
@@ -2178,14 +2173,44 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
         // 9. Broadcast transaction to all network nodes via multi_curl
         $networkResult = broadcastTransactionToNetwork($transferTx, $pdo);
         
-        // 10. Auto-mine blocks if enabled
+        // 10. Force immediate block mining for instant transaction confirmation
         $config = getNetworkConfigFromDatabase($pdo);
         $autoMineResult = null;
         
-        if ($config['auto_mine.enabled'] ?? true) {
-            writeLog("Attempting auto-mine after transfer", 'INFO');
-            $autoMineResult = autoMineBlocks($walletManager, $config);
-            writeLog("Auto-mine result: " . json_encode($autoMineResult), 'INFO');
+        writeLog("Force mining block immediately after transfer for instant confirmation", 'INFO');
+        try {
+            // Force mine block regardless of mempool count for instant confirmation
+            $maxTransactions = $config['auto_mine.max_transactions_per_block'] ?? 100;
+            $mempool = new \Blockchain\Core\Transaction\MempoolManager($pdo, ['min_fee' => 0.001]);
+            $transactions = $mempool->getTransactionsForBlock($maxTransactions);
+            
+            if (!empty($transactions)) {
+                // Use existing autoMineBlocks function which handles mining properly
+                $forceConfig = array_merge($config, ['auto_mine.min_transactions' => 1]);
+                $mineResult = autoMineBlocks($walletManager, $forceConfig);
+                
+                if ($mineResult['mined']) {
+                    writeLog("Instant block mined: " . json_encode($mineResult), 'INFO');
+                    $autoMineResult = array_merge($mineResult, ['instant' => true]);
+                } else {
+                    writeLog("Instant mining failed: " . json_encode($mineResult), 'ERROR');
+                    $autoMineResult = array_merge($mineResult, ['instant' => true]);
+                }
+            } else {
+                writeLog("No transactions in mempool for instant mining", 'WARNING');
+                $autoMineResult = [
+                    'mined' => false,
+                    'reason' => 'No transactions in mempool',
+                    'instant' => true
+                ];
+            }
+        } catch (Exception $e) {
+            writeLog("Instant mining error: " . $e->getMessage(), 'ERROR');
+            $autoMineResult = [
+                'mined' => false,
+                'reason' => 'Exception: ' . $e->getMessage(),
+                'instant' => true
+            ];
         }
 
         writeLog("Token transfer completed successfully", 'INFO');
@@ -3667,15 +3692,27 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                         writeLog('Broadcast of raw tx failed: ' . $e->getMessage(), 'ERROR');
                     }
 
-                    // Optional: attempt auto-mining on this node if enabled in config
+                    // Force immediate block mining for instant transaction confirmation
+                    writeLog("Force mining block immediately after raw transaction for instant confirmation", 'INFO');
                     try {
                         $config = getNetworkConfigFromDatabase($pdo);
-                        if (!empty($config['auto_mine.enabled'])) {
-                            $am = autoMineBlocks($walletManager, $config);
-                            writeLog('Auto-mine after raw tx: ' . json_encode($am), 'INFO');
+                        $maxTransactions = $config['auto_mine.max_transactions_per_block'] ?? 100;
+                        $mempool = new \Blockchain\Core\Transaction\MempoolManager($pdo, ['min_fee' => 0.001]);
+                        $transactions = $mempool->getTransactionsForBlock($maxTransactions);
+                        
+                        if (!empty($transactions)) {
+                            // Use existing autoMineBlocks function which handles mining properly
+                            $forceConfig = array_merge($config, ['auto_mine.min_transactions' => 1]);
+                            $mineResult = autoMineBlocks($walletManager, $forceConfig);
+                            
+                            if ($mineResult['mined']) {
+                                writeLog("Instant block mined after raw tx: " . json_encode($mineResult), 'INFO');
+                            } else {
+                                writeLog("Instant mining after raw tx failed: " . json_encode($mineResult), 'ERROR');
+                            }
                         }
                     } catch (\Throwable $e) {
-                        writeLog('Auto-mine after raw tx failed: ' . $e->getMessage(), 'WARNING');
+                        writeLog('Instant mining after raw tx failed: ' . $e->getMessage(), 'WARNING');
                     }
                 } catch (\Throwable $e) {
                     writeLog('Normalization/broadcast pipeline for raw tx failed: ' . $e->getMessage(), 'WARNING');
@@ -3821,15 +3858,27 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                         $broadcastResult = broadcastTransactionToNetwork($normalized, $pdo);
                         writeLog('Broadcasted sendTransaction to network: ' . json_encode($broadcastResult), 'INFO');
 
-                        // Optional: attempt auto-mining on this node if enabled
+                        // Force immediate block mining for instant transaction confirmation
+                        writeLog("Force mining block immediately after sendTransaction for instant confirmation", 'INFO');
                         try {
                             $config = getNetworkConfigFromDatabase($pdo);
-                            if (!empty($config['auto_mine.enabled'])) {
-                                $am = autoMineBlocks($walletManager, $config);
-                                writeLog('Auto-mine after sendTransaction: ' . json_encode($am), 'INFO');
+                            $maxTransactions = $config['auto_mine.max_transactions_per_block'] ?? 100;
+                            $mempool = new \Blockchain\Core\Transaction\MempoolManager($pdo, ['min_fee' => 0.001]);
+                            $transactions = $mempool->getTransactionsForBlock($maxTransactions);
+                            
+                            if (!empty($transactions)) {
+                                // Use existing autoMineBlocks function which handles mining properly
+                                $forceConfig = array_merge($config, ['auto_mine.min_transactions' => 1]);
+                                $mineResult = autoMineBlocks($walletManager, $forceConfig);
+                                
+                                if ($mineResult['mined']) {
+                                    writeLog("Instant block mined after sendTransaction: " . json_encode($mineResult), 'INFO');
+                                } else {
+                                    writeLog("Instant mining after sendTransaction failed: " . json_encode($mineResult), 'ERROR');
+                                }
                             }
                         } catch (\Throwable $e) {
-                            writeLog('Auto-mine after sendTransaction failed: ' . $e->getMessage(), 'WARNING');
+                            writeLog('Instant mining after sendTransaction failed: ' . $e->getMessage(), 'WARNING');
                         }
                     } catch (\Throwable $e) {
                         writeLog('Broadcast pipeline for sendTransaction failed: ' . $e->getMessage(), 'WARNING');

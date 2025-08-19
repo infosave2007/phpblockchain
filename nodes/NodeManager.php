@@ -10,6 +10,7 @@ use Blockchain\Core\Network\MultiCurl;
 use Blockchain\Core\Database\DatabaseManager;
 use Blockchain\Core\Events\EventDispatcher;
 use Psr\Log\LoggerInterface;
+use Exception;
 
 /**
  * Node manager with multi-curl support for efficient network interaction
@@ -59,7 +60,7 @@ class NodeManager
     /**
      * Add node to network
      */
-    public function addNode(NodeInterface $node): void
+    public function addNode($node): void
     {
         $nodeId = $node->getId();
         $this->nodes[$nodeId] = $node;
@@ -356,7 +357,7 @@ class NodeManager
     }
 
     /**
-     * Translate неисправных узлов
+     * Get failed nodes
      */
     public function getFailedNodes(): array
     {
@@ -450,58 +451,45 @@ class NodeManager
     }
 
     /**
-     * Professional block synchronization with selected node
+     * Detect synchronization needs and provide sync recommendations
+     * NOTE: Actual sync should be handled by NetworkSyncManager
      */
     private function synchronizeBlocks(array $longestChainNode): array
     {
         $nodeId = $longestChainNode['nodeId'];
-        $node = $this->nodes[$nodeId];
         $targetHeight = $longestChainNode['height'];
-        $currentHeight = $this->blockchain->getBlockHeight();
+        $nodeData = $longestChainNode['data'] ?? [];
         
-        try {
-            $blocksSynced = 0;
-            
-            // Sync blocks one by one from current height + 1 to target height
-            for ($height = $currentHeight + 1; $height <= $targetHeight; $height++) {
-                $blockData = $this->requestBlockFromNode($nodeId, $height);
-                
-                if (!$blockData || !$this->validateBlockData($blockData)) {
-                    throw new Exception("Invalid block data received for height $height");
-                }
-                
-                // Create block object and add to blockchain
-                $block = $this->createBlockFromData($blockData);
-                
-                if ($this->blockchain->addBlock($block)) {
-                    $blocksSynced++;
-                } else {
-                    throw new Exception("Failed to add block at height $height");
-                }
-                
-                // Add small delay to prevent overwhelming the network
-                usleep(10000); // 10ms delay
-            }
-            
-            return [
-                'success' => true,
-                'blocks_synced' => $blocksSynced,
-                'target_height' => $targetHeight,
-                'current_height' => $this->blockchain->getBlockHeight()
-            ];
-            
-        } catch (Exception $e) {
-            return [
-                'success' => false,
-                'error' => $e->getMessage(),
-                'blocks_synced' => $blocksSynced ?? 0,
-                'target_height' => $targetHeight
-            ];
+        $this->logger->info("NodeManager detected sync opportunity", [
+            'target_node' => $nodeId,
+            'target_height' => $targetHeight,
+            'node_data' => $nodeData
+        ]);
+        
+        // Provide detailed sync recommendation
+        $recommendation = [
+            'success' => true,
+            'action' => 'sync_recommended',
+            'sync_source' => [
+                'node_id' => $nodeId,
+                'height' => $targetHeight,
+                'url' => $this->nodes[$nodeId]->getApiUrl() ?? 'unknown'
+            ],
+            'recommendation' => 'Use NetworkSyncManager for blockchain synchronization',
+            'blocks_behind' => max(0, $targetHeight - ($nodeData['current_height'] ?? 0)),
+            'priority' => $targetHeight > 1000 ? 'high' : 'normal'
+        ];
+        
+        // Dispatch sync recommendation event if available
+        if ($this->eventDispatcher) {
+            $this->eventDispatcher->dispatch('sync.recommended', $recommendation);
         }
+        
+        return $recommendation;
     }
 
     /**
-     * Обновление статуса узла
+     * Update node status
      */
     private function updateNodeStatus(string $nodeId, array $result): void
     {
@@ -524,7 +512,7 @@ class NodeManager
     }
 
     /**
-     * Бан узла
+     * Ban node
      */
     public function banNode(string $nodeId, string $reason): void
     {
@@ -560,19 +548,30 @@ class NodeManager
      */
     private function getCurrentNodeId(): string
     {
-        // Здесь должна быть логика получения ID текущего узла
-        return 'current_node_' . gethostname();
+        // Try to get from config first
+        if (!empty($this->config['node']['id'])) {
+            return (string)$this->config['node']['id'];
+        }
+        
+        // Try to get from environment
+        $envNodeId = $_ENV['NODE_ID'] ?? getenv('NODE_ID');
+        if ($envNodeId) {
+            return (string)$envNodeId;
+        }
+        
+        // Fallback to hostname-based ID
+        return 'node_' . gethostname() . '_' . substr(md5(gethostname()), 0, 8);
     }
 
     /**
-     * Возвращает базовые URL активных узлов для синхронизации
-     * Формат: [nodeId => baseUrl]
+     * Returns base URLs of active nodes for synchronization
+     * Format: [nodeId => baseUrl]
      */
     public function getActiveNodeUrls(): array
     {
         $urls = [];
         foreach ($this->getActiveNodes() as $nodeId => $node) {
-            // Предпочитаем явный метод getApiUrl() у NodeInterface
+            // Prefer explicit getApiUrl() method from NodeInterface
             if (is_object($node) && method_exists($node, 'getApiUrl')) {
                 $urls[$nodeId] = rtrim($node->getApiUrl(), '/');
                 continue;
@@ -613,7 +612,7 @@ class NodeManager
 
     /**
      * Request specific block from node using MultiCurl
-     * Приводим endpoint к explorer API, совместимому с network_sync.php
+     * Adapt endpoint to explorer API compatible with network_sync.php
      */
     private function requestBlockFromNode(string $nodeId, int $height): ?array
     {
@@ -623,7 +622,7 @@ class NodeManager
 
         $node = $this->nodes[$nodeId];
 
-        // Получаем базовый URL
+        // Get base URL
         $baseUrl = null;
         if (is_object($node) && method_exists($node, 'getApiUrl')) {
             $baseUrl = rtrim($node->getApiUrl(), '/');
@@ -634,8 +633,8 @@ class NodeManager
             return null;
         }
 
-        // Унифицированная конечная точка получения блока
-        // Используем explorer API: /api/explorer/index.php?action=get_block&block_id={height}
+        // Unified block retrieval endpoint
+        // Use explorer API: /api/explorer/index.php?action=get_block&block_id={height}
         $url = $baseUrl . '/api/explorer/index.php?action=get_block&block_id=' . $height;
 
         try {
@@ -645,14 +644,14 @@ class NodeManager
                 'Accept: application/json'
             ]);
             if (($result['success'] ?? false) && isset($result['data'])) {
-                // Если API отдает обертку {success, data}, извлекаем data
+                // If API returns wrapper {success, data}, extract data
                 if (isset($result['data']['success']) && $result['data']['success'] && isset($result['data']['data'])) {
                     return $result['data']['data'];
                 }
                 return $result['data'];
             }
 
-            // Попытка распарсить "response" если 'data' пуст
+            // Try to parse "response" if 'data' is empty
             if (!empty($result['response'])) {
                 $decoded = json_decode($result['response'], true);
                 if (json_last_error() === JSON_ERROR_NONE) {
@@ -669,78 +668,7 @@ class NodeManager
         return null;
     }
     
-    /**
-     * Validate received block data
-     */
-    private function validateBlockData(array $blockData): bool
-    {
-        // Check required fields
-        $requiredFields = ['index', 'previousHash', 'timestamp', 'transactions', 'hash', 'nonce'];
-        
-        foreach ($requiredFields as $field) {
-            if (!isset($blockData[$field])) {
-                return false;
-            }
-        }
-        
-        // Validate hash format
-        if (!preg_match('/^[a-fA-F0-9]{64}$/', $blockData['hash'])) {
-            return false;
-        }
-        
-        // Validate timestamp
-        if (!is_numeric($blockData['timestamp']) || $blockData['timestamp'] <= 0) {
-            return false;
-        }
-        
-        // Validate transactions format
-        if (!is_array($blockData['transactions'])) {
-            return false;
-        }
-        
-        return true;
-    }
-    
-    /**
-     * Create block object from received data
-     */
-    private function createBlockFromData(array $blockData): \Blockchain\Core\Blockchain\Block
-    {
-        $transactions = [];
-        
-        // Convert transaction data to transaction objects
-        foreach ($blockData['transactions'] as $txData) {
-            $transaction = new \Blockchain\Core\Transaction\Transaction(
-                $txData['from'],
-                $txData['to'],
-                $txData['amount'],
-                $txData['fee'] ?? 0,
-                $txData['data'] ?? ''
-            );
-            
-            if (isset($txData['signature'])) {
-                $transaction->setSignature($txData['signature']);
-            }
-            
-            $transactions[] = $transaction;
-        }
-        
-        // Create block
-        $block = new \Blockchain\Core\Blockchain\Block(
-            $blockData['index'],
-            $blockData['previousHash'],
-            $blockData['timestamp'],
-            $transactions,
-            $blockData['nonce']
-        );
-        
-        // Set metadata if available
-        if (isset($blockData['metadata'])) {
-            foreach ($blockData['metadata'] as $key => $value) {
-                $block->addMetadata($key, $value);
-            }
-        }
-        
-        return $block;
-    }
+
+
+
 }
