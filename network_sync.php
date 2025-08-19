@@ -247,6 +247,11 @@ class NetworkSyncManager {
             
             $this->updateProgress($totalSteps, $totalSteps, "Synchronization completed successfully!");
             
+            // Reward source node for a successful outgoing sync
+            if (!empty($bestNode)) {
+                $this->applyReputationReward($bestNode, 1, 100);
+            }
+
             $summary = [
                 'status' => 'success',
                 'node' => $bestNode,
@@ -1907,6 +1912,11 @@ class NetworkSyncManager {
                 'completion_time' => date('Y-m-d H:i:s')
             ];
             
+            // Reward source node for a successful outgoing blocks-only sync
+            if (!empty($sourceNode)) {
+                $this->applyReputationReward($sourceNode, 1, 100);
+            }
+
             $this->log("Blocks sync completed: " . json_encode($result));
             return $result;
             
@@ -1935,6 +1945,11 @@ class NetworkSyncManager {
                 'completion_time' => date('Y-m-d H:i:s')
             ];
             
+            // Reward source node for a successful outgoing transactions-only sync
+            if (!empty($sourceNode)) {
+                $this->applyReputationReward($sourceNode, 1, 100);
+            }
+
             $this->log("Transactions sync completed: " . json_encode($result));
             return $result;
             
@@ -2025,6 +2040,46 @@ class NetworkSyncManager {
             
         } catch (\Throwable $e) {
             $this->log("Failed to apply reputation penalty: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    // Increase reputation for a source node (cap at specified limit, default 100)
+    private function applyReputationReward(string $sourceNodeUrl, int $reward, int $cap = 100): bool {
+        try {
+            $parts = parse_url($sourceNodeUrl);
+            if (!$parts || empty($parts['host'])) {
+                $this->log("Invalid URL format for reputation reward: $sourceNodeUrl");
+                return false;
+            }
+
+            $host = $parts['host'];
+            $port = $parts['port'] ?? (($parts['scheme'] ?? 'http') === 'https' ? 443 : 80);
+
+            $stmt = $this->pdo->prepare("\n                SELECT id, reputation_score, metadata, ip_address \n                FROM nodes \n                WHERE (ip_address = ? OR JSON_EXTRACT(metadata,'$.domain') = ?) \n                  AND port = ? \n                LIMIT 1\n            ");
+            $stmt->execute([$host, $host, $port]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$row) {
+                $this->log("Node not found in database for reward: $sourceNodeUrl (host=$host, port=$port)");
+                return false;
+            }
+
+            $oldScore = (int)$row['reputation_score'];
+            $newScore = min($cap, $oldScore + max(0, (int)$reward));
+
+            if ($newScore === $oldScore) {
+                $this->log("Reputation reward skipped (already at cap $cap) for {$row['ip_address']}:$port");
+                return true;
+            }
+
+            $upd = $this->pdo->prepare("UPDATE nodes SET reputation_score = ?, updated_at = NOW() WHERE id = ?");
+            $upd->execute([$newScore, (int)$row['id']]);
+
+            $this->log("Reputation reward applied to {$row['ip_address']}:$port - score: $oldScore → $newScore (+$reward)");
+            return true;
+        } catch (\Throwable $e) {
+            $this->log("Failed to apply reputation reward: " . $e->getMessage());
             return false;
         }
     }
@@ -2144,7 +2199,11 @@ class NetworkSyncManager {
                     'transactions_synced' => $totalSynced,
                     'completion_time' => date('Y-m-d H:i:s')
                 ];
-                
+                // Reward source node for successful exact transactions sync
+                if (!empty($sourceNode)) {
+                    $this->applyReputationReward($sourceNode, 1, 100);
+                }
+
                 return $result;
             } else {
                 throw new Exception("Failed to export transactions from source node");

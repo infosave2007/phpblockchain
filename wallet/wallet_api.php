@@ -573,6 +573,18 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
                 throw new Exception('Address, amount and private key are required');
             }
             $result = stakeTokens($walletManager, $address, $amount, $period, $privateKey);
+
+            // FAST RESPONSE + background sync after staking
+            if (function_exists('fastcgi_finish_request')) {
+                echo json_encode($result);
+                fastcgi_finish_request();
+
+                // Background processing
+                $pdo = $walletManager->getDatabase();
+                $cfg = getNetworkConfigFromDatabase($pdo);
+                performBackgroundSync($walletManager, $cfg);
+                return;
+            }
             break;
             
         case 'generate_mnemonic':
@@ -854,6 +866,18 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             }
             
             $result = stakeTokensWithBlockchain($walletManager, $blockchainManager, $address, $amount, $period, $privateKey);
+
+            // FAST RESPONSE + background sync after staking
+            if (function_exists('fastcgi_finish_request')) {
+                echo json_encode($result);
+                fastcgi_finish_request();
+
+                // Background processing
+                $pdo = $walletManager->getDatabase();
+                $cfg = getNetworkConfigFromDatabase($pdo);
+                performBackgroundSync($walletManager, $cfg);
+                return;
+            }
             break;
             
         case 'unstake_tokens':
@@ -866,6 +890,18 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             }
             
             $result = unstakeTokens($walletManager, $blockchainManager, $address, $amount, $privateKey);
+
+            // FAST RESPONSE + background sync after unstaking
+            if (function_exists('fastcgi_finish_request')) {
+                echo json_encode($result);
+                fastcgi_finish_request();
+
+                // Background processing
+                $pdo = $walletManager->getDatabase();
+                $cfg = getNetworkConfigFromDatabase($pdo);
+                performBackgroundSync($walletManager, $cfg);
+                return;
+            }
             break;
 
         case 'get_staking_contract':
@@ -6431,6 +6467,16 @@ function autoMineBlocks($walletManager, array $config): array {
         $blockResult = mineBlock($transactions, $pdo, $config);
         
         writeLog("autoMineBlocks: Block mined successfully - height: " . $blockResult['height'] . ", hash: " . $blockResult['hash'], 'INFO');
+        
+        // After successful mining, broadcast the new block to other nodes to trigger event-driven sync
+        try {
+            notifyPeersAboutNewBlock($pdo, [
+                'hash' => $blockResult['hash'],
+                'height' => $blockResult['height'],
+            ]);
+        } catch (\Throwable $e) {
+            writeLog('autoMineBlocks: Broadcast after mining failed: ' . $e->getMessage(), 'WARNING');
+        }
         // Update cached balances for affected addresses after mining
         try {
             $addresses = [];
@@ -6747,6 +6793,123 @@ function mineBlock(array $transactions, PDO $pdo, array $config): array {
         writeLog("Error mining block: " . $e->getMessage(), 'ERROR');
         throw $e;
     }
+}
+
+/**
+ * Notify peers about a newly mined block to trigger their event-driven sync
+ * Uses network_sync.php action=sync_new_block compatible payload and optional HMAC
+ */
+function notifyPeersAboutNewBlock(PDO $pdo, array $block): void {
+    try {
+        // Discover peers from nodes table (active only). Fallback to config table 'network_nodes'
+        $nodes = [];
+        try {
+            $stmt = $pdo->prepare("SELECT ip_address, port, metadata FROM nodes WHERE status='active'");
+            $stmt->execute();
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $ip = trim($row['ip_address'] ?? '');
+                $port = (int)($row['port'] ?? 80);
+                $meta = $row['metadata'] ?? '';
+                $metaArr = is_string($meta) ? (json_decode($meta, true) ?: []) : (is_array($meta) ? $meta : []);
+                $protocol = $metaArr['protocol'] ?? 'https';
+                $domain = $metaArr['domain'] ?? '';
+                $host = $domain !== '' ? $domain : $ip;
+                if (!$host) { continue; }
+                $defaultPort = ($protocol === 'https') ? 443 : 80;
+                $portPart = ($port > 0 && $port !== $defaultPort) ? (":" . $port) : '';
+                $url = sprintf('%s://%s%s', $protocol, rtrim($host, '/'), $portPart);
+                $nodes[] = $url;
+            }
+        } catch (\Throwable $e) {
+            // ignore, will use config fallback
+        }
+
+    // Fallback 1: config via helper (DB-backed settings/config.php/env already unified there)
+        try {
+            $cfg = getNetworkConfigFromDatabase($pdo);
+            if (!empty($cfg['network_nodes'])) {
+                $candidates = preg_split('/[\r\n,]+/', (string)$cfg['network_nodes']);
+                foreach ($candidates as $c) {
+                    $u = trim((string)$c);
+                    if ($u !== '') { $nodes[] = $u; }
+                }
+            }
+        } catch (\Throwable $e) { /* ignore */ }
+
+    // Fallback 2: env NETWORK_NODES
+        $envNodes = getenv('NETWORK_NODES');
+        if ($envNodes) {
+            foreach (preg_split('/[\r\n,]+/', (string)$envNodes) as $c) {
+                $u = trim((string)$c);
+                if ($u !== '') { $nodes[] = $u; }
+            }
+        }
+
+        if (empty($nodes)) { return; }
+
+    $host = $_SERVER['HTTP_HOST'] ?? '';
+    $scheme = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') ? 'https' : 'http';
+    $source = $host ? ($scheme . '://' . $host) : '';
+        $payload = [
+            'block_hash' => $block['hash'] ?? '',
+            'block_height' => (int)($block['height'] ?? 0),
+            'source_node' => $source,
+            'timestamp' => time(),
+        ];
+        $payload['event_id'] = hash('sha256', $payload['block_hash'] . '|' . $payload['block_height'] . '|' . $payload['timestamp']);
+        $json = json_encode($payload);
+        $secret = getBroadcastSecretLocal($pdo);
+        $headerSig = $secret ? ("X-Broadcast-Signature: sha256=" . hash_hmac('sha256', $json, $secret)) : '';
+
+        $unique = [];
+        foreach ($nodes as $n) {
+            $unique[$n] = true;
+        }
+        foreach (array_keys($unique) as $nodeUrl) {
+            try {
+                // Skip self
+                if ($source && stripos($nodeUrl, $source) !== false) { continue; }
+                $url = rtrim($nodeUrl, '/') . '/network_sync.php?action=sync_new_block';
+                $headers = "Content-Type: application/json\r\n" .
+                           "Content-Length: " . strlen($json) . "\r\n" .
+                           ($headerSig ? ($headerSig . "\r\n") : '');
+                $ctx = stream_context_create([
+                    'http' => [
+                        'method' => 'POST',
+                        'header' => $headers,
+                        'content' => $json,
+                        'timeout' => 5,
+                    ]
+                ]);
+                @file_get_contents($url, false, $ctx);
+            } catch (\Throwable $e) {
+                // best-effort
+            }
+        }
+    } catch (\Throwable $e) {
+        // swallow
+    }
+}
+
+function getBroadcastSecretLocal(PDO $pdo): string {
+    // Try config table first
+    try {
+        $stmt = $pdo->prepare("SELECT value FROM config WHERE key_name = 'network.broadcast_secret' LIMIT 1");
+        $stmt->execute();
+        $v = $stmt->fetchColumn();
+        if (is_string($v) && $v !== '') return $v;
+    } catch (\Throwable $e) { /* ignore */ }
+    // Env fallbacks
+    $candidates = [
+        $_ENV['BROADCAST_SECRET'] ?? null,
+        $_ENV['NETWORK_BROADCAST_SECRET'] ?? null,
+        getenv('BROADCAST_SECRET') ?: null,
+        getenv('NETWORK_BROADCAST_SECRET') ?: null,
+    ];
+    foreach ($candidates as $c) {
+        if (is_string($c) && $c !== '') return $c;
+    }
+    return '';
 }
 
 /**
