@@ -3319,9 +3319,11 @@ if (isset($_GET['action'])) {
     header('Content-Type: application/json');
     
     try {
+    // Ensure a default sync manager instance is available for cases that use it
+    $syncManager = new NetworkSyncManager(true);
         switch ($_GET['action']) {
             case 'sync':
-                $syncManager = new NetworkSyncManager(true);
+        $syncManager = new NetworkSyncManager(true);
                 $result = $syncManager->syncAll();
                 echo json_encode($result);
                 break;
@@ -3420,6 +3422,7 @@ if (isset($_GET['action'])) {
                 
             case 'enhanced_mempool_sync':
                 try {
+                    // Use the pre-created instance
                     $result = $syncManager->enhancedMempoolSync();
                     echo json_encode($result);
                 } catch (Exception $e) {
