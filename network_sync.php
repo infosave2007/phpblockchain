@@ -269,12 +269,18 @@ class NetworkSyncManager {
     private function selectBestNode() {
         // Get current node domain to exclude from sync
         $currentNodeUrl = $this->getCurrentNodeDomain();
+        if ($currentNodeUrl) {
+            $this->log("Current node URL detected: $currentNodeUrl");
+        } else {
+            $this->log("Warning: Current node URL not detected; self-exclusion may be skipped");
+        }
         
     // 1) Try to get active nodes from the nodes table (primary source after installation)
         // Exclude nodes with low reputation (below 50) to avoid suspicious sources
         $nodeUrls = [];
         try {
-            $stmt = $this->pdo->prepare("SELECT ip_address, port, metadata FROM nodes WHERE status = 'active' AND reputation_score >= 50");
+            // Don't over-filter by reputation here; we will penalize bad actors elsewhere.
+            $stmt = $this->pdo->prepare("SELECT ip_address, port, metadata FROM nodes WHERE status = 'active'");
             $stmt->execute();
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -307,11 +313,25 @@ class NetworkSyncManager {
                     $this->log("Excluding current node from sync: $url");
                     continue;
                 }
+                $this->log("Candidate node from DB: $url (self? " . ($currentNodeUrl && $this->isSameNode($url, $currentNodeUrl) ? 'yes' : 'no') . ")");
                 
                 $nodeUrls[] = $url;
             }
         } catch (\Throwable $e) {
             $this->log("Warning: failed to read nodes table: " . $e->getMessage());
+        }
+
+        // 1b) Fallback to getActiveNodes() if after exclusion nothing left
+        if (empty($nodeUrls)) {
+            $this->log("No candidates from nodes table (after exclusion). Falling back to getActiveNodes()...");
+            foreach ($this->getActiveNodes() as $node) {
+                if ($currentNodeUrl && $this->isSameNode($node, $currentNodeUrl)) {
+                    $this->log("Excluding current node from fallback(getActiveNodes): $node");
+                    continue;
+                }
+                $this->log("Candidate node from fallback(getActiveNodes): $node");
+                $nodeUrls[] = rtrim($node, '/');
+            }
         }
 
     // 2) Fallback: network_nodes config (multiline or CSV)
@@ -338,7 +358,7 @@ class NetworkSyncManager {
         $this->log("Testing " . count($nodeUrls) . " network nodes with strategy: $strategy");
 
         $nodeResults = [];
-        foreach ($nodeUrls as $node) {
+    foreach ($nodeUrls as $node) {
             $result = $this->testNode($node);
             $nodeResults[] = array_merge(['url' => $node], $result);
             
@@ -1457,21 +1477,41 @@ class NetworkSyncManager {
         $this->log("Total staking records synced: $stakesSynced");
     }
     
-    private function makeApiCall($url, $timeout = 30) {
-        $context = stream_context_create([
+    private function makeApiCall($url, $timeout = 30, $postData = null) {
+        // Backward compatibility: if 3rd argument looks like array and 2nd is not int, shift params
+        if (is_array($timeout) && $postData === null) {
+            $postData = $timeout;
+            $timeout = 30;
+        }
+
+        $headers = "User-Agent: NetworkSyncManager/1.1\r\nAccept: application/json\r\n";
+        $opts = [
             'http' => [
-                'timeout' => $timeout,
-                'method' => 'GET',
-                'header' => "User-Agent: NetworkSyncManager/1.0\r\n"
+                'timeout' => is_int($timeout) ? $timeout : 30,
+                'method' => $postData ? 'POST' : 'GET',
+                'header' => $headers
             ]
-        ]);
+        ];
+        if ($postData) {
+            if (!is_string($postData)) {
+                $postData = json_encode($postData, JSON_UNESCAPED_UNICODE);
+            }
+            $opts['http']['content'] = $postData;
+            $opts['http']['header'] .= "Content-Type: application/json\r\n" . "Content-Length: " . strlen($postData) . "\r\n";
+        }
+        $context = stream_context_create($opts);
         
         $result = @file_get_contents($url, false, $context);
         if ($result === false) {
             return null;
         }
         
-        return json_decode($result, true);
+        $data = json_decode($result, true);
+        if ($data === null) {
+            // Return raw string for caller to decide if needed
+            return ['raw' => $result];
+        }
+        return $data;
     }
     
     private function updateProgress($current, $total, $message) {
