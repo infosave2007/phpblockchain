@@ -439,6 +439,20 @@ class Blockchain implements BlockchainInterface
     }
 
     /**
+     * Get blockchain height (zero-based index of the latest block)
+     * This complements getHeight() which returns count of blocks.
+     */
+    public function getBlockHeight(): int
+    {
+        $count = (int)$this->storage->getBlockCount();
+        if ($count <= 0) {
+            return 0;
+        }
+        // Convert count to zero-based height
+        return max(0, $count - 1);
+    }
+
+    /**
      * Mine a new block with pending transactions
      */
     public function mineBlock(string $minerAddress): ?Block

@@ -34,59 +34,8 @@ class CircuitBreaker
             'request_volume_threshold' => 10, // Minimum requests before considering failure rate
             'error_percentage_threshold' => 50, // Error percentage to open circuit
         ], $config);
-
-        $this->initializeCircuitTables();
     }
 
-    /**
-     * Initialize circuit breaker tables
-     */
-    private function initializeCircuitTables(): void
-    {
-        try {
-            $this->pdo->exec("
-                CREATE TABLE IF NOT EXISTS circuit_breaker_state (
-                    id VARCHAR(100) PRIMARY KEY,
-                    node_id VARCHAR(64) NOT NULL,
-                    operation_type VARCHAR(50) NOT NULL,
-                    state ENUM('closed', 'open', 'half_open') DEFAULT 'closed',
-                    failure_count INT DEFAULT 0,
-                    success_count INT DEFAULT 0,
-                    last_failure_time TIMESTAMP NULL,
-                    last_success_time TIMESTAMP NULL,
-                    state_changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    next_attempt_time TIMESTAMP NULL,
-                    total_requests INT DEFAULT 0,
-                    failed_requests INT DEFAULT 0,
-                    INDEX idx_circuit_node (node_id),
-                    INDEX idx_circuit_operation (operation_type),
-                    INDEX idx_circuit_state (state),
-                    INDEX idx_circuit_next_attempt (next_attempt_time)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-            ");
-
-            $this->pdo->exec("
-                CREATE TABLE IF NOT EXISTS circuit_breaker_events (
-                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                    circuit_id VARCHAR(100) NOT NULL,
-                    event_type ENUM('opened', 'closed', 'half_opened', 'request_rejected', 'request_allowed') NOT NULL,
-                    node_id VARCHAR(64) NOT NULL,
-                    operation_type VARCHAR(50) NOT NULL,
-                    failure_count INT DEFAULT 0,
-                    success_count INT DEFAULT 0,
-                    error_message TEXT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    INDEX idx_circuit_events_circuit (circuit_id),
-                    INDEX idx_circuit_events_node (node_id),
-                    INDEX idx_circuit_events_type (event_type),
-                    INDEX idx_circuit_events_created (created_at)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-            ");
-
-        } catch (Exception $e) {
-            $this->logger->error('Failed to initialize circuit breaker tables: ' . $e->getMessage());
-        }
-    }
 
     /**
      * Check if request should be allowed through circuit breaker

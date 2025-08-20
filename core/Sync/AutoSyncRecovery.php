@@ -32,59 +32,8 @@ class AutoSyncRecovery
         $this->logger = $logger;
         $this->rateLimiter = $rateLimiter;
         $this->config = $config;
-
-        $this->initializeSyncMonitoring();
     }
 
-    /**
-     * Initialize sync monitoring tables
-     */
-    private function initializeSyncMonitoring(): void
-    {
-        try {
-            $this->pdo->exec("
-                CREATE TABLE IF NOT EXISTS sync_health_monitor (
-                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                    node_id VARCHAR(64) NOT NULL,
-                    metric_type VARCHAR(50) NOT NULL,
-                    metric_value DECIMAL(15,4) NOT NULL,
-                    threshold_warning DECIMAL(15,4) NOT NULL,
-                    threshold_critical DECIMAL(15,4) NOT NULL,
-                    status ENUM('healthy', 'warning', 'critical') NOT NULL,
-                    last_check TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    recovery_triggered BOOLEAN DEFAULT FALSE,
-                    recovery_count INT DEFAULT 0,
-                    INDEX idx_sync_health_node (node_id),
-                    INDEX idx_sync_health_metric (metric_type),
-                    INDEX idx_sync_health_status (status),
-                    INDEX idx_sync_health_check (last_check),
-                    UNIQUE KEY unique_node_metric (node_id, metric_type)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-            ");
-
-            $this->pdo->exec("
-                CREATE TABLE IF NOT EXISTS sync_recovery_log (
-                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                    node_id VARCHAR(64) NOT NULL,
-                    recovery_type VARCHAR(50) NOT NULL,
-                    trigger_reason TEXT NOT NULL,
-                    recovery_actions JSON NOT NULL,
-                    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    completed_at TIMESTAMP NULL,
-                    success BOOLEAN DEFAULT FALSE,
-                    error_message TEXT NULL,
-                    metrics_before JSON NULL,
-                    metrics_after JSON NULL,
-                    INDEX idx_sync_recovery_node (node_id),
-                    INDEX idx_sync_recovery_type (recovery_type),
-                    INDEX idx_sync_recovery_started (started_at)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-            ");
-
-        } catch (Exception $e) {
-            $this->logger->error('Failed to initialize sync monitoring tables: ' . $e->getMessage());
-        }
-    }
 
     /**
      * Check if recovery should be triggered

@@ -55,9 +55,10 @@ function initializeComponents(): array
         $database = \Blockchain\Core\Database\DatabaseManager::getConnection();
         
         // Initialize components
-        $binaryStorage = new BlockchainBinaryStorage();
+        $binaryStorage = new BlockchainBinaryStorage('blockchain.json');
         $healthMonitor = new NodeHealthMonitor($binaryStorage, $database, $config);
-        $recoveryManager = new BlockchainRecoveryManager($binaryStorage);
+        $syncManager = new \Blockchain\Core\Storage\SelectiveBlockchainSyncManager($database, $binaryStorage, $config);
+        $recoveryManager = new BlockchainRecoveryManager($database, $binaryStorage, $syncManager, 'node1', $config);
         
         return [
             'database' => $database,
@@ -200,119 +201,6 @@ function attemptRecovery(array $components): void
     echo "\n";
 }
 
-function installTables(array $components): void
-{
-    echo "Installing Database Tables\n";
-    echo "==========================\n\n";
-    
-    $database = $components['database'];
-    
-    try {
-        // Create node_status table
-        $database->exec("
-            CREATE TABLE IF NOT EXISTS node_status (
-                node_id VARCHAR(64) PRIMARY KEY,
-                node_url VARCHAR(255) NOT NULL,
-                status ENUM('healthy', 'degraded', 'recovering', 'offline', 'error') NOT NULL,
-                details JSON,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                INDEX idx_status (status),
-                INDEX idx_updated (updated_at)
-            )
-        ");
-        
-        // Create other required tables
-        $database->exec("
-            CREATE TABLE IF NOT EXISTS blocks (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                hash VARCHAR(64) UNIQUE NOT NULL,
-                previous_hash VARCHAR(64),
-                merkle_root VARCHAR(64),
-                timestamp INT NOT NULL,
-                nonce INT,
-                difficulty INT,
-                data TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_hash (hash),
-                INDEX idx_timestamp (timestamp)
-            )
-        ");
-        
-        $database->exec("
-            CREATE TABLE IF NOT EXISTS transactions (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                hash VARCHAR(64) UNIQUE NOT NULL,
-                from_address VARCHAR(42),
-                to_address VARCHAR(42) NOT NULL,
-                amount DECIMAL(20,8) NOT NULL,
-                fee DECIMAL(20,8) DEFAULT 0,
-                data TEXT,
-                signature TEXT,
-                block_hash VARCHAR(64),
-                timestamp INT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_hash (hash),
-                INDEX idx_addresses (from_address, to_address),
-                INDEX idx_timestamp (timestamp),
-                FOREIGN KEY (block_hash) REFERENCES blocks(hash)
-            )
-        ");
-        
-        $database->exec("
-            CREATE TABLE IF NOT EXISTS wallets (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                address VARCHAR(42) UNIQUE NOT NULL,
-                public_key TEXT NOT NULL,
-                private_key TEXT,
-                balance DECIMAL(20,8) DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_address (address)
-            )
-        ");
-        
-        $database->exec("
-            CREATE TABLE IF NOT EXISTS mempool (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                transaction_hash VARCHAR(64) UNIQUE NOT NULL,
-                transaction_data JSON NOT NULL,
-                priority INT DEFAULT 1,
-                status ENUM('pending', 'processing', 'confirmed', 'rejected', 'expired') DEFAULT 'pending',
-                retry_count INT DEFAULT 0,
-                expires_at TIMESTAMP NULL,
-                node_id VARCHAR(64),
-                broadcast_count INT DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                INDEX idx_hash (transaction_hash),
-                INDEX idx_status (status),
-                INDEX idx_priority (priority),
-                INDEX idx_expires (expires_at),
-                INDEX idx_node (node_id)
-            )
-        ");
-        
-        $database->exec("
-            CREATE TABLE IF NOT EXISTS nodes (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                url VARCHAR(255) UNIQUE NOT NULL,
-                node_id VARCHAR(64),
-                active BOOLEAN DEFAULT 1,
-                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_url (url),
-                INDEX idx_active (active),
-                INDEX idx_last_seen (last_seen)
-            )
-        ");
-        
-        echo "✅ All tables created successfully\n";
-        
-    } catch (Exception $e) {
-        echo "❌ Failed to create tables: " . $e->getMessage() . "\n";
-    }
-    
-    echo "\n";
-}
 
 function formatBytes(int $bytes): string
 {
@@ -361,9 +249,10 @@ switch ($command) {
         break;
         
     case 'install':
-        createRequiredDirectories();
-        $components = initializeComponents();
-        installTables($components);
+        echo "Database tables are now managed by Migration.php\n";
+        echo "Use the Migration class to create tables:\n";
+        echo "  \$migration = new \\Blockchain\\Database\\Migration(\$pdo);\n";
+        echo "  \$migration->createSchema();\n";
         break;
         
     case 'help':

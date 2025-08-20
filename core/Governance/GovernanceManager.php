@@ -50,7 +50,7 @@ class GovernanceManager
         $this->blockchain = $blockchain;
         $this->consensus = $consensus;
         $this->autoUpdater = new AutoUpdater($this);
-        
+
         $this->votingThresholds = [
             self::PROPOSAL_PARAMETER => self::THRESHOLD_SIMPLE,
             self::PROPOSAL_CONSENSUS => self::THRESHOLD_QUALIFIED,
@@ -58,82 +58,8 @@ class GovernanceManager
             self::PROPOSAL_UPGRADE => self::THRESHOLD_SUPER,
             self::PROPOSAL_EMERGENCY => self::THRESHOLD_UNANIMOUS
         ];
-        
-        $this->initializeTables();
     }
 
-    /**
-     * Create tables for governance system
-     */
-    private function initializeTables(): void
-    {
-        $sql = "
-        CREATE TABLE IF NOT EXISTS governance_proposals (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            title VARCHAR(255) NOT NULL,
-            description TEXT NOT NULL,
-            type ENUM('parameter', 'consensus', 'economic', 'upgrade', 'emergency') NOT NULL,
-            proposer_address VARCHAR(42) NOT NULL,
-            proposer_stake DECIMAL(20,8) NOT NULL,
-            changes JSON NOT NULL,
-            status ENUM('draft', 'active', 'approved', 'rejected', 'implemented', 'cancelled') DEFAULT 'draft',
-            voting_start TIMESTAMP NULL,
-            voting_end TIMESTAMP NULL,
-            votes_for DECIMAL(20,8) DEFAULT 0,
-            votes_against DECIMAL(20,8) DEFAULT 0,
-            votes_abstain DECIMAL(20,8) DEFAULT 0,
-            implementation_block INT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_status (status),
-            INDEX idx_type (type),
-            INDEX idx_proposer (proposer_address)
-        );
-
-        CREATE TABLE IF NOT EXISTS governance_votes (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            proposal_id INT NOT NULL,
-            voter_address VARCHAR(42) NOT NULL,
-            vote ENUM('for', 'against', 'abstain') NOT NULL,
-            weight DECIMAL(20,8) NOT NULL,
-            reason TEXT,
-            transaction_hash VARCHAR(66),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (proposal_id) REFERENCES governance_proposals(id),
-            UNIQUE KEY unique_vote (proposal_id, voter_address),
-            INDEX idx_proposal (proposal_id),
-            INDEX idx_voter (voter_address)
-        );
-
-        CREATE TABLE IF NOT EXISTS governance_delegations (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            delegator_address VARCHAR(42) NOT NULL,
-            delegate_address VARCHAR(42) NOT NULL,
-            weight DECIMAL(20,8) NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            expires_at TIMESTAMP NULL,
-            UNIQUE KEY unique_delegation (delegator_address, delegate_address),
-            INDEX idx_delegator (delegator_address),
-            INDEX idx_delegate (delegate_address)
-        );
-
-        CREATE TABLE IF NOT EXISTS governance_implementations (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            proposal_id INT NOT NULL,
-            implementation_hash VARCHAR(66) NOT NULL,
-            block_height INT NOT NULL,
-            success BOOLEAN NOT NULL,
-            error_message TEXT,
-            rollback_data JSON,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (proposal_id) REFERENCES governance_proposals(id),
-            INDEX idx_proposal (proposal_id),
-            INDEX idx_block (block_height)
-        );
-        ";
-
-        $this->database->exec($sql);
-    }
 
     /**
      * Create new proposal

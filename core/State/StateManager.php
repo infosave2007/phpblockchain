@@ -25,6 +25,27 @@ class StateManager
     }
     
     /**
+     * Load state directly from snapshot payload
+     * Expected shape: ['accounts'=>[], 'contracts'=>[], 'storageRoots'=>[], 'blockHeight'=>int]
+     */
+    public function loadFromSnapshot(array $snapshot): bool
+    {
+        if (empty($snapshot['accounts']) || empty($snapshot['contracts'])) {
+            return false;
+        }
+
+        // Assign with sane defaults
+        $this->accountStates = is_array($snapshot['accounts']) ? $snapshot['accounts'] : [];
+        $this->contractStates = is_array($snapshot['contracts']) ? $snapshot['contracts'] : [];
+        $this->storageRoots = is_array($snapshot['storageRoots'] ?? null) ? $snapshot['storageRoots'] : [];
+        $this->blockHeight = (int)($snapshot['blockHeight'] ?? 0);
+
+        // Recalculate and set current state root
+        $this->updateStateRoot();
+        return true;
+    }
+
+    /**
      * Get account balance
      */
     public function getBalance(string $address): float

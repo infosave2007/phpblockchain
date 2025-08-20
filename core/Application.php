@@ -379,67 +379,6 @@ class Application
         }
     }
 
-    /**
-     * Create database tables
-     */
-    public function createTables(): void
-    {
-        try {
-            $dbConfig = $this->config['database'];
-            
-            // Check if database already exists, if not create it
-            \Blockchain\Core\Database\DatabaseManager::createDatabaseIfNotExists($dbConfig['database']);
-            
-            // Now create tables in the main database
-            $this->database->exec("
-                CREATE TABLE IF NOT EXISTS blocks (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    hash VARCHAR(64) UNIQUE NOT NULL,
-                    previous_hash VARCHAR(64),
-                    merkle_root VARCHAR(64),
-                    timestamp INT NOT NULL,
-                    nonce INT,
-                    difficulty INT,
-                    data TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ");
-
-            $this->database->exec("
-                CREATE TABLE IF NOT EXISTS transactions (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    hash VARCHAR(64) UNIQUE NOT NULL,
-                    from_address VARCHAR(42),
-                    to_address VARCHAR(42) NOT NULL,
-                    amount DECIMAL(20,8) NOT NULL,
-                    fee DECIMAL(20,8) DEFAULT 0,
-                    data TEXT,
-                    signature TEXT,
-                    block_hash VARCHAR(64),
-                    timestamp INT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (block_hash) REFERENCES blocks(hash)
-                )
-            ");
-
-            $this->database->exec("
-                CREATE TABLE IF NOT EXISTS wallets (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    address VARCHAR(42) UNIQUE NOT NULL,
-                    public_key TEXT NOT NULL,
-                    private_key TEXT,
-                    balance DECIMAL(20,8) DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    INDEX idx_address (address)
-                )
-            ");
-
-            echo "Database tables created successfully\n";
-            
-        } catch (Exception $e) {
-            throw new Exception("Failed to create tables: " . $e->getMessage());
-        }
-    }
     
     /**
      * Send a message (optionally encrypted) via blockchain transaction

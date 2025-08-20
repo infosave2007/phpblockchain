@@ -647,6 +647,93 @@ class NodeManager
     }
 
     /**
+     * Aggregate basic network info from active peers and local DB
+     * Returns at least ['max_height' => int].
+     */
+    public function getNetworkInfo(): array
+    {
+        $byNode = [];
+        $maxHeight = 0;
+        $localHeight = 0;
+
+        // Try to determine local height from database (fallback if no peers)
+        try {
+            $pdo = DatabaseManager::getConnection();
+            $st = $pdo->query("SHOW TABLES LIKE 'blocks'");
+            if ($st && $st->rowCount() > 0) {
+                $st2 = $pdo->query("SELECT COUNT(*) AS cnt FROM blocks");
+                $cnt = (int)($st2->fetchColumn() ?: 0);
+                // Height is zero-based
+                $localHeight = max(0, $cnt - 1);
+                $maxHeight = max($maxHeight, $localHeight);
+            }
+        } catch (\Throwable $e) {
+            // ignore, rely on peers
+        }
+
+        // Query active peers for their current height via explorer API
+        $urls = $this->getActiveNodeUrls();
+        if (!empty($urls)) {
+            $requests = [];
+            $ua = $this->getUserAgent();
+            $selfId = $this->getCurrentNodeId();
+            foreach ($urls as $nodeId => $baseUrl) {
+                $requests[$nodeId] = [
+                    'url' => $baseUrl . '/api/explorer/index.php?action=get_network_stats',
+                    'method' => 'GET',
+                    'headers' => [
+                        'User-Agent: ' . $ua,
+                        'X-Node-Id: ' . $selfId,
+                        'Accept: application/json'
+                    ]
+                ];
+            }
+
+            $results = $this->multiCurl->executeRequests($requests);
+            foreach ($results as $nodeId => $res) {
+                $height = null;
+                if (($res['success'] ?? false)) {
+                    $data = $res['data'] ?? null;
+                    if (is_array($data) && isset($data['current_height'])) {
+                        $height = (int)$data['current_height'];
+                    } elseif (!empty($res['response'])) {
+                        $decoded = json_decode($res['response'], true);
+                        if (json_last_error() === JSON_ERROR_NONE && isset($decoded['current_height'])) {
+                            $height = (int)$decoded['current_height'];
+                        }
+                    }
+                }
+
+                if ($height !== null) {
+                    $maxHeight = max($maxHeight, $height);
+                    $byNode[$nodeId] = [
+                        'url' => $urls[$nodeId] ?? '',
+                        'height' => $height,
+                        'latency_ms' => $res['time'] ?? 0,
+                        'success' => true
+                    ];
+                } else {
+                    $byNode[$nodeId] = [
+                        'url' => $urls[$nodeId] ?? '',
+                        'height' => null,
+                        'latency_ms' => $res['time'] ?? 0,
+                        'success' => false,
+                        'error' => $res['error'] ?? ('HTTP ' . ($res['http_code'] ?? ''))
+                    ];
+                }
+            }
+        }
+
+        return [
+            'max_height' => (int)$maxHeight,
+            'local_height' => (int)$localHeight,
+            'nodes_count' => count($urls ?? []),
+            'by_node' => $byNode,
+            'timestamp' => time()
+        ];
+    }
+
+    /**
      * Request specific block from node using MultiCurl
      * Adapt endpoint to explorer API compatible with network_sync.php
      */

@@ -506,6 +506,244 @@ class Migration
                 INDEX idx_height_difference (height_difference),
                 INDEX idx_created_at (created_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            -- Node status table
+            CREATE TABLE IF NOT EXISTS node_status (
+                node_id VARCHAR(64) PRIMARY KEY,
+                node_url VARCHAR(255) NOT NULL,
+                status ENUM('healthy', 'degraded', 'recovering', 'offline', 'error') NOT NULL,
+                details JSON,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_status (status),
+                INDEX idx_updated (updated_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            -- Sync health monitoring table
+            CREATE TABLE IF NOT EXISTS sync_health_monitor (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                node_id VARCHAR(64) NOT NULL,
+                metric_type VARCHAR(50) NOT NULL,
+                metric_value DECIMAL(15,4) NOT NULL,
+                threshold_warning DECIMAL(15,4) NOT NULL,
+                threshold_critical DECIMAL(15,4) NOT NULL,
+                status ENUM('healthy', 'warning', 'critical') NOT NULL,
+                last_check TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                recovery_triggered BOOLEAN DEFAULT FALSE,
+                recovery_count INT DEFAULT 0,
+                INDEX idx_sync_health_node (node_id),
+                INDEX idx_sync_health_metric (metric_type),
+                INDEX idx_sync_health_status (status),
+                INDEX idx_sync_health_check (last_check),
+                UNIQUE KEY unique_node_metric (node_id, metric_type)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            -- Sync recovery log table
+            CREATE TABLE IF NOT EXISTS sync_recovery_log (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                node_id VARCHAR(64) NOT NULL,
+                recovery_type VARCHAR(50) NOT NULL,
+                trigger_reason TEXT NOT NULL,
+                recovery_actions JSON NOT NULL,
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP NULL,
+                success BOOLEAN DEFAULT FALSE,
+                error_message TEXT NULL,
+                metrics_before JSON NULL,
+                metrics_after JSON NULL,
+                INDEX idx_sync_recovery_node (node_id),
+                INDEX idx_sync_recovery_type (recovery_type),
+                INDEX idx_sync_recovery_started (started_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            -- Governance proposals table
+            CREATE TABLE IF NOT EXISTS governance_proposals (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                description TEXT NOT NULL,
+                type ENUM('parameter', 'consensus', 'economic', 'upgrade', 'emergency') NOT NULL,
+                proposer_address VARCHAR(42) NOT NULL,
+                proposer_stake DECIMAL(20,8) NOT NULL,
+                changes JSON NOT NULL,
+                status ENUM('draft', 'active', 'approved', 'rejected', 'implemented', 'cancelled') DEFAULT 'draft',
+                voting_start TIMESTAMP NULL,
+                voting_end TIMESTAMP NULL,
+                votes_for DECIMAL(20,8) DEFAULT 0,
+                votes_against DECIMAL(20,8) DEFAULT 0,
+                votes_abstain DECIMAL(20,8) DEFAULT 0,
+                implementation_block INT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_status (status),
+                INDEX idx_type (type),
+                INDEX idx_proposer (proposer_address)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            -- Governance votes table
+            CREATE TABLE IF NOT EXISTS governance_votes (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                proposal_id INT NOT NULL,
+                voter_address VARCHAR(42) NOT NULL,
+                vote ENUM('for', 'against', 'abstain') NOT NULL,
+                weight DECIMAL(20,8) NOT NULL,
+                reason TEXT,
+                transaction_hash VARCHAR(66),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (proposal_id) REFERENCES governance_proposals(id),
+                UNIQUE KEY unique_vote (proposal_id, voter_address),
+                INDEX idx_proposal (proposal_id),
+                INDEX idx_voter (voter_address)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            -- Governance delegations table
+            CREATE TABLE IF NOT EXISTS governance_delegations (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                delegator_address VARCHAR(42) NOT NULL,
+                delegate_address VARCHAR(42) NOT NULL,
+                weight DECIMAL(20,8) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP NULL,
+                UNIQUE KEY unique_delegation (delegator_address, delegate_address),
+                INDEX idx_delegator (delegator_address),
+                INDEX idx_delegate (delegate_address)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            -- Governance implementations table
+            CREATE TABLE IF NOT EXISTS governance_implementations (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                proposal_id INT NOT NULL,
+                implementation_hash VARCHAR(66) NOT NULL,
+                block_height INT NOT NULL,
+                success BOOLEAN NOT NULL,
+                error_message TEXT,
+                rollback_data JSON,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (proposal_id) REFERENCES governance_proposals(id),
+                INDEX idx_proposal (proposal_id),
+                INDEX idx_block (block_height)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            -- Event queue table
+            CREATE TABLE IF NOT EXISTS event_queue (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                event_type VARCHAR(50) NOT NULL,
+                event_data JSON NOT NULL,
+                event_id VARCHAR(64) NOT NULL,
+                source_node VARCHAR(64) NOT NULL,
+                priority TINYINT NOT NULL DEFAULT 5,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                processed_at TIMESTAMP NULL,
+                retry_count TINYINT DEFAULT 0,
+                status ENUM('pending', 'processing', 'completed', 'failed') DEFAULT 'pending',
+                INDEX idx_event_queue_status (status),
+                INDEX idx_event_queue_priority (priority),
+                INDEX idx_event_queue_created (created_at),
+                INDEX idx_event_queue_type (event_type),
+                UNIQUE KEY unique_event_id (event_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            -- Sync rate limits table
+            CREATE TABLE IF NOT EXISTS sync_rate_limits (
+                id VARCHAR(100) PRIMARY KEY,
+                request_count INT NOT NULL DEFAULT 0,
+                window_start TIMESTAMP NOT NULL,
+                last_request TIMESTAMP NOT NULL,
+                blocked_until TIMESTAMP NULL,
+                INDEX idx_sync_rate_limits_window (window_start),
+                INDEX idx_sync_rate_limits_blocked (blocked_until)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            -- Sync queue priority table
+            CREATE TABLE IF NOT EXISTS sync_queue_priority (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                sync_type VARCHAR(50) NOT NULL,
+                node_id VARCHAR(64) NOT NULL,
+                priority INT NOT NULL DEFAULT 5,
+                data JSON NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                scheduled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                processed_at TIMESTAMP NULL,
+                status ENUM('pending', 'processing', 'completed', 'failed') DEFAULT 'pending',
+                retry_count INT DEFAULT 0,
+                INDEX idx_sync_queue_status (status),
+                INDEX idx_sync_queue_scheduled (scheduled_at),
+                INDEX idx_sync_queue_priority (priority),
+                INDEX idx_sync_queue_type (sync_type)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            -- Node health metrics table
+            CREATE TABLE IF NOT EXISTS node_health_metrics (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                node_id VARCHAR(64) NOT NULL,
+                node_url VARCHAR(255) NOT NULL,
+                response_time DECIMAL(8,4) NOT NULL DEFAULT 0,
+                success_rate DECIMAL(5,2) NOT NULL DEFAULT 100.00,
+                cpu_usage DECIMAL(5,2) DEFAULT NULL,
+                memory_usage DECIMAL(5,2) DEFAULT NULL,
+                disk_usage DECIMAL(5,2) DEFAULT NULL,
+                active_connections INT DEFAULT NULL,
+                queue_size INT DEFAULT NULL,
+                last_error TEXT NULL,
+                last_check TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                health_score DECIMAL(5,2) NOT NULL DEFAULT 100.00,
+                status ENUM('healthy', 'degraded', 'unhealthy', 'offline') DEFAULT 'healthy',
+                INDEX idx_node_health_id (node_id),
+                INDEX idx_node_health_score (health_score),
+                INDEX idx_node_health_status (status),
+                INDEX idx_node_health_check (last_check),
+                UNIQUE KEY unique_node_url (node_url)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            -- Node request history table
+            CREATE TABLE IF NOT EXISTS node_request_history (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                node_id VARCHAR(64) NOT NULL,
+                request_type VARCHAR(50) NOT NULL,
+                response_time DECIMAL(8,4) NOT NULL,
+                success BOOLEAN NOT NULL,
+                error_message TEXT NULL,
+                request_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_node_request_id (node_id),
+                INDEX idx_node_request_type (request_type),
+                INDEX idx_node_request_timestamp (request_timestamp),
+                INDEX idx_node_request_success (success)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            -- Circuit breaker state table
+            CREATE TABLE IF NOT EXISTS circuit_breaker_state (
+                id VARCHAR(100) PRIMARY KEY,
+                node_id VARCHAR(64) NOT NULL,
+                operation_type VARCHAR(50) NOT NULL,
+                state ENUM('closed', 'open', 'half_open') DEFAULT 'closed',
+                failure_count INT DEFAULT 0,
+                success_count INT DEFAULT 0,
+                last_failure_time TIMESTAMP NULL,
+                last_success_time TIMESTAMP NULL,
+                state_changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                next_attempt_time TIMESTAMP NULL,
+                total_requests INT DEFAULT 0,
+                failed_requests INT DEFAULT 0,
+                INDEX idx_circuit_node (node_id),
+                INDEX idx_circuit_operation (operation_type),
+                INDEX idx_circuit_state (state),
+                INDEX idx_circuit_next_attempt (next_attempt_time)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+            -- Circuit breaker events table
+            CREATE TABLE IF NOT EXISTS circuit_breaker_events (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                circuit_id VARCHAR(100) NOT NULL,
+                event_type ENUM('opened', 'closed', 'half_opened', 'request_rejected', 'request_allowed') NOT NULL,
+                node_id VARCHAR(64) NOT NULL,
+                operation_type VARCHAR(50) NOT NULL,
+                failure_count INT DEFAULT 0,
+                success_count INT DEFAULT 0,
+                error_message TEXT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_circuit_events_circuit (circuit_id),
+                INDEX idx_circuit_events_node (node_id),
+                INDEX idx_circuit_events_type (event_type),
+                INDEX idx_circuit_events_created (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         ";
     }
 }

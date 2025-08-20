@@ -193,16 +193,16 @@ class Compiler
         switch ($statement['type']) {
             case 'assignment':
                 return $this->compileAssignment($statement);
-                
+
             case 'return':
                 return $this->compileReturn($statement);
-                
+
             case 'if':
-                return $this->compileIf($statement);
-                
+                return $this->compileIfStatement($statement);
+
             case 'function_call':
-                return $this->compileFunctionCall($statement);
-                
+                return $this->compileFunctionCallStatement($statement);
+
             default:
                 return '';
         }
@@ -234,11 +234,11 @@ class Compiler
     private function compileReturn(array $statement): string
     {
         $bytecode = '';
-        
+
         if (isset($statement['value'])) {
             // Compile return value
             $bytecode .= $this->compileExpression($statement['value']);
-            
+
             // Store in memory and return
             $bytecode .= '6000'; // PUSH1 0 (memory offset)
             $bytecode .= '52'; // MSTORE
@@ -248,9 +248,42 @@ class Compiler
             $bytecode .= '6000'; // PUSH1 0
             $bytecode .= '6000'; // PUSH1 0
         }
-        
+
         $bytecode .= 'f3'; // RETURN
-        
+
+        return $bytecode;
+    }
+
+    /**
+     * Compile if statement
+     */
+    private function compileIfStatement(array $statement): string
+    {
+        $bytecode = '';
+
+        // Compile condition
+        if (isset($statement['condition'])) {
+            $bytecode .= $this->compileExpression($statement['condition']);
+        }
+
+        // For now, just return the condition - full if implementation would be more complex
+        return $bytecode;
+    }
+
+    /**
+     * Compile function call statement
+     */
+    private function compileFunctionCallStatement(array $statement): string
+    {
+        $bytecode = '';
+
+        // Compile function call
+        if (isset($statement['function_name'])) {
+            // This is a simplified implementation
+            // Real implementation would handle function calls properly
+            $bytecode .= '6000'; // PUSH1 0 (placeholder)
+        }
+
         return $bytecode;
     }
 

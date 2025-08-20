@@ -34,45 +34,14 @@ class BatchEventProcessor
         $this->eventDispatcher = $eventDispatcher;
         $this->logger = $logger;
         $this->config = $config;
-        
+
         // Configuration with defaults
         $this->batchSize = (int)($config['batch_size'] ?? 50);
         $this->maxQueueSize = (int)($config['max_queue_size'] ?? 1000);
         $this->flushInterval = (float)($config['flush_interval'] ?? 5.0); // seconds
         $this->lastFlush = microtime(true);
-        
-        $this->initializeEventQueue();
     }
 
-    /**
-     * Initialize event queue table
-     */
-    private function initializeEventQueue(): void
-    {
-        try {
-            $this->pdo->exec("
-                CREATE TABLE IF NOT EXISTS event_queue (
-                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                    event_type VARCHAR(50) NOT NULL,
-                    event_data JSON NOT NULL,
-                    event_id VARCHAR(64) NOT NULL,
-                    source_node VARCHAR(64) NOT NULL,
-                    priority TINYINT NOT NULL DEFAULT 5,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    processed_at TIMESTAMP NULL,
-                    retry_count TINYINT DEFAULT 0,
-                    status ENUM('pending', 'processing', 'completed', 'failed') DEFAULT 'pending',
-                    INDEX idx_event_queue_status (status),
-                    INDEX idx_event_queue_priority (priority),
-                    INDEX idx_event_queue_created (created_at),
-                    INDEX idx_event_queue_type (event_type),
-                    UNIQUE KEY unique_event_id (event_id)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-            ");
-        } catch (Exception $e) {
-            $this->logger->error('Failed to initialize event queue table: ' . $e->getMessage());
-        }
-    }
 
     /**
      * Add event to processing queue

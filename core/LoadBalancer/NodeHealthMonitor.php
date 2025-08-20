@@ -23,60 +23,8 @@ class NodeHealthMonitor
         $this->pdo = DatabaseManager::getConnection();
         $this->logger = $logger;
         $this->config = $config;
-
-        $this->initializeHealthTables();
     }
 
-    /**
-     * Initialize health monitoring tables
-     */
-    private function initializeHealthTables(): void
-    {
-        try {
-            $this->pdo->exec("
-                CREATE TABLE IF NOT EXISTS node_health_metrics (
-                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                    node_id VARCHAR(64) NOT NULL,
-                    node_url VARCHAR(255) NOT NULL,
-                    response_time DECIMAL(8,4) NOT NULL DEFAULT 0,
-                    success_rate DECIMAL(5,2) NOT NULL DEFAULT 100.00,
-                    cpu_usage DECIMAL(5,2) DEFAULT NULL,
-                    memory_usage DECIMAL(5,2) DEFAULT NULL,
-                    disk_usage DECIMAL(5,2) DEFAULT NULL,
-                    active_connections INT DEFAULT NULL,
-                    queue_size INT DEFAULT NULL,
-                    last_error TEXT NULL,
-                    last_check TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    health_score DECIMAL(5,2) NOT NULL DEFAULT 100.00,
-                    status ENUM('healthy', 'degraded', 'unhealthy', 'offline') DEFAULT 'healthy',
-                    INDEX idx_node_health_id (node_id),
-                    INDEX idx_node_health_score (health_score),
-                    INDEX idx_node_health_status (status),
-                    INDEX idx_node_health_check (last_check),
-                    UNIQUE KEY unique_node_url (node_url)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-            ");
-
-            $this->pdo->exec("
-                CREATE TABLE IF NOT EXISTS node_request_history (
-                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                    node_id VARCHAR(64) NOT NULL,
-                    request_type VARCHAR(50) NOT NULL,
-                    response_time DECIMAL(8,4) NOT NULL,
-                    success BOOLEAN NOT NULL,
-                    error_message TEXT NULL,
-                    request_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    INDEX idx_node_request_id (node_id),
-                    INDEX idx_node_request_type (request_type),
-                    INDEX idx_node_request_timestamp (request_timestamp),
-                    INDEX idx_node_request_success (success)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-            ");
-
-        } catch (Exception $e) {
-            $this->logger->error('Failed to initialize health tables: ' . $e->getMessage());
-        }
-    }
 
     /**
      * Check health of all nodes

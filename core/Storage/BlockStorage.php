@@ -18,13 +18,18 @@ class BlockStorage
     private string $storageFile;
     private ?\PDO $database = null;
     private ?ValidatorManager $validatorManager = null;
+    // Lightweight headers cache storage
+    private string $headersFile;
+    private array $headers = [];
     
     public function __construct(string $storageFile = 'blockchain.json', ?\PDO $database = null, ?ValidatorManager $validatorManager = null)
     {
         $this->storageFile = $storageFile;
         $this->database = $database;
         $this->validatorManager = $validatorManager;
+        $this->headersFile = dirname($this->storageFile) . '/block_headers.json';
         $this->loadBlocks();
+        $this->loadHeaders();
     }
     
     /**
@@ -627,6 +632,38 @@ class BlockStorage
             }
         }
         return file_put_contents($this->storageFile, json_encode($blockData, JSON_PRETTY_PRINT)) !== false;
+    }
+
+    /**
+     * Store single block header (light client support)
+     */
+    public function storeBlockHeader(array $header): bool
+    {
+        $height = (int)($header['height'] ?? $header['index'] ?? -1);
+        if ($height < 0) { return false; }
+        $this->headers[$height] = $header;
+        return $this->saveHeaders();
+    }
+
+    /**
+     * Retrieve block header by height
+     */
+    public function getBlockHeader(int $height): ?array
+    {
+        return $this->headers[$height] ?? null;
+    }
+
+    private function loadHeaders(): void
+    {
+        if (is_file($this->headersFile)) {
+            $data = json_decode((string)@file_get_contents($this->headersFile), true);
+            if (is_array($data)) { $this->headers = $data; }
+        }
+    }
+
+    private function saveHeaders(): bool
+    {
+        return (bool)@file_put_contents($this->headersFile, json_encode($this->headers, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
     }
     
     /**

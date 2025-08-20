@@ -47,14 +47,11 @@ class NodeHealthMonitor
         $this->config = $config;
         $this->nodeId = $this->generateNodeId();
         $this->knownNodes = $this->loadKnownNodes();
-        
+
         // Create recovery manager if sync manager is provided
         if ($syncManager !== null) {
             $this->recoveryManager = new BlockchainRecoveryManager($database, $binaryStorage, $syncManager, $this->nodeId, $config);
         }
-        
-        // Create node status table if not exists
-        $this->createNodeStatusTable();
     }
     
     /**
@@ -569,29 +566,6 @@ class NodeHealthMonitor
         ];
     }
     
-    /**
-     * Create node status table
-     */
-    private function createNodeStatusTable(): void
-    {
-        try {
-            $this->database->exec("
-                CREATE TABLE IF NOT EXISTS node_status (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    node_id VARCHAR(64) NOT NULL,
-                    status VARCHAR(32) NOT NULL,
-                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    health_data JSON,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    UNIQUE KEY unique_node (node_id),
-                    INDEX idx_status (status),
-                    INDEX idx_last_seen (last_seen)
-                )
-            ");
-        } catch (Exception $e) {
-            error_log("Failed to create node_status table: " . $e->getMessage());
-        }
-    }
     
     /**
      * Update node status in DB

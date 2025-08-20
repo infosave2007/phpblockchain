@@ -25,7 +25,7 @@ class SyncRateLimiter
         $this->pdo = DatabaseManager::getConnection();
         $this->logger = $logger;
         $this->config = $config;
-        
+
         // Default rate limits (requests per minute)
         $this->rateLimits = [
             'block_sync' => (int)($config['block_sync_rpm'] ?? 60),      // 1 per second
@@ -34,53 +34,8 @@ class SyncRateLimiter
             'wallet_sync' => (int)($config['wallet_sync_rpm'] ?? 120),    // 2 per second
             'full_sync' => (int)($config['full_sync_rpm'] ?? 6),          // 0.1 per second
         ];
-
-        $this->initializeLimiterTables();
     }
 
-    /**
-     * Initialize rate limiter tables
-     */
-    private function initializeLimiterTables(): void
-    {
-        try {
-            // Rate limiter state table
-            $this->pdo->exec("
-                CREATE TABLE IF NOT EXISTS sync_rate_limits (
-                    id VARCHAR(100) PRIMARY KEY,
-                    request_count INT NOT NULL DEFAULT 0,
-                    window_start TIMESTAMP NOT NULL,
-                    last_request TIMESTAMP NOT NULL,
-                    blocked_until TIMESTAMP NULL,
-                    INDEX idx_sync_rate_limits_window (window_start),
-                    INDEX idx_sync_rate_limits_blocked (blocked_until)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-            ");
-
-            // Sync queue priority table
-            $this->pdo->exec("
-                CREATE TABLE IF NOT EXISTS sync_queue_priority (
-                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                    sync_type VARCHAR(50) NOT NULL,
-                    node_id VARCHAR(64) NOT NULL,
-                    priority INT NOT NULL DEFAULT 5,
-                    data JSON NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    scheduled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    processed_at TIMESTAMP NULL,
-                    status ENUM('pending', 'processing', 'completed', 'failed') DEFAULT 'pending',
-                    retry_count INT DEFAULT 0,
-                    INDEX idx_sync_queue_status (status),
-                    INDEX idx_sync_queue_scheduled (scheduled_at),
-                    INDEX idx_sync_queue_priority (priority),
-                    INDEX idx_sync_queue_type (sync_type)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-            ");
-
-        } catch (Exception $e) {
-            $this->logger->error('Failed to initialize rate limiter tables: ' . $e->getMessage());
-        }
-    }
 
     /**
      * Check if request is allowed under rate limit
