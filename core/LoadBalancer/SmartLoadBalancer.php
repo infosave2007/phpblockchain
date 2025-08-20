@@ -10,7 +10,7 @@ use Exception;
 
 /**
  * Smart Load Balancer with Health Monitoring and Circuit Breaking
- * Приоритет 2: Распределение операций по всем узлам
+ * Priority 2: Distribution of operations across all nodes
  */
 class SmartLoadBalancer
 {

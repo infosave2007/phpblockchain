@@ -10,7 +10,7 @@ use Exception;
 
 /**
  * Circuit Breaker Pattern Implementation
- * Приоритет 2: Паттерн circuit breaker для перегруженных узлов
+ * Priority 2: Circuit breaker pattern for overloaded nodes
  */
 class CircuitBreaker
 {

@@ -158,13 +158,13 @@ class GovernanceManager
         $success = $stmt->execute([$proposalId, $voterAddress, $vote, $voteWeight, $reason]);
 
         if ($success) {
-            // Update счетчики голосов
+            // Update vote counters
             $this->updateVoteCounts($proposalId);
-            
-            // Record голосование в blockchain
+
+            // Record voting in blockchain
             $this->recordVoteTransaction($proposalId, $voterAddress, $vote, $voteWeight);
-            
-            // Check, достигнут ли порог для автоматического принятия
+
+            // Check if threshold for automatic approval is reached
             $this->checkProposalThreshold($proposalId);
         }
 
@@ -172,7 +172,7 @@ class GovernanceManager
     }
 
     /**
-     * Делегирование голосов
+     * Vote delegation
      */
     public function delegateVotes(
         string $delegatorAddress,
@@ -180,7 +180,7 @@ class GovernanceManager
         float $weight,
         ?\DateTime $expiresAt = null
     ): bool {
-        // Check, что делегатор имеет достаточный стейк
+        // Check that delegator has sufficient stake
         $availableStake = $this->getAvailableStake($delegatorAddress);
         if ($availableStake < $weight) {
             throw new Exception("Insufficient stake to delegate");
@@ -202,7 +202,7 @@ class GovernanceManager
     }
 
     /**
-     * Check принятого proposal
+     * Implement approved proposal
      */
     public function implementProposal(int $proposalId): bool
     {
@@ -239,7 +239,7 @@ class GovernanceManager
     }
 
     /**
-     * Check изменений
+     * Apply changes
      */
     public function rollbackProposal(int $proposalId, string $reason = ''): bool
     {
@@ -267,7 +267,7 @@ class GovernanceManager
     }
 
     /**
-     * Check информации о предложении
+     * Get proposal information
      */
     public function getProposal(int $proposalId): ?array
     {
@@ -284,7 +284,7 @@ class GovernanceManager
     }
 
     /**
-     * Check списка активных предложений
+     * Get list of active proposals
      */
     public function getActiveProposals(): array
     {
@@ -307,7 +307,7 @@ class GovernanceManager
     }
 
     /**
-     * Check голосов по предложению
+     * Get votes for proposal
      */
     public function getProposalVotes(int $proposalId): array
     {
@@ -324,14 +324,14 @@ class GovernanceManager
     }
 
     /**
-     * Автоматическая проверка и применение одобренных предложений
+     * Automatic check and implementation of approved proposals
      */
     public function processAutomaticUpdates(): array
     {
         return $this->autoUpdater->processUpdates();
     }
 
-    // Приватные методы
+    // Private methods
 
     private function canCreateProposal(string $address, float $stake, string $type): bool
     {
@@ -342,13 +342,13 @@ class GovernanceManager
 
     private function canVote(string $address, string $proposalType): bool
     {
-        // Базовые права голоса для держателей токенов
+        // Basic voting rights for token holders
         $balance = $this->blockchain->getBalance($address);
         if ($balance < 100) {
             return false;
         }
 
-        // Расширенные права для валидаторов
+        // Extended rights for validators
         if (in_array($proposalType, [self::PROPOSAL_CONSENSUS, self::PROPOSAL_UPGRADE])) {
             $activeValidators = $this->consensus->getActiveValidators();
             return isset($activeValidators[$address]);
@@ -396,7 +396,7 @@ class GovernanceManager
 
     private function applyChanges(array $changes): bool
     {
-        // Check изменений в зависимости от типа
+        // Apply changes based on type
         foreach ($changes as $key => $value) {
             switch ($key) {
                 case 'block_time':
@@ -408,7 +408,7 @@ class GovernanceManager
                 case 'minimum_stake':
                     $this->updateConsensusParameter('minimum_stake', $value);
                     break;
-                // Добавить другие типы изменений
+                // Add other types of changes
             }
         }
         
@@ -424,13 +424,13 @@ class GovernanceManager
 
     private function recordProposalTransaction(int $proposalId, string $action, string $address): void
     {
-        // Check transaction governance для записи в blockchain
-        // Это будет реализовано в зависимости от структуры транзакций
+        // Record governance transaction in blockchain
+        // This will be implemented based on transaction structure
     }
 
     private function recordVoteTransaction(int $proposalId, string $voter, string $vote, float $weight): void
     {
-        // Check transaction voting для записи в blockchain
+        // Record voting transaction in blockchain
     }
 
     private function getMinimumStakeForProposal(string $type): float
@@ -487,7 +487,7 @@ class GovernanceManager
 
     private function createStateBackup(array $proposal): array
     {
-        // Check backupа текущего state для возможного отката
+        // Create backup of current state for possible rollback
         return [
             'consensus_parameters' => [
                 'minimum_stake' => 1000,
@@ -527,7 +527,7 @@ class GovernanceManager
 
     private function applyRollback(array $rollbackData): bool
     {
-        // Check данных отката
+        // Apply rollback data
         if (isset($rollbackData['consensus_parameters'])) {
             foreach ($rollbackData['consensus_parameters'] as $param => $value) {
                 $this->updateConsensusParameter($param, $value);
@@ -539,7 +539,7 @@ class GovernanceManager
 
     private function updateConsensusParameter(string $parameter, $value): void
     {
-        // Логируем изменение параметра (реальная реализация будет позже)
+        // Log parameter change (real implementation will come later)
         error_log("Consensus parameter update requested: {$parameter} = " . json_encode($value));
     }
 

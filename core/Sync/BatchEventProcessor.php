@@ -11,7 +11,7 @@ use Exception;
 
 /**
  * Batch Event Processor for High-Volume Synchronization
- * Приоритет 1: Пакетная обработка событий для высоких нагрузок
+ * Priority 1: Batch event processing for high loads
  */
 class BatchEventProcessor
 {

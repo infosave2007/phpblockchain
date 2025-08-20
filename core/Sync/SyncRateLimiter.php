@@ -10,7 +10,7 @@ use Exception;
 
 /**
  * Sync Rate Limiter with Queue Management
- * Приоритет 1: Очередь синхронизации с ограничением скорости
+ * Priority 1: Synchronization queue with speed limiting
  */
 class SyncRateLimiter
 {

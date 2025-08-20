@@ -10,7 +10,7 @@ use Exception;
 
 /**
  * Node Health Monitor for Load Balancing
- * Приоритет 2: Выбор узлов на основе их здоровья
+ * Priority 2: Node selection based on health
  */
 class NodeHealthMonitor
 {

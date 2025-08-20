@@ -11,7 +11,7 @@ use Exception;
 
 /**
  * Automatic Sync Recovery System
- * Приоритет 1: Автоматическое восстановление синхронизации
+ * Priority 1: Automatic synchronization recovery
  */
 class AutoSyncRecovery
 {
