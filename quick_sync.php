@@ -788,11 +788,11 @@ try {
                 }
             }
         }
-        $dbHost = $env['DB_HOST'] ?? ($_ENV['DB_HOST'] ?? 'database');
-        $dbPort = $env['DB_PORT'] ?? ($_ENV['DB_PORT'] ?? '3306');
-        $dbName = $env['DB_DATABASE'] ?? ($_ENV['DB_NAME'] ?? 'blockchain');
-        $dbUser = $env['DB_USERNAME'] ?? ($_ENV['DB_USER'] ?? 'blockchain');
-        $dbPass = $env['DB_PASSWORD'] ?? ($_ENV['DB_PASSWORD'] ?? 'blockchain123');
+        $dbHost = getenv('DB_HOST') ?: 'database';
+        $dbPort = getenv('DB_PORT') ?: '3306';
+        $dbName = getenv('DB_DATABASE') ?: 'blockchain';
+        $dbUser = getenv('DB_USERNAME') ?: 'blockchain';
+        $dbPass = getenv('DB_PASSWORD') ?: 'blockchain123';
         $dsn = "mysql:host={$dbHost};port={$dbPort};dbname={$dbName};charset=utf8mb4";
         try {
             $pdo = new PDO($dsn, $dbUser, $dbPass, [

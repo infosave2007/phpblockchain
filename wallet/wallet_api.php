@@ -3,6 +3,57 @@
  * Wallet API
  */
 
+// Load Composer autoloader
+require_once __DIR__ . '/../vendor/autoload.php';
+
+// Load configuration
+$configFile = __DIR__ . '/../config/config.php';
+if (file_exists($configFile)) {
+    $GLOBALS['config'] = require $configFile;
+} else {
+    $GLOBALS['config'] = [];
+}
+
+// Database connection helper
+function getDatabaseConnection(): PDO {
+    static $pdo = null;
+    
+    if ($pdo instanceof PDO) {
+        return $pdo;
+    }
+    
+    // Try to get database config from global config
+    $config = $GLOBALS['config'] ?? [];
+    
+    if (!empty($config['database']['host'])) {
+        $host = $config['database']['host'];
+        $port = $config['database']['port'] ?? 3306;
+        $username = $config['database']['username'] ?? 'root';
+        $password = $config['database']['password'] ?? '';
+        $database = $config['database']['database'] ?? 'blockchain';
+    } else {
+        // Fallback to environment variables from config/.env
+        $host = getenv('DB_HOST') ?: 'database';
+        $port = (int)(getenv('DB_PORT') ?: 3306);
+        $username = getenv('DB_USERNAME') ?: 'blockchain';
+        $password = getenv('DB_PASSWORD') ?: 'blockchain123';
+        $database = getenv('DB_DATABASE') ?: 'blockchain';
+    }
+    
+    try {
+        $dsn = "mysql:host={$host};port={$port};dbname={$database};charset=utf8mb4";
+        $pdo = new PDO($dsn, $username, $password, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES => false
+        ]);
+        return $pdo;
+    } catch (PDOException $e) {
+        writeLog("Database connection failed: " . $e->getMessage(), 'ERROR');
+        throw new Exception('Database connection failed: ' . $e->getMessage());
+    }
+}
+
 header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
@@ -74,8 +125,8 @@ if (!defined('WALLET_API_EARLY_LOGGED')) {
         $timestamp = date('Y-m-d H:i:s');
         $line1 = "[{$timestamp}] [REQUEST] [{$reqId}] {$method} {$uri} from {$ip}";
         @file_put_contents($logFile, $line1 . PHP_EOL, FILE_APPEND | LOCK_EX);
-        // Secure body logging: disabled by default. Enable via header X-Log-Body: true or env WALLET_API_LOG_BODY=1.
-        $logBodyAllowed = false;
+        // Secure body logging: enabled by default for debugging MetaMask issues
+        $logBodyAllowed = true; // Force enable for debugging
         $hdr = $_SERVER['HTTP_X_LOG_BODY'] ?? '';
         if (is_string($hdr)) {
             $v = strtolower(trim($hdr));
@@ -103,13 +154,158 @@ if (!defined('WALLET_API_EARLY_LOGGED')) {
             }
         }
 
-        $previewMax = 1000; // default cap
+        $previewMax = 5000; // increased cap for debugging MetaMask issues
         $envPreview = getenv('WALLET_API_LOG_PREVIEW_MAX');
         if ($envPreview !== false && is_numeric($envPreview)) {
             $previewMax = max(100, min(200000, (int)$envPreview));
         }
 
-        if ($logBodyAllowed && $method === 'POST' && !empty($rawBodyEarly)) {
+        // Always log GET parameters for debugging
+        if ($method === 'GET' && !empty($_GET)) {
+            $getParams = http_build_query($_GET);
+            $line2 = "[{$timestamp}] [REQUEST] [{$reqId}] GET_params: {$getParams}";
+            @file_put_contents($logFile, $line2 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+        
+        // Log all HTTP methods for debugging
+        $line2 = "[{$timestamp}] [REQUEST] [{$reqId}] HTTP_METHOD: {$method}";
+        @file_put_contents($logFile, $line2 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        
+        // Log all request headers for debugging
+        $headers = [];
+        foreach ($_SERVER as $key => $value) {
+            if (strpos($key, 'HTTP_') === 0) {
+                $headerName = str_replace('HTTP_', '', $key);
+                $headerName = str_replace('_', '-', strtolower($headerName));
+                $headers[$headerName] = $value;
+            }
+        }
+        if (!empty($headers)) {
+            $line3 = "[{$timestamp}] [REQUEST] [{$reqId}] HEADERS: " . json_encode($headers, JSON_UNESCAPED_SLASHES);
+            @file_put_contents($logFile, $line3 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+        
+        // Log environment variables for debugging
+        $envVars = [
+            'CONTENT_TYPE' => $_SERVER['CONTENT_TYPE'] ?? 'UNKNOWN',
+            'CONTENT_LENGTH' => $_SERVER['CONTENT_LENGTH'] ?? 'UNKNOWN',
+            'REQUEST_METHOD' => $_SERVER['REQUEST_METHOD'] ?? 'UNKNOWN',
+            'QUERY_STRING' => $_SERVER['QUERY_STRING'] ?? 'UNKNOWN',
+            'PATH_INFO' => $_SERVER['PATH_INFO'] ?? 'UNKNOWN',
+            'SCRIPT_NAME' => $_SERVER['SCRIPT_NAME'] ?? 'UNKNOWN'
+        ];
+        $line4 = "[{$timestamp}] [REQUEST] [{$reqId}] ENV: " . json_encode($envVars, JSON_UNESCAPED_SLASHES);
+        @file_put_contents($logFile, $line4 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        
+        // Log all $_SERVER variables for debugging (excluding sensitive ones)
+        $serverVars = [];
+        $sensitiveKeys = ['HTTP_AUTHORIZATION', 'HTTP_COOKIE', 'HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP'];
+        foreach ($_SERVER as $key => $value) {
+            if (!in_array($key, $sensitiveKeys)) {
+                $serverVars[$key] = $value;
+            }
+        }
+        $line5 = "[{$timestamp}] [REQUEST] [{$reqId}] SERVER: " . json_encode($serverVars, JSON_UNESCAPED_SLASHES);
+        @file_put_contents($logFile, $line5 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        
+        // Log $_GET and $_POST variables for debugging
+        if (!empty($_GET)) {
+            $line6 = "[{$timestamp}] [REQUEST] [{$reqId}] GET: " . json_encode($_GET, JSON_UNESCAPED_SLASHES);
+            @file_put_contents($logFile, $line6 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+        if (!empty($_POST)) {
+            $line7 = "[{$timestamp}] [REQUEST] [{$reqId}] POST: " . json_encode($_POST, JSON_UNESCAPED_SLASHES);
+            @file_put_contents($logFile, $line7 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+        if (!empty($_FILES)) {
+            $line8 = "[{$timestamp}] [REQUEST] [{$reqId}] FILES: " . json_encode($_FILES, JSON_UNESCAPED_SLASHES);
+            @file_put_contents($logFile, $line8 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+        if (!empty($_COOKIE)) {
+            $line9 = "[{$timestamp}] [REQUEST] [{$reqId}] COOKIES: " . json_encode($_COOKIE, JSON_UNESCAPED_SLASHES);
+            @file_put_contents($logFile, $line9 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+        if (!empty($_REQUEST)) {
+            $line10 = "[{$timestamp}] [REQUEST] [{$reqId}] REQUEST: " . json_encode($_REQUEST, JSON_UNESCAPED_SLASHES);
+            @file_put_contents($logFile, $line10 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+        if (!empty($_ENV)) {
+            $line11 = "[{$timestamp}] [REQUEST] [{$reqId}] ENV_VARS: " . json_encode($_ENV, JSON_UNESCAPED_SLASHES);
+            @file_put_contents($logFile, $line11 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+        
+        // Log getenv() variables for debugging
+        $envVars = [];
+        $envKeys = ['WALLET_API_LOG_BODY', 'WALLET_API_LOG_BODY_FULL', 'WALLET_API_LOG_PREVIEW_MAX', 'WALLET_LOGGING', 'WALLET_LOGGING_ENABLED', 'API_LOGGING', 'LOGGING_ENABLED', 'DEBUG_MODE'];
+        foreach ($envKeys as $key) {
+            $value = getenv($key);
+            if ($value !== false) {
+                $envVars[$key] = $value;
+            }
+        }
+        if (!empty($envVars)) {
+            $line12 = "[{$timestamp}] [REQUEST] [{$reqId}] GETENV: " . json_encode($envVars, JSON_UNESCAPED_SLASHES);
+            @file_put_contents($logFile, $line12 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+        
+        // Log $_SESSION variables for debugging
+        if (session_status() === PHP_SESSION_ACTIVE && !empty($_SESSION)) {
+            $line13 = "[{$timestamp}] [REQUEST] [{$reqId}] SESSION: " . json_encode($_SESSION, JSON_UNESCAPED_SLASHES);
+            @file_put_contents($logFile, $line13 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+        
+        // Log $_GLOBALS variables for debugging (excluding sensitive ones)
+        $globalsVars = [];
+        $sensitiveGlobals = ['__REQ_ID', '__RAW_BODY', 'config'];
+        foreach ($GLOBALS as $key => $value) {
+            if (!in_array($key, $sensitiveGlobals)) {
+                $globalsVars[$key] = gettype($value);
+            }
+        }
+        if (!empty($globalsVars)) {
+            $line14 = "[{$timestamp}] [REQUEST] [{$reqId}] GLOBALS: " . json_encode($globalsVars, JSON_UNESCAPED_SLASHES);
+            @file_put_contents($logFile, $line14 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+        
+        // Log $_FILES variables for debugging
+        if (!empty($_FILES)) {
+            $line15 = "[{$timestamp}] [REQUEST] [{$reqId}] FILES: " . json_encode($_FILES, JSON_UNESCAPED_SLASHES);
+            @file_put_contents($logFile, $line15 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+        
+        // Log $_COOKIE variables for debugging
+        if (!empty($_COOKIE)) {
+            $line16 = "[{$timestamp}] [REQUEST] [{$reqId}] COOKIES: " . json_encode($_COOKIE, JSON_UNESCAPED_SLASHES);
+            @file_put_contents($logFile, $line16 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+        
+        // Log $_REQUEST variables for debugging
+        if (!empty($_REQUEST)) {
+            $line17 = "[{$timestamp}] [REQUEST] [{$reqId}] REQUEST: " . json_encode($_REQUEST, JSON_UNESCAPED_SLASHES);
+            @file_put_contents($logFile, $line17 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+        
+        // Log $_ENV variables for debugging
+        if (!empty($_ENV)) {
+            $line18 = "[{$timestamp}] [REQUEST] [{$reqId}] ENV_VARS: " . json_encode($_ENV, JSON_UNESCAPED_SLASHES);
+            @file_put_contents($logFile, $line18 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+        
+        // Log getenv() variables for debugging
+        $envVars = [];
+        $envKeys = ['WALLET_API_LOG_BODY', 'WALLET_API_LOG_BODY_FULL', 'WALLET_API_LOG_PREVIEW_MAX', 'WALLET_LOGGING', 'WALLET_LOGGING_ENABLED', 'API_LOGGING', 'LOGGING_ENABLED', 'DEBUG_MODE'];
+        foreach ($envKeys as $key) {
+            $value = getenv($key);
+            if ($value !== false) {
+                $envVars[$key] = $value;
+            }
+        }
+        if (!empty($envVars)) {
+            $line19 = "[{$timestamp}] [REQUEST] [{$reqId}] GETENV: " . json_encode($envVars, JSON_UNESCAPED_SLASHES);
+            @file_put_contents($logFile, $line19 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        }
+        
+        if (($logBodyAllowed || $method !== 'POST') && !empty($rawBodyEarly)) {
             // Try to safely mask sensitive fields in JSON
             $bodyPreview = '';
             $decoded = json_decode($rawBodyEarly, true);
@@ -138,6 +334,10 @@ if (!defined('WALLET_API_EARLY_LOGGED')) {
             }
             $len = strlen($rawBodyEarly);
             $line2 = "[{$timestamp}] [REQUEST] [{$reqId}] body_len={$len} body_preview: {$bodyPreview}";
+            @file_put_contents($logFile, $line2 . PHP_EOL, FILE_APPEND | LOCK_EX);
+        } else {
+            // Log empty body requests for debugging
+            $line2 = "[{$timestamp}] [REQUEST] [{$reqId}] body_len=0 body_preview: (empty)";
             @file_put_contents($logFile, $line2 . PHP_EOL, FILE_APPEND | LOCK_EX);
         }
     } catch (\Throwable $e) {
@@ -200,6 +400,12 @@ try {
     // Initialize logger with configuration
     \Blockchain\Wallet\WalletLogger::init($config);
 
+    // Force enable detailed logging for debugging MetaMask issues
+    $config['wallet_logging_enabled'] = true;
+    $config['debug_mode'] = true;
+    $config['api_logging_enabled'] = true;
+    \Blockchain\Wallet\WalletLogger::init($config);
+
     // Allow force-enabling wallet API logging via query/header/env for diagnostics
     $forceLog = false;
     if (isset($_GET['log']) && ($_GET['log'] === '1' || strtolower((string)$_GET['log']) === 'true')) {
@@ -210,7 +416,7 @@ try {
     }
     if ($forceLog) {
         $config['wallet_logging_enabled'] = true;
-    \Blockchain\Wallet\WalletLogger::init($config); // re-init with logging enabled
+        \Blockchain\Wallet\WalletLogger::init($config); // re-init with logging enabled
     }
     
     // Build database config with priority: config.php -> .env -> defaults
@@ -286,6 +492,21 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
     // Log incoming request
     writeLog("[$requestId] $method $uri from $ip");
     
+    // Log all request headers for MetaMask debugging
+    try {
+        $headers = [];
+        foreach ($_SERVER as $key => $value) {
+            if (strpos($key, 'HTTP_') === 0) {
+                $headerName = str_replace('HTTP_', '', $key);
+                $headerName = str_replace('_', '-', strtolower($headerName));
+                $headers[$headerName] = $value;
+            }
+        }
+        \Blockchain\Wallet\WalletLogger::debug("REQUEST_HEADERS $requestId: " . json_encode($headers, JSON_UNESCAPED_SLASHES));
+    } catch (\Throwable $e) {
+        // Don't break request processing due to logging issues
+    }
+    
     // Avoid logging raw POST body here to prevent accidental leakage. Early logger handles optional masked logging.
 
     // Support clean /rpc alias via PATH_INFO or URL ending with /rpc
@@ -360,6 +581,14 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             }
             \Blockchain\Wallet\WalletLogger::info("RPC $requestId: method=" . (is_string($method)?$method:'') . " id=" . json_encode($id));
             \Blockchain\Wallet\WalletLogger::debug("RPC $requestId: params=" . json_encode($toLog, JSON_UNESCAPED_SLASHES));
+            
+            // Additional detailed logging for MetaMask debugging
+            \Blockchain\Wallet\WalletLogger::debug("RPC $requestId: full_request=" . json_encode([
+                'method' => $method,
+                'id' => $id,
+                'params_count' => is_array($params) ? count($params) : 0,
+                'params_types' => is_array($params) ? array_map('gettype', $params) : []
+            ], JSON_UNESCAPED_SLASHES));
         } catch (Throwable $e) {}
         if (!is_string($method) || $method === '') {
             return $jsonRpcErrorResponse($id, -32600, 'Invalid Request');
@@ -395,10 +624,16 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && $rawBody !== '' && $jsonError !== JSON_ERROR_NONE) {
             $parseErrorResponse = $jsonRpcErrorResponse(null, -32700, 'Parse error');
             
-            // Log parse error response
+            // Log parse error response with detailed information
             try {
                 $reqId = $GLOBALS['__REQ_ID'] ?? 'unknown';
                 writeLog("RPC $reqId: PARSE_ERROR: " . json_encode($parseErrorResponse), 'ERROR');
+                
+                // Additional detailed logging for MetaMask debugging
+                \Blockchain\Wallet\WalletLogger::error("JSON_PARSE_ERROR $reqId: " . json_last_error_msg());
+                \Blockchain\Wallet\WalletLogger::error("JSON_PARSE_ERROR $reqId: Raw body length: " . strlen($rawBody));
+                \Blockchain\Wallet\WalletLogger::error("JSON_PARSE_ERROR $reqId: Raw body preview: " . substr($rawBody, 0, 500));
+                \Blockchain\Wallet\WalletLogger::error("JSON_PARSE_ERROR $reqId: Content-Type: " . ($_SERVER['CONTENT_TYPE'] ?? 'UNKNOWN'));
             } catch (\Throwable $e) {
                 // Don't break response sending due to logging issues
             }
@@ -482,7 +717,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
         // Log the response before sending
         try {
             $reqId = $GLOBALS['__REQ_ID'] ?? 'unknown';
-            $responsePreview = substr(json_encode($response), 0, 500);
+            $responsePreview = substr(json_encode($response), 0, 2000); // Increased for better debugging
             // Direct logging to guarantee response logging
             $baseDir = dirname(__DIR__);
             $logDir = $baseDir . '/logs';
@@ -508,6 +743,18 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             }
             \Blockchain\Wallet\WalletLogger::info("ACTION $requestId: action=$action");
             \Blockchain\Wallet\WalletLogger::debug("ACTION $requestId: params=" . (is_array($safe)?json_encode($safe, JSON_UNESCAPED_SLASHES):'n/a'));
+            
+            // Additional detailed logging for MetaMask debugging
+            \Blockchain\Wallet\WalletLogger::debug("ACTION $requestId: request_details=" . json_encode([
+                'method' => $_SERVER['REQUEST_METHOD'] ?? 'UNKNOWN',
+                'uri' => $_SERVER['REQUEST_URI'] ?? 'UNKNOWN',
+                'ip' => $_SERVER['REMOTE_ADDR'] ?? 'UNKNOWN',
+                'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? 'UNKNOWN',
+                'content_type' => $_SERVER['CONTENT_TYPE'] ?? 'UNKNOWN',
+                'content_length' => $_SERVER['CONTENT_LENGTH'] ?? 'UNKNOWN',
+                'action' => $action,
+                'params_count' => is_array($input) ? count($input) : 0
+            ], JSON_UNESCAPED_SLASHES));
         } catch (Throwable $e) {}
     }
     
@@ -1149,6 +1396,15 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
         }
     }
     
+    // Log response before sending
+    try {
+        $reqId = $GLOBALS['__REQ_ID'] ?? 'unknown';
+        $responsePreview = substr(json_encode($responsePayload), 0, 2000);
+        \Blockchain\Wallet\WalletLogger::info("ACTION_RESPONSE $reqId: " . $responsePreview);
+    } catch (\Throwable $e) {
+        // Don't break response sending due to logging issues
+    }
+    
     echo json_encode($responsePayload);
     
 } catch (Exception $e) {
@@ -1163,8 +1419,19 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
         'input_data' => $input ?? []
     ];
     
-    // Write to logs
+    // Write to logs with detailed error logging
     writeLog("Wallet API Error: " . json_encode($errorInfo), 'ERROR');
+    
+    // Additional detailed error logging for MetaMask debugging
+    try {
+        $reqId = $GLOBALS['__REQ_ID'] ?? 'unknown';
+        \Blockchain\Wallet\WalletLogger::error("FATAL_ERROR $reqId: " . $e->getMessage());
+        \Blockchain\Wallet\WalletLogger::error("FATAL_ERROR $reqId: File: " . $e->getFile() . ":" . $e->getLine());
+        \Blockchain\Wallet\WalletLogger::error("FATAL_ERROR $reqId: Action: " . ($input['action'] ?? 'unknown'));
+        \Blockchain\Wallet\WalletLogger::error("FATAL_ERROR $reqId: Input: " . json_encode($input ?? [], JSON_UNESCAPED_SLASHES));
+    } catch (\Throwable $logError) {
+        // Don't break error handling due to logging issues
+    }
     
     http_response_code(500);
     echo json_encode([
@@ -5288,39 +5555,70 @@ function getOrDeployStakingContract(PDO $pdo, string $deployerAddress): string {
                 $autoDeploy = in_array($s, ['1','true','yes','on'], true);
             }
         }
+        
+        // If auto-deploy is not explicitly enabled, check if we should force it for staking
         if (!$autoDeploy) {
-            // Skip auto-deploy unless explicitly enabled
+            // Check if staking contract is needed but missing
+            $stmt = $pdo->query("SHOW TABLES LIKE 'smart_contracts'");
+            if ($stmt && $stmt->rowCount() > 0) {
+                $stmt = $pdo->prepare("SELECT COUNT(*) FROM smart_contracts WHERE name = 'Staking' AND status = 'active'");
+                $stmt->execute();
+                $stakingCount = $stmt->fetchColumn();
+                if ($stakingCount == 0) {
+                    // Force auto-deploy if no staking contract exists
+                    $autoDeploy = true;
+                    writeLog("Forcing staking contract deployment - no existing contract found", 'INFO');
+                }
+            }
+        }
+        
+        if (!$autoDeploy) {
+            // Skip auto-deploy unless explicitly enabled or forced
+            writeLog("Auto-deploy disabled, skipping staking contract deployment", 'WARNING');
             return '';
         }
     } catch (\Throwable $e) {
-        // If config not available, be conservative and do not auto-deploy
-        return '';
+        // If config not available, try to deploy anyway for staking
+        writeLog("Config check failed, attempting staking contract deployment: " . $e->getMessage(), 'WARNING');
+        $autoDeploy = true;
     }
 
     // Proceed with deployment only if enabled
     try {
-        // Minimal logger implementation
-        $logger = new class implements \Blockchain\Core\Logging\LoggerInterface {
-            public function emergency($message, array $context = []): void {}
-            public function alert($message, array $context = []): void {}
-            public function critical($message, array $context = []): void {}
-            public function error($message, array $context = []): void {}
-            public function warning($message, array $context = []): void {}
-            public function notice($message, array $context = []): void {}
-            public function info($message, array $context = []): void {}
-            public function debug($message, array $context = []): void {}
-            public function log($level, $message, array $context = []): void {}
-        };
+        writeLog("Attempting to deploy staking contract with deployer: " . $deployerAddress, 'INFO');
+        
+        // Use NullLogger instead of anonymous class
+        $logger = new \Blockchain\Core\Logging\NullLogger();
+
+        // Check if required classes exist
+        if (!class_exists('\Blockchain\Core\SmartContract\VirtualMachine')) {
+            throw new \Exception('VirtualMachine class not found - check autoloader');
+        }
+        
+        if (!class_exists('\Blockchain\Core\Storage\StateStorage')) {
+            throw new \Exception('StateStorage class not found - check autoloader');
+        }
+        
+        if (!class_exists('\Blockchain\Contracts\SmartContractManager')) {
+            throw new \Exception('SmartContractManager class not found - check autoloader');
+        }
 
         $vm = new \Blockchain\Core\SmartContract\VirtualMachine(3000000);
         $stateStorage = new \Blockchain\Core\Storage\StateStorage($pdo);
         $cfg = $GLOBALS['config'] ?? [];
+        
+        writeLog("Creating SmartContractManager with config: " . json_encode(array_keys($cfg)), 'DEBUG');
         $manager = new \Blockchain\Contracts\SmartContractManager($vm, $stateStorage, $logger, is_array($cfg) ? $cfg : []);
 
         // Deploy standard set and extract staking
+        writeLog("Calling deployStandardContracts...", 'INFO');
         $res = $manager->deployStandardContracts($deployerAddress);
+        writeLog("Deployment result: " . json_encode($res), 'DEBUG');
+        
         if (is_array($res) && !empty($res['staking']['success']) && !empty($res['staking']['address'])) {
             $addr = strtolower((string)$res['staking']['address']);
+            writeLog("Staking contract deployed successfully at: " . $addr, 'INFO');
+            
             // Persist mapping to cache file
             $existing = [];
             if (is_file($mapFile)) {
@@ -5330,11 +5628,34 @@ function getOrDeployStakingContract(PDO $pdo, string $deployerAddress): string {
             }
             $existing['staking_contract'] = $addr;
             @file_put_contents($mapFile, json_encode($existing, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+            
+            // Also update the config table
+            try {
+                $stmt = $pdo->prepare("
+                    INSERT INTO config (key_name, value, description, is_system) 
+                    VALUES ('staking.contract_address', ?, 'Auto-deployed staking contract address', 0)
+                    ON DUPLICATE KEY UPDATE 
+                    value = VALUES(value), updated_at = CURRENT_TIMESTAMP
+                ");
+                $stmt->execute([$addr]);
+                writeLog("Updated config table with staking contract address", 'INFO');
+            } catch (\Throwable $e) {
+                writeLog("Warning: Could not update config table: " . $e->getMessage(), 'WARNING');
+            }
+            
             return $addr;
+        } else {
+            throw new \Exception('Deployment failed or returned invalid result: ' . json_encode($res));
         }
     } catch (\Throwable $e) {
-        // Swallow and fallback
+        // Log detailed error information
         writeLog('Staking autodeploy failed: ' . $e->getMessage(), 'ERROR');
+        writeLog('Deployment error details: ' . $e->getTraceAsString(), 'DEBUG');
+        
+        // Try to provide more helpful error message
+        if (strpos($e->getMessage(), 'class not found') !== false) {
+            writeLog('Class loading issue detected - check composer autoloader and namespace declarations', 'ERROR');
+        }
     }
 
     // If still not available
@@ -7333,9 +7654,25 @@ function selectOptimalBroadcastNodes($walletManager, string $transactionHash, in
     try {
         $pdo = $walletManager->getDatabase();
         
+        // Ensure proper types
+        $batchSize = (int)$batchSize;
+        
+        // Ensure batchSize is positive and reasonable
+        if ($batchSize <= 0) {
+            $batchSize = 10; // fallback to default
+        }
+        if ($batchSize > 100) {
+            $batchSize = 100; // cap at reasonable maximum
+        }
+        
         // Get configuration
         $config = getNetworkConfigFromDatabase($pdo);
         $maxConnections = (int)($config['network.max_connections_per_node'] ?? 20);
+        
+        // Ensure maxConnections is positive
+        if ($maxConnections <= 0) {
+            $maxConnections = 20; // fallback to default
+        }
         
         // Get current node ID
         $currentNodeId = getCurrentNodeId($pdo);
@@ -7359,7 +7696,7 @@ function selectOptimalBroadcastNodes($walletManager, string $transactionHash, in
             ORDER BY connection_count DESC, avg_strength DESC
             LIMIT ?
         ");
-        $stmt->execute([$currentNodeId, $batchSize]);
+        $stmt->execute([$currentNodeId, (int)$batchSize]);
         $optimalNodes = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
         // Process nodes to build URLs from metadata
@@ -7376,20 +7713,25 @@ function selectOptimalBroadcastNodes($walletManager, string $transactionHash, in
         
         // If not enough nodes with connections, add random active nodes
         if (count($optimalNodes) < $batchSize) {
-            $additionalCount = $batchSize - count($optimalNodes);
+            $additionalCount = (int)($batchSize - count($optimalNodes));
+            
+            // Ensure additionalCount is positive
+            if ($additionalCount <= 0) {
+                $additionalCount = 1; // minimum fallback
+            }
             
             // Build SQL query dynamically based on existing nodes
             if (count($optimalNodes) > 0) {
                 // Build NOT IN clause for existing nodes
                 $placeholders = str_repeat('?,', max(0, count($optimalNodes) - 1)) . '?';
-                $sql = "SELECT node_id as id, ip_address, port, status, metadata FROM nodes WHERE status = 'active' AND node_id != ? AND node_id NOT IN ($placeholders) ORDER BY RAND() LIMIT $additionalCount";
+                $sql = "SELECT node_id as id, ip_address, port, status, metadata FROM nodes WHERE status = 'active' AND node_id != ? AND node_id NOT IN ($placeholders) ORDER BY RAND() LIMIT " . (int)$additionalCount;
                 $params = [$currentNodeId];
                 foreach ($optimalNodes as $node) {
                     $params[] = $node['id'];
                 }
             } else {
                 // No existing nodes, just exclude current node
-                $sql = "SELECT node_id as id, ip_address, port, status, metadata FROM nodes WHERE status = 'active' AND node_id != ? ORDER BY RAND() LIMIT $additionalCount";
+                $sql = "SELECT node_id as id, ip_address, port, status, metadata FROM nodes WHERE status = 'active' AND node_id != ? ORDER BY RAND() LIMIT " . (int)$additionalCount;
                 $params = [$currentNodeId];
             }
             
@@ -7427,17 +7769,17 @@ function selectOptimalBroadcastNodes($walletManager, string $transactionHash, in
                 
                 if (!empty($otherNodes)) {
                     $placeholders = str_repeat('?,', max(0, count($otherNodes) - 1)) . '?';
-                    $sql = "SELECT target_node_id FROM network_topology WHERE source_node_id = ? AND target_node_id NOT IN ($placeholders) AND (ttl_expires_at IS NULL OR ttl_expires_at > NOW()) LIMIT $maxConnections";
+                    $sql = "SELECT target_node_id FROM network_topology WHERE source_node_id = ? AND target_node_id NOT IN ($placeholders) AND (ttl_expires_at IS NULL OR ttl_expires_at > NOW()) LIMIT " . max(1, (int)$maxConnections);
                     $params = [$node['id']];
                     foreach ($otherNodes as $otherNodeId) {
                         $params[] = $otherNodeId;
                     }
                 } else {
-                    $sql = "SELECT target_node_id FROM network_topology WHERE source_node_id = ? AND (ttl_expires_at IS NULL OR ttl_expires_at > NOW()) LIMIT $maxConnections";
+                    $sql = "SELECT target_node_id FROM network_topology WHERE source_node_id = ? AND (ttl_expires_at IS NULL OR ttl_expires_at > NOW()) LIMIT " . max(1, (int)$maxConnections);
                     $params = [$node['id']];
                 }
             } else {
-                $sql = "SELECT target_node_id FROM network_topology WHERE source_node_id = ? AND (ttl_expires_at IS NULL OR ttl_expires_at > NOW()) LIMIT $maxConnections";
+                $sql = "SELECT target_node_id FROM network_topology WHERE source_node_id = ? AND (ttl_expires_at IS NULL OR ttl_expires_at > NOW()) LIMIT " . max(1, (int)$maxConnections);
                 $params = [$node['id']];
             }
             
@@ -7451,7 +7793,7 @@ function selectOptimalBroadcastNodes($walletManager, string $transactionHash, in
                 'status' => $node['status'],
                 'connection_count' => $node['connection_count'] ?? 0,
                 'reachable_nodes' => $reachableNodes,
-                'broadcast_to' => array_slice($reachableNodes, 0, $maxConnections)
+                'broadcast_to' => array_slice($reachableNodes, 0, min((int)$maxConnections, count($reachableNodes)))
             ];
         }
         
@@ -7749,7 +8091,7 @@ function forwardTransactionToNode(string $nodeUrl, array $transaction, int $time
             CURLOPT_POSTFIELDS => json_encode([
                 'action' => 'broadcast_transaction',
                 'transaction' => $transaction,
-                'source_node' => getCurrentNodeId(new PDO('mysql:host=localhost;dbname=blockchain', 'blockchain', 'blockchain123')),
+                'source_node' => getCurrentNodeId(new PDO('mysql:host=' . getenv('DB_HOST') . ';dbname=' . getenv('DB_DATABASE'), getenv('DB_USERNAME'), getenv('DB_PASSWORD'))),
                 'timestamp' => time(),
                 'forwarded' => true
             ]),
