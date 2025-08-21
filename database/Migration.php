@@ -431,7 +431,11 @@ class Migration
             ('network.topology_ttl', '300', 'Network topology TTL in seconds', 0),
             ('network.broadcast_batch_size', '10', 'Number of nodes per broadcast batch', 0),
             ('network.max_connections_per_node', '20', 'Maximum connections per node', 0),
-            ('network.topology_update_interval', '60', 'Topology update interval in seconds', 0);
+            ('network.topology_update_interval', '60', 'Topology update interval in seconds', 0),
+
+            -- Staking contract configuration
+            ('staking.contract_address', '', 'Staking contract address (auto-deploy if empty)', 0),
+            ('contracts.auto_deploy.enabled', '1', 'Enable auto-deployment of smart contracts', 0);
             
             -- Create network topology tables
             CREATE TABLE IF NOT EXISTS network_topology (
