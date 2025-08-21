@@ -1383,7 +1383,7 @@ function getNetworkConfig(PDO $pdo, string $network): array {
         'consensus_type' => 'pos',
         'total_supply' => null,
         'initial_supply' => null,
-        'decimals' => 8,
+        'decimals' => 18,
         'chain_id' => 1,
         'protocol_version' => '1.0.0',
         'block_time' => 10,
@@ -1463,11 +1463,11 @@ function getNetworkConfig(PDO $pdo, string $network): array {
         $configFile = '../../config/config.php';
         if (file_exists($configFile)) {
             try {
-                require_once $configFile;
-                // Get global blockchain config
-                if (defined('BLOCKCHAIN_CONFIG')) {
-                    $blockchainConfig = BLOCKCHAIN_CONFIG;
-                    
+                $appConfig = require_once $configFile;
+                // Get global blockchain config from config array
+                if (isset($appConfig['blockchain'])) {
+                    $blockchainConfig = $appConfig['blockchain'];
+
                     // Only override if not already set
                     if (!$config['network_name'] && isset($blockchainConfig['network_name'])) {
                         $config['network_name'] = $blockchainConfig['network_name'];

@@ -93,7 +93,7 @@ class NetworkConfig
         return [
             'symbol' => $this->get('network.token_symbol', 'COIN'),
             'name' => $this->get('network.token_name', 'Blockchain Token'),
-            'decimals' => (int)$this->get('network.decimals', 8),
+            'decimals' => (int)$this->get('network.decimals', 18),
             'initial_supply' => (int)$this->get('network.initial_supply', 1000000)
         ];
     }

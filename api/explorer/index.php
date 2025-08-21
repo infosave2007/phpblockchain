@@ -1538,7 +1538,7 @@ function getNetworkConfig(PDO $pdo, string $network): array {
         'consensus_type' => 'pos',
         'total_supply' => null,
         'initial_supply' => null,
-        'decimals' => 8,
+        'decimals' => 18,
         'chain_id' => 1,
         'protocol_version' => '1.0.0',
         'block_time' => 10,

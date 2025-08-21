@@ -513,7 +513,7 @@ function createTables(): array
                 'network.token_name' => $networkConfigData['token_name'] ?? ($networkConfigData['token_symbol'] ?? $config['token_symbol'] ?? 'DFT') . ' Token',
                 'network.initial_supply' => $networkConfigData['initial_supply'] ?? $config['initial_supply'] ?? 1000000,
                 'network.total_supply' => $networkConfigData['total_supply'] ?? $networkConfigData['initial_supply'] ?? $config['initial_supply'] ?? 1000000,
-                'network.decimals' => $networkConfigData['decimals'] ?? 8,
+                'network.decimals' => $networkConfigData['decimals'] ?? 18,
                 'network.chain_id' => $networkConfigData['chain_id'] ?? 1,
                 'network.nodes' => $config['network_nodes'] ?? '',
                 
@@ -924,7 +924,7 @@ function generateGenesis(array $config = []): array
                 ['network.initial_supply', $genesisConfig['initial_supply'] ?? 1000000],
                 ['blockchain.genesis_block', $genesisBlock->getHash()],
                 ['network.chain_id', '1'],
-                ['network.decimals', '8'],
+                ['network.decimals', '18'],
                 ['consensus.algorithm', $genesisConfig['consensus_algorithm'] ?? 'pos'],
                 ['consensus.min_stake', $genesisConfig['min_stake_amount'] ?? 1000],
                 ['network.protocol_version', '1.0.0']
@@ -3059,7 +3059,7 @@ function getNetworkConfiguration(array $nodeUrls, string $logFile): array {
         'consensus_type' => 'pos',
         'total_supply' => null,
         'initial_supply' => null,
-        'decimals' => 8,
+        'decimals' => 18,
         'chain_id' => 1,
         'protocol_version' => '1.0.0',
         'block_time' => 10,
