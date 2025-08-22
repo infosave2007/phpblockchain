@@ -679,16 +679,30 @@ class BlockStorage
         try {
             $this->writeLog("BlockStorage::cleanMempoolAfterBlockSave - Starting mempool cleanup for block " . $block->getHash(), 'DEBUG');
             
-            // Get all transaction hashes from the block
+            // Get all transaction hashes and from addresses from the block
             $transactionHashes = [];
+            $addressesToUpdate = [];
+            
             foreach ($block->getTransactions() as $transaction) {
                 // Handle both Transaction objects and arrays
                 if ($transaction instanceof \Blockchain\Core\Transaction\Transaction) {
                     $txHash = $transaction->getHash();
+                    $fromAddress = $transaction->getFromAddress();
+                    $nonce = $transaction->getNonce();
                 } else {
                     $txHash = $transaction['hash'] ?? hash('sha256', json_encode($transaction));
+                    $fromAddress = $transaction['from'] ?? $transaction['from_address'] ?? '';
+                    $nonce = (int)($transaction['nonce'] ?? 0);
                 }
+                
                 $transactionHashes[] = $txHash;
+                
+                // Track the highest nonce for each address
+                if (!empty($fromAddress) && $fromAddress !== 'genesis' && $fromAddress !== 'genesis_address') {
+                    if (!isset($addressesToUpdate[$fromAddress]) || $nonce > $addressesToUpdate[$fromAddress]) {
+                        $addressesToUpdate[$fromAddress] = $nonce;
+                    }
+                }
             }
             
             if (empty($transactionHashes)) {
@@ -703,6 +717,38 @@ class BlockStorage
             
             $deletedCount = $deleteStmt->rowCount();
             $this->writeLog("BlockStorage::cleanMempoolAfterBlockSave - Removed $deletedCount transactions from mempool", 'INFO');
+            
+            // Update wallet nonces to the highest confirmed nonce for each address
+            foreach ($addressesToUpdate as $address => $highestNonce) {
+                try {
+                    // Get the actual highest confirmed nonce from transactions table
+                    $maxNonceStmt = $this->database->prepare("
+                        SELECT COALESCE(MAX(nonce), -1) as max_confirmed_nonce 
+                        FROM transactions 
+                        WHERE from_address = ? AND status = 'confirmed'
+                    ");
+                    $maxNonceStmt->execute([$address]);
+                    $result = $maxNonceStmt->fetch();
+                    $maxConfirmedNonce = $result ? (int)$result['max_confirmed_nonce'] : -1;
+                    
+                    // Update wallet nonce to match the highest confirmed transaction nonce
+                    $updateNonceStmt = $this->database->prepare("
+                        UPDATE wallets 
+                        SET nonce = ?, updated_at = NOW() 
+                        WHERE address = ?
+                    ");
+                    $updateNonceStmt->execute([$maxConfirmedNonce, $address]);
+                    
+                    $affectedRows = $updateNonceStmt->rowCount();
+                    if ($affectedRows > 0) {
+                        $this->writeLog("BlockStorage::cleanMempoolAfterBlockSave - Updated nonce for $address to $maxConfirmedNonce (was updating to $highestNonce)", 'DEBUG');
+                    } else {
+                        $this->writeLog("BlockStorage::cleanMempoolAfterBlockSave - No wallet found for address $address, may need auto-creation", 'WARNING');
+                    }
+                } catch (\Exception $e) {
+                    $this->writeLog("BlockStorage::cleanMempoolAfterBlockSave - ERROR updating nonce for $address: " . $e->getMessage(), 'ERROR');
+                }
+            }
             
         } catch (\Exception $e) {
             $this->writeLog("BlockStorage::cleanMempoolAfterBlockSave - ERROR cleaning mempool: " . $e->getMessage(), 'ERROR');

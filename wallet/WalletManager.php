@@ -553,7 +553,17 @@ class WalletManager
         // Normalize address
         $address = strtolower($address);
         
-        // Get current nonce from wallet
+        // Get the highest confirmed nonce from transactions table
+        $stmt = $this->database->prepare("
+            SELECT COALESCE(MAX(nonce), -1) as max_confirmed_nonce 
+            FROM transactions 
+            WHERE from_address = ? AND status = 'confirmed'
+        ");
+        $stmt->execute([$address]);
+        $result = $stmt->fetch();
+        $confirmedNonce = $result ? (int)$result['max_confirmed_nonce'] : -1;
+        
+        // Get current nonce from wallet (should match confirmed nonce)
         $stmt = $this->database->prepare("
             SELECT nonce FROM wallets WHERE address = ?
         ");
@@ -565,10 +575,13 @@ class WalletManager
             // Auto-create wallet for MetaMask/external addresses
             writeWalletLog("WalletManager::getNextNonce - Auto-creating wallet for address $address", 'DEBUG');
             $this->autoCreateWallet($address);
-            $currentNonce = 0;
+            $currentNonce = -1;
         } else {
             $currentNonce = (int)$result['nonce'];
         }
+        
+        // Use the higher of confirmed transactions or wallet nonce
+        $baseNonce = max($confirmedNonce, $currentNonce);
         
         // Check for pending transactions with higher nonce
         $stmt = $this->database->prepare("
@@ -580,9 +593,14 @@ class WalletManager
         $stmt->execute([$address]);
         $result = $stmt->fetch();
         
-        $pendingNonce = $result && $result['max_nonce'] ? (int)$result['max_nonce'] : -1;
+        $pendingNonce = $result && $result['max_nonce'] !== null ? (int)$result['max_nonce'] : -1;
         
-        return max($currentNonce, $pendingNonce) + 1;
+        // Next nonce should be max(baseNonce, pendingNonce) + 1
+        $nextNonce = max($baseNonce, $pendingNonce) + 1;
+        
+        writeWalletLog("WalletManager::getNextNonce - Address: $address, Confirmed: $confirmedNonce, Wallet: $currentNonce, Pending: $pendingNonce, Next: $nextNonce", 'DEBUG');
+        
+        return $nextNonce;
     }
     
     /**
@@ -590,13 +608,31 @@ class WalletManager
      */
     public function updateNonce(string $address, int $nonce): bool
     {
+        // Normalize address
+        $address = strtolower($address);
+        
+        // Get the highest confirmed nonce for this address
+        $stmt = $this->database->prepare("
+            SELECT COALESCE(MAX(nonce), -1) as max_confirmed_nonce 
+            FROM transactions 
+            WHERE from_address = ? AND status = 'confirmed'
+        ");
+        $stmt->execute([$address]);
+        $result = $stmt->fetch();
+        $maxConfirmedNonce = $result ? (int)$result['max_confirmed_nonce'] : -1;
+        
+        // Update wallet nonce to the highest confirmed nonce
         $stmt = $this->database->prepare("
             UPDATE wallets 
             SET nonce = ?, updated_at = NOW() 
-            WHERE address = ? AND nonce < ?
+            WHERE address = ?
         ");
         
-        return $stmt->execute([$nonce, $address, $nonce]);
+        $success = $stmt->execute([$maxConfirmedNonce, $address]);
+        
+        writeWalletLog("WalletManager::updateNonce - Address: $address, Input nonce: $nonce, Max confirmed: $maxConfirmedNonce, Updated: " . ($success ? 'yes' : 'no'), 'DEBUG');
+        
+        return $success;
     }
     
     /**

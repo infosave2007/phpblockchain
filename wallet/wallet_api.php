@@ -7696,7 +7696,8 @@ function selectOptimalBroadcastNodes($walletManager, string $transactionHash, in
             ORDER BY connection_count DESC, avg_strength DESC
             LIMIT ?
         ");
-        $stmt->execute([$currentNodeId, (int)$batchSize]);
+        $stmt->bindValue(1, $currentNodeId, PDO::PARAM_STR);
+        $stmt->bindValue(2, (int)$batchSize, PDO::PARAM_INT);
         $optimalNodes = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
         // Process nodes to build URLs from metadata
@@ -7724,14 +7725,21 @@ function selectOptimalBroadcastNodes($walletManager, string $transactionHash, in
             if (count($optimalNodes) > 0) {
                 // Build NOT IN clause for existing nodes
                 $placeholders = str_repeat('?,', max(0, count($optimalNodes) - 1)) . '?';
-                $sql = "SELECT node_id as id, ip_address, port, status, metadata FROM nodes WHERE status = 'active' AND node_id != ? AND node_id NOT IN ($placeholders) ORDER BY RAND() LIMIT " . (int)$additionalCount;
+                if (!empty($placeholders)) {
+                    $limitValue = (int)$additionalCount;
+                    $sql = "SELECT node_id as id, ip_address, port, status, metadata FROM nodes WHERE status = 'active' AND node_id != ? AND node_id NOT IN ($placeholders) ORDER BY node_id LIMIT {$limitValue}";
+                } else {
+                    $limitValue = (int)$additionalCount;
+                    $sql = "SELECT node_id as id, ip_address, port, status, metadata FROM nodes WHERE status = 'active' AND node_id != ? ORDER BY node_id LIMIT {$limitValue}";
+                }
                 $params = [$currentNodeId];
                 foreach ($optimalNodes as $node) {
                     $params[] = $node['id'];
                 }
             } else {
                 // No existing nodes, just exclude current node
-                $sql = "SELECT node_id as id, ip_address, port, status, metadata FROM nodes WHERE status = 'active' AND node_id != ? ORDER BY RAND() LIMIT " . (int)$additionalCount;
+                $limitValue = (int)$additionalCount;
+                $sql = "SELECT node_id as id, ip_address, port, status, metadata FROM nodes WHERE status = 'active' AND node_id != ? ORDER BY node_id LIMIT {$limitValue}";
                 $params = [$currentNodeId];
             }
             
@@ -7769,17 +7777,25 @@ function selectOptimalBroadcastNodes($walletManager, string $transactionHash, in
                 
                 if (!empty($otherNodes)) {
                     $placeholders = str_repeat('?,', max(0, count($otherNodes) - 1)) . '?';
-                    $sql = "SELECT target_node_id FROM network_topology WHERE source_node_id = ? AND target_node_id NOT IN ($placeholders) AND (ttl_expires_at IS NULL OR ttl_expires_at > NOW()) LIMIT " . max(1, (int)$maxConnections);
+                    if (!empty($placeholders)) {
+                        $limitValue = max(1, (int)$maxConnections);
+                        $sql = "SELECT target_node_id FROM network_topology WHERE source_node_id = ? AND target_node_id NOT IN ($placeholders) AND (ttl_expires_at IS NULL OR ttl_expires_at > NOW()) LIMIT {$limitValue}";
+                    } else {
+                        $limitValue = max(1, (int)$maxConnections);
+                        $sql = "SELECT target_node_id FROM network_topology WHERE source_node_id = ? AND (ttl_expires_at IS NULL OR ttl_expires_at > NOW()) LIMIT {$limitValue}";
+                    }
                     $params = [$node['id']];
                     foreach ($otherNodes as $otherNodeId) {
                         $params[] = $otherNodeId;
                     }
                 } else {
-                    $sql = "SELECT target_node_id FROM network_topology WHERE source_node_id = ? AND (ttl_expires_at IS NULL OR ttl_expires_at > NOW()) LIMIT " . max(1, (int)$maxConnections);
+                    $limitValue = max(1, (int)$maxConnections);
+                    $sql = "SELECT target_node_id FROM network_topology WHERE source_node_id = ? AND (ttl_expires_at IS NULL OR ttl_expires_at > NOW()) LIMIT {$limitValue}";
                     $params = [$node['id']];
                 }
             } else {
-                $sql = "SELECT target_node_id FROM network_topology WHERE source_node_id = ? AND (ttl_expires_at IS NULL OR ttl_expires_at > NOW()) LIMIT " . max(1, (int)$maxConnections);
+                $limitValue = max(1, (int)$maxConnections);
+                $sql = "SELECT target_node_id FROM network_topology WHERE source_node_id = ? AND (ttl_expires_at IS NULL OR ttl_expires_at > NOW()) LIMIT {$limitValue}";
                 $params = [$node['id']];
             }
             
@@ -8200,6 +8216,28 @@ function checkAndHandleTransactionReplacement(PDO $pdo, $newTransaction, string 
         $debugLog = __DIR__ . '/../logs/debug.log';
         $timestamp = date('Y-m-d H:i:s');
         @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: Searching for conflicts with from_address={$fromAddress}, nonce={$nonce}" . PHP_EOL, FILE_APPEND);
+        
+        // First check if this nonce is already confirmed
+        $confirmedStmt = $pdo->prepare("
+            SELECT hash, amount, to_address, status 
+            FROM transactions 
+            WHERE from_address = ? AND nonce = ? AND status = 'confirmed'
+            LIMIT 1
+        ");
+        $confirmedStmt->execute([$fromAddress, $nonce]);
+        $confirmedTx = $confirmedStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($confirmedTx) {
+            // This nonce is already used in a confirmed transaction
+            writeLog("🔥 RBF: Nonce {$nonce} already used in confirmed transaction {$confirmedTx['hash']}", 'WARNING');
+            @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: Nonce {$nonce} already confirmed in tx {$confirmedTx['hash']}" . PHP_EOL, FILE_APPEND);
+            return [
+                'action' => 'rejected',
+                'existing_hash' => $confirmedTx['hash'],
+                'reason' => 'nonce_already_confirmed',
+                'message' => 'This nonce has already been used in a confirmed transaction'
+            ];
+        }
         
         // Check for existing transactions with same from_address and nonce
         $stmt = $pdo->prepare("
