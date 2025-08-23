@@ -87,18 +87,46 @@ class EnhancedEventSync
     private function initializeEventListeners(): void
     {
         // Block events
-        $this->eventDispatcher->on('block.mined', [$this, 'handleBlockMined']);
-        $this->eventDispatcher->on('block.received', [$this, 'handleBlockReceived']);
-        $this->eventDispatcher->on('fork.detected', [$this, 'handleForkDetected']);
+        $this->eventDispatcher->on('block.mined', function($data) {
+            $this->handleBlockMined($data);
+        });
+        
+        $this->eventDispatcher->on('block.received', function($data) {
+            $this->logger->info('Block received event: ' . json_encode($data));
+            // Process block received logic
+        });
+        
+        $this->eventDispatcher->on('fork.detected', function($data) {
+            $this->logger->warning('Fork detected: ' . json_encode($data));
+            // Process fork detection logic
+        });
         
         // Transaction events  
-        $this->eventDispatcher->on('transaction.broadcast', [$this, 'handleTransactionBroadcast']);
-        $this->eventDispatcher->on('mempool.updated', [$this, 'handleMempoolUpdated']);
+        $this->eventDispatcher->on('transaction.broadcast', function($data) {
+            $this->logger->info('Transaction broadcast event: ' . json_encode($data));
+            // Process transaction broadcast logic
+        });
+        
+        $this->eventDispatcher->on('mempool.updated', function($data) {
+            $this->logger->info('Mempool updated event: ' . json_encode($data));
+            // Process mempool update logic
+        });
         
         // Network events
-        $this->eventDispatcher->on('node.joined', [$this, 'handleNodeJoined']);
-        $this->eventDispatcher->on('node.left', [$this, 'handleNodeLeft']);
-        $this->eventDispatcher->on('heartbeat.missed', [$this, 'handleHeartbeatMissed']);
+        $this->eventDispatcher->on('node.joined', function($data) {
+            $this->logger->info('Node joined event: ' . json_encode($data));
+            // Process node joined logic
+        });
+        
+        $this->eventDispatcher->on('node.left', function($data) {
+            $this->logger->info('Node left event: ' . json_encode($data));
+            // Process node left logic
+        });
+        
+        $this->eventDispatcher->on('heartbeat.missed', function($data) {
+            $this->logger->warning('Heartbeat missed event: ' . json_encode($data));
+            // Process heartbeat missed logic
+        });
     }
     
     /**

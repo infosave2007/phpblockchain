@@ -2579,7 +2579,7 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
         try {
             // Force mine block regardless of mempool count for instant confirmation
             $maxTransactions = $config['auto_mine.max_transactions_per_block'] ?? 100;
-            $mempool = new \Blockchain\Core\Transaction\MempoolManager($pdo, ['min_fee' => 0.001]);
+            $mempool = createMempoolManagerWithAutoSync($pdo, $walletManager, $config);
             $transactions = $mempool->getTransactionsForBlock($maxTransactions);
             
             if (!empty($transactions)) {
@@ -4096,7 +4096,7 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                     try {
                         $config = getNetworkConfigFromDatabase($pdo);
                         $maxTransactions = $config['auto_mine.max_transactions_per_block'] ?? 100;
-                        $mempool = new \Blockchain\Core\Transaction\MempoolManager($pdo, ['min_fee' => 0.001]);
+                        $mempool = createMempoolManagerWithAutoSync($pdo, $walletManager, $config);
                         $transactions = $mempool->getTransactionsForBlock($maxTransactions);
                         
                         if (!empty($transactions)) {
@@ -4262,7 +4262,7 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                         try {
                             $config = getNetworkConfigFromDatabase($pdo);
                             $maxTransactions = $config['auto_mine.max_transactions_per_block'] ?? 100;
-                            $mempool = new \Blockchain\Core\Transaction\MempoolManager($pdo, ['min_fee' => 0.001]);
+                            $mempool = createMempoolManagerWithAutoSync($pdo, $walletManager, $config);
                             $transactions = $mempool->getTransactionsForBlock($maxTransactions);
                             
                             if (!empty($transactions)) {
@@ -6728,7 +6728,7 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
             $added = true; // Treat duplicate as success (idempotent)
         } else {
             // No replacement needed, add normally via MempoolManager
-            $mempool = new \Blockchain\Core\Transaction\MempoolManager($pdo, ['min_fee' => 0.001]);
+            $mempool = createMempoolManagerWithAutoSync($pdo, $walletManager, $config ?? []);
             $added = $mempool->addTransaction($tx);
         }
         
@@ -6824,7 +6824,7 @@ function autoMineBlocks($walletManager, array $config): array {
         
         // Get transactions for block
         $maxTransactions = $config['auto_mine.max_transactions_per_block'] ?? 100;
-        $mempool = new \Blockchain\Core\Transaction\MempoolManager($pdo, ['min_fee' => 0.001]);
+        $mempool = createMempoolManagerWithAutoSync($pdo, $walletManager, $config);
         $transactions = $mempool->getTransactionsForBlock($maxTransactions);
         
         writeLog("autoMineBlocks: Retrieved " . count($transactions) . " transactions for mining", 'INFO');
@@ -6864,6 +6864,14 @@ function autoMineBlocks($walletManager, array $config): array {
                 ]);
                 
                 writeLog('Enhanced event-driven sync notification sent', 'INFO');
+                
+                // Trigger automatic sync after block mining
+                try {
+                    writeLog('Triggering auto-sync after block mining', 'INFO');
+                    performBackgroundSync($walletManager, $config);
+                } catch (Exception $e) {
+                    writeLog('Auto-sync after block mining failed: ' . $e->getMessage(), 'WARNING');
+                }
             }
             
             // Fallback to existing notification system
@@ -6896,6 +6904,14 @@ function autoMineBlocks($walletManager, array $config): array {
                 upsertWalletBalance($pdo, $addr);
             }
         } catch (Throwable $e) { /* ignore */ }
+        
+        // Also trigger background sync after mining for immediate network synchronization
+        try {
+            writeLog('Triggering background sync after successful mining', 'INFO');
+            performBackgroundSync($walletManager, $config);
+        } catch (Exception $e) {
+            writeLog('Background sync after mining failed: ' . $e->getMessage(), 'WARNING');
+        }
         
         return [
             'mined' => true,
@@ -8526,6 +8542,49 @@ function checkAndHandleTransactionReplacement(PDO $pdo, $newTransaction, string 
             'error' => $e->getMessage(),
             'reason' => 'exception'
         ];
+    }
+}
+
+/**
+ * Create MempoolManager with event dispatching for auto-sync
+ */
+function createMempoolManagerWithAutoSync(PDO $pdo, $walletManager, array $config = []): \Blockchain\Core\Transaction\MempoolManager {
+    try {
+        // Load required classes
+        require_once __DIR__ . '/../core/Events/EventDispatcher.php';
+        require_once __DIR__ . '/../core/Logging/NullLogger.php';
+        
+        // Create event dispatcher
+        $eventDispatcher = new \Blockchain\Core\Events\EventDispatcher();
+        
+        // Add event listeners for automatic synchronization
+        $eventDispatcher->on('mempool.transaction.added', function($eventData) use ($walletManager, $config) {
+            try {
+                writeLog("Mempool transaction added - triggering auto-sync: " . ($eventData['transaction_hash'] ?? 'unknown'), 'INFO');
+                // Trigger background sync after mempool update
+                performBackgroundSync($walletManager, $config);
+            } catch (Exception $e) {
+                writeLog("Auto-sync after mempool add failed: " . $e->getMessage(), 'WARNING');
+            }
+        });
+        
+        $eventDispatcher->on('mempool.transaction.removed', function($eventData) use ($walletManager, $config) {
+            try {
+                writeLog("Mempool transaction removed - triggering auto-sync: " . ($eventData['transaction_hash'] ?? 'unknown'), 'INFO');
+                // Trigger background sync after mempool update
+                performBackgroundSync($walletManager, $config);
+            } catch (Exception $e) {
+                writeLog("Auto-sync after mempool remove failed: " . $e->getMessage(), 'WARNING');
+            }
+        });
+        
+        // Create MempoolManager with event dispatcher
+        return new \Blockchain\Core\Transaction\MempoolManager($pdo, ['min_fee' => 0.001], $eventDispatcher);
+        
+    } catch (Exception $e) {
+        writeLog("Failed to create MempoolManager with auto-sync: " . $e->getMessage(), 'WARNING');
+        // Fallback to regular MempoolManager
+        return new \Blockchain\Core\Transaction\MempoolManager($pdo, ['min_fee' => 0.001]);
     }
 }
 

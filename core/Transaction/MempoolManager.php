@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Blockchain\Core\Transaction;
 
 use Blockchain\Core\Transaction\Transaction;
+use Blockchain\Core\Events\EventDispatcher;
 use PDO;
 use Exception;
 
@@ -18,6 +19,7 @@ class MempoolManager
     private array $config;
     private int $maxSize;
     private float $minFee;
+    private ?EventDispatcher $eventDispatcher;
     
     /**
      * Normalize transaction hash to lowercase with 0x prefix if it's hex.
@@ -51,12 +53,13 @@ class MempoolManager
         return [$norm, $noPrefix];
     }
     
-    public function __construct(PDO $database, array $config = [])
+    public function __construct(PDO $database, array $config = [], ?EventDispatcher $eventDispatcher = null)
     {
         $this->database = $database;
         $this->config = $config;
         $this->maxSize = $config['max_size'] ?? 10000;
         $this->minFee = $config['min_fee'] ?? 0.001;
+        $this->eventDispatcher = $eventDispatcher;
     }
     
     /**
@@ -134,6 +137,19 @@ class MempoolManager
                 throw new Exception("Database insert failed: " . ($errorInfo[2] ?? 'Unknown error'));
             }
             
+            // Trigger mempool update event for automatic synchronization
+            if ($this->eventDispatcher) {
+                $this->eventDispatcher->dispatch('mempool.transaction.added', [
+                    'transaction_hash' => $normHash,
+                    'from_address' => $transaction->getFromAddress(),
+                    'to_address' => $transaction->getToAddress(),
+                    'amount' => $transaction->getAmount(),
+                    'fee' => $transaction->getFee(),
+                    'mempool_size' => $this->getSize(),
+                    'timestamp' => time()
+                ]);
+            }
+            
             return true;
             
         } catch (Exception $e) {
@@ -147,9 +163,22 @@ class MempoolManager
      */
     public function removeTransaction(string $txHash): bool
     {
-    [$h0, $h1] = $this->hashVariants($txHash);
-    $stmt = $this->database->prepare("DELETE FROM mempool WHERE tx_hash = ? OR tx_hash = ?");
-    return $stmt->execute([$h0, $h1]);
+        [$h0, $h1] = $this->hashVariants($txHash);
+        $stmt = $this->database->prepare("DELETE FROM mempool WHERE tx_hash = ? OR tx_hash = ?");
+        $result = $stmt->execute([$h0, $h1]);
+        
+        if ($result && $stmt->rowCount() > 0) {
+            // Trigger mempool update event for automatic synchronization
+            if ($this->eventDispatcher) {
+                $this->eventDispatcher->dispatch('mempool.transaction.removed', [
+                    'transaction_hash' => $txHash,
+                    'mempool_size' => $this->getSize(),
+                    'timestamp' => time()
+                ]);
+            }
+        }
+        
+        return $result;
     }
     
     /**
