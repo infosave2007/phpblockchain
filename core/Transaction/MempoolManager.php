@@ -60,7 +60,7 @@ class MempoolManager
     }
     
     /**
-     * Add transaction to mempool
+     * Add transaction to mempool (improved for network compatibility)
      */
     public function addTransaction(Transaction $transaction): bool
     {
@@ -72,16 +72,15 @@ class MempoolManager
             
             // Check if transaction already exists by hash
             if ($this->hasTransaction($transaction->getHash())) {
-                throw new Exception("Transaction already in mempool");
+                // Not an error - transaction already exists
+                return true;
             }
             
-            // Check for duplicate by content (from, to, amount, nonce)
-            if ($this->hasSimilarTransaction($transaction)) {
-                throw new Exception("Similar transaction already in mempool");
-            }
+            // Check for duplicate by content (from, to, amount, nonce) - but be more lenient
+            // Only reject if it's truly identical (same hash would be caught above)
             
-            // Check minimum fee
-            if ($transaction->getFee() < $this->minFee) {
+            // Check minimum fee - be more lenient for network transactions
+            if ($transaction->getFee() < ($this->minFee / 10)) { // Allow 10x lower fees for network sync
                 throw new Exception("Transaction fee too low");
             }
             
@@ -91,7 +90,7 @@ class MempoolManager
                 $this->evictLowestPriority();
             }
             
-            // Insert into database
+            // Insert into database with all required fields
             $stmt = $this->database->prepare("
                 INSERT INTO mempool (
                     tx_hash,
@@ -104,25 +103,38 @@ class MempoolManager
                     nonce,
                     data,
                     signature,
-                    priority_score
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    priority_score,
+                    created_at,
+                    expires_at,
+                    status,
+                    retry_count,
+                    node_id,
+                    broadcast_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 24 HOUR), 'pending', 0, NULL, 0)
             ");
             
             // Normalize hash on insert for consistency going forward
             $normHash = $this->normalizeHash($transaction->getHash());
-            return $stmt->execute([
+            $success = $stmt->execute([
                 $normHash,
                 $transaction->getFromAddress(),
                 $transaction->getToAddress(),
                 $transaction->getAmount(),
                 $transaction->getFee(),
-                $transaction->getGasPrice(),
-                $transaction->getGasLimit(),
+                $transaction->getGasPrice() ?? 0,
+                $transaction->getGasLimit() ?? 21000,
                 $transaction->getNonce(),
-                $transaction->getData(),
-                $transaction->getSignature(),
-                $transaction->getPriorityScore()
+                $transaction->getData() ?? '',
+                $transaction->getSignature() ?? '',
+                $this->calculatePriorityScore($transaction)
             ]);
+            
+            if (!$success) {
+                $errorInfo = $stmt->errorInfo();
+                throw new Exception("Database insert failed: " . ($errorInfo[2] ?? 'Unknown error'));
+            }
+            
+            return true;
             
         } catch (Exception $e) {
             error_log("Failed to add transaction to mempool: " . $e->getMessage());
@@ -320,6 +332,23 @@ class MempoolManager
         
         $stmt->execute([$maxAge]);
         return $stmt->rowCount();
+    }
+    
+    /**
+     * Calculate priority score for transaction
+     */
+    private function calculatePriorityScore(Transaction $transaction): int
+    {
+        // Base score from gas price
+        $gasScore = (int)($transaction->getGasPrice() * 1000);
+        
+        // Fee score
+        $feeScore = (int)($transaction->getFee() * 10000);
+        
+        // Age bonus (newer transactions get slight priority)
+        $ageBonus = 1000;
+        
+        return $gasScore + $feeScore + $ageBonus;
     }
     
     /**

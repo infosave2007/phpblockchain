@@ -69,12 +69,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 require_once __DIR__ . '/WalletLogger.php';
 
 /**
- * Log helper wrapper (kept for backward compatibility)
+ * Log helper wrapper (respects debug variable)
  */
 function writeLog($message, $level = 'DEBUG') {
+    // Check debug level from various sources
+    static $debugLevel = null;
+    
+    if ($debugLevel === null) {
+        $debugValue = getenv('DEBUG') 
+            ?: getenv('WALLET_DEBUG') 
+            ?: getenv('API_DEBUG')
+            ?: ($GLOBALS['config']['debug'] ?? null)
+            ?: ($_GET['debug'] ?? null)
+            ?: ($GLOBALS['debug'] ?? null);
+            
+        // Convert to integer (0 = no logs, 1 = verbose logs)
+        // Default to verbose logging unless explicitly disabled
+        $debugLevel = ($debugValue === '0' || $debugValue === 'false' || $debugValue === 'off' || $debugValue === 'no') ? 0 : 1;
+    }
+    
+    // If debug=0, don't log anything
+    if ($debugLevel === 0) {
+        return;
+    }
+    
     try {
         // Try to use WalletLogger first
-    \Blockchain\Wallet\WalletLogger::log($message, $level);
+        \Blockchain\Wallet\WalletLogger::log($message, $level);
     } catch (\Throwable $e) {
         // Fallback to direct file logging if WalletLogger fails
         $baseDir = dirname(__DIR__);
@@ -103,11 +124,24 @@ function getCurrentBlockHeight(PDO $pdo): int
     }
 }
 
-// Early, dependency-free request logging to guarantee request traces even if later init fails
-// This writes a minimal entry and preserves body/request ID for later use.
+// Early, dependency-free request logging (respects debug variable)
 if (!defined('WALLET_API_EARLY_LOGGED')) {
     define('WALLET_API_EARLY_LOGGED', true);
-    try {
+    
+    // Check debug level first - default to enabled unless explicitly disabled
+    $debugValue = getenv('DEBUG') 
+        ?: getenv('WALLET_DEBUG') 
+        ?: getenv('API_DEBUG')
+        ?: ($GLOBALS['config']['debug'] ?? null)
+        ?: ($_GET['debug'] ?? null)
+        ?: ($GLOBALS['debug'] ?? null);
+        
+    // Default to verbose logging (1) unless explicitly disabled (0)
+    $debugLevel = ($debugValue === '0' || $debugValue === 'false' || $debugValue === 'off' || $debugValue === 'no') ? 0 : 1;
+    
+    // Only log if debug=1
+    if ($debugLevel > 0) {
+        try {
         $baseDir = dirname(__DIR__);
         $logDir = $baseDir . '/logs';
         if (!is_dir($logDir)) {
@@ -340,9 +374,10 @@ if (!defined('WALLET_API_EARLY_LOGGED')) {
             $line2 = "[{$timestamp}] [REQUEST] [{$reqId}] body_len=0 body_preview: (empty)";
             @file_put_contents($logFile, $line2 . PHP_EOL, FILE_APPEND | LOCK_EX);
         }
-    } catch (\Throwable $e) {
-        // Never break the API path due to logging issues
-    }
+        } catch (\Throwable $e) {
+            // Never break the API path due to logging issues
+        }
+    } // End debug=1 conditional
 }
 
 // Fatal error handler
@@ -6675,7 +6710,18 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
             writeLog("RBF SUCCESS: old tx {$replacementResult['old_hash']} replaced by new tx {$txHash} (higher gas price)", 'INFO');
             $added = true; // Replacement counts as successful addition
         } elseif ($replacementResult['action'] === 'rejected') {
-            writeLog("RBF REJECTED: new tx {$txHash} rejected (reason: {$replacementResult['reason']})", 'INFO');
+            $rejectReason = $replacementResult['reason'] ?? 'unknown';
+            if ($rejectReason === 'duplicate_transaction') {
+                writeLog("RBF REJECTED: Duplicate transaction - {$replacementResult['message']}", 'WARNING');
+                return [
+                    'success' => false,
+                    'error' => 'Duplicate transaction: ' . $replacementResult['message'],
+                    'error_code' => 'DUPLICATE_TRANSACTION',
+                    'existing_hash' => $replacementResult['existing_hash']
+                ];
+            } else {
+                writeLog("RBF REJECTED: new tx {$txHash} rejected (reason: {$replacementResult['reason']})", 'INFO');
+            }
             $added = false;
         } elseif ($replacementResult['action'] === 'duplicate') {
             writeLog("RBF DUPLICATE: identical transaction already exists {$replacementResult['existing_hash']}", 'DEBUG');
@@ -6800,12 +6846,42 @@ function autoMineBlocks($walletManager, array $config): array {
         
         // After successful mining, broadcast the new block to other nodes to trigger event-driven sync
         try {
+            // Enhanced event-driven notification
+            if (class_exists('\Blockchain\Core\Sync\EnhancedEventSync')) {
+                require_once __DIR__ . '/../core/Events/EventDispatcher.php';
+                require_once __DIR__ . '/../core/Sync/EnhancedEventSync.php';
+                
+                $eventDispatcher = new \Blockchain\Core\Events\EventDispatcher();
+                $enhancedSync = new \Blockchain\Core\Sync\EnhancedEventSync($eventDispatcher, new \Blockchain\Core\Logging\NullLogger());
+                
+                // Trigger block mined event for immediate network propagation
+                $eventDispatcher->dispatch('block.mined', [
+                    'block' => null, // Block object if available
+                    'hash' => $blockResult['hash'],
+                    'height' => $blockResult['height'],
+                    'transactions' => $transactions,
+                    'mined_at' => time()
+                ]);
+                
+                writeLog('Enhanced event-driven sync notification sent', 'INFO');
+            }
+            
+            // Fallback to existing notification system
             notifyPeersAboutNewBlock($pdo, [
                 'hash' => $blockResult['hash'],
                 'height' => $blockResult['height'],
             ]);
         } catch (\Throwable $e) {
-            writeLog('autoMineBlocks: Broadcast after mining failed: ' . $e->getMessage(), 'WARNING');
+            writeLog('autoMineBlocks: Enhanced notification failed: ' . $e->getMessage(), 'WARNING');
+            // Fallback to existing notification
+            try {
+                notifyPeersAboutNewBlock($pdo, [
+                    'hash' => $blockResult['hash'],
+                    'height' => $blockResult['height'],
+                ]);
+            } catch (\Throwable $e2) {
+                writeLog('autoMineBlocks: Fallback notification failed: ' . $e2->getMessage(), 'WARNING');
+            }
         }
         // Update cached balances for affected addresses after mining
         try {
@@ -7215,6 +7291,49 @@ function notifyPeersAboutNewBlock(PDO $pdo, array $block): void {
             } catch (\Throwable $e) {
                 // best-effort
             }
+        }
+        
+        // Enhanced event-driven notification for improved real-time sync
+        try {
+            $eventPayload = [
+                'type' => 'block.added',
+                'priority' => 1,
+                'data' => [
+                    'block_hash' => $block['hash'] ?? '',
+                    'block_height' => (int)($block['height'] ?? 0),
+                    'timestamp' => time(),
+                    'miner_node' => $source,
+                    'event_id' => $payload['event_id']
+                ]
+            ];
+            
+            $eventJson = json_encode($eventPayload, JSON_UNESCAPED_SLASHES);
+            
+            // Send enhanced notifications to active nodes
+            foreach (array_keys($unique) as $nodeUrl) {
+                if ($source && stripos($nodeUrl, $source) !== false) { continue; }
+                
+                $enhancedUrl = rtrim($nodeUrl, '/') . '/api/sync/events.php';
+                
+                $ctx = stream_context_create([
+                    'http' => [
+                        'method' => 'POST',
+                        'header' => "Content-Type: application/json\r\n" .
+                                   "X-Event-Priority: 1\r\n" .
+                                   "X-Source-Node: {$source}\r\n" .
+                                   "X-Event-Type: block.added\r\n" .
+                                   "Content-Length: " . strlen($eventJson) . "\r\n",
+                        'content' => $eventJson,
+                        'timeout' => 2,
+                    ]
+                ]);
+                
+                @file_get_contents($enhancedUrl, false, $ctx);
+            }
+            
+            writeLog('Enhanced event notifications sent to ' . count(array_keys($unique)) . ' nodes', 'DEBUG');
+        } catch (\Throwable $e) {
+            writeLog('Enhanced event notification failed: ' . $e->getMessage(), 'WARNING');
         }
     } catch (\Throwable $e) {
         // swallow
@@ -8221,16 +8340,22 @@ function checkAndHandleTransactionReplacement(PDO $pdo, $newTransaction, string 
         // Force logging for debugging
         writeLog("🔥 RBF Check: from={$fromAddress}, nonce={$nonce}, new_gas_price={$newGasPrice}", 'INFO');
         
-        // Debug log the SQL query
-        $debugLog = __DIR__ . '/../logs/debug.log';
-        $timestamp = date('Y-m-d H:i:s');
-        @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: Searching for conflicts with from_address={$fromAddress}, nonce={$nonce}" . PHP_EOL, FILE_APPEND);
+        // Debug log the SQL query (only if debug=1)
+        $debugValue = getenv('DEBUG') ?: getenv('WALLET_DEBUG') ?: ($_GET['debug'] ?? null) ?: ($GLOBALS['debug'] ?? null);
+        $debugLevel = ($debugValue === '0' || $debugValue === '' || $debugValue === false) ? 0 : 1;
         
-        // First check if this nonce is already confirmed
+        if ($debugLevel > 0) {
+            $debugLog = __DIR__ . '/../logs/debug.log';
+            $timestamp = date('Y-m-d H:i:s');
+            @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: Searching for conflicts with from_address={$fromAddress}, nonce={$nonce}" . PHP_EOL, FILE_APPEND);
+        }
+        
+        // First check if this nonce is already confirmed (improved check)
         $confirmedStmt = $pdo->prepare("
-            SELECT hash, amount, to_address, status 
+            SELECT hash, amount, to_address, status, timestamp 
             FROM transactions 
             WHERE from_address = ? AND nonce = ? AND status = 'confirmed'
+            ORDER BY timestamp DESC
             LIMIT 1
         ");
         $confirmedStmt->execute([$fromAddress, $nonce]);
@@ -8238,14 +8363,42 @@ function checkAndHandleTransactionReplacement(PDO $pdo, $newTransaction, string 
         
         if ($confirmedTx) {
             // This nonce is already used in a confirmed transaction
+            // Check if it's an identical transaction (same amount, to_address)
+            $newAmount = $newTransaction->getAmount();
+            $newToAddress = $newTransaction->getTo();
+            $confirmedAmount = (float)$confirmedTx['amount'];
+            $confirmedToAddress = $confirmedTx['to_address'];
+            
             writeLog("🔥 RBF: Nonce {$nonce} already used in confirmed transaction {$confirmedTx['hash']}", 'WARNING');
+            writeLog("🔥 RBF: Comparing - New: amount={$newAmount}, to={$newToAddress} vs Confirmed: amount={$confirmedAmount}, to={$confirmedToAddress}", 'INFO');
             @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: Nonce {$nonce} already confirmed in tx {$confirmedTx['hash']}" . PHP_EOL, FILE_APPEND);
-            return [
-                'action' => 'rejected',
-                'existing_hash' => $confirmedTx['hash'],
-                'reason' => 'nonce_already_confirmed',
-                'message' => 'This nonce has already been used in a confirmed transaction'
-            ];
+            @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: Comparing transactions - New: amount={$newAmount}, to={$newToAddress} vs Confirmed: amount={$confirmedAmount}, to={$confirmedToAddress}" . PHP_EOL, FILE_APPEND);
+            
+            // Enhanced debugging - show exact comparison details
+            $amountMatch = ($newAmount === $confirmedAmount);
+            $addressMatch = (strtolower($newToAddress) === strtolower($confirmedToAddress));
+            writeLog("🔥 RBF: Amount match: {$amountMatch} ({$newAmount} === {$confirmedAmount}), Address match: {$addressMatch}", 'INFO');
+            @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: Detailed comparison - Amount match: {$amountMatch}, Address match: {$addressMatch}" . PHP_EOL, FILE_APPEND);
+            
+            // If this is an identical transaction, reject it (duplicate)
+            if ($newAmount === $confirmedAmount && strtolower($newToAddress) === strtolower($confirmedToAddress)) {
+                writeLog("🔥 RBF: REJECTING identical transaction (duplicate)", 'WARNING');
+                @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: REJECTING identical transaction (duplicate)" . PHP_EOL, FILE_APPEND);
+                return [
+                    'action' => 'rejected',
+                    'existing_hash' => $confirmedTx['hash'],
+                    'reason' => 'duplicate_transaction',
+                    'message' => "Duplicate transaction: identical amount and recipient already confirmed with hash {$confirmedTx['hash']}"
+                ];
+            }
+            
+            // Different transaction content with same nonce - this is valid, allow it
+            writeLog("🔥 RBF: ALLOWING different transaction with same nonce (valid new transaction)", 'INFO');
+            writeLog("🔥 RBF: CONFIRMED: amount={$confirmedAmount}, to={$confirmedToAddress} vs NEW: amount={$newAmount}, to={$newToAddress}", 'INFO');
+            @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: ALLOWING different transaction - valid case" . PHP_EOL, FILE_APPEND);
+            
+            // Continue processing normally (no action needed, just log and continue)
+            return ['action' => 'add', 'reason' => 'different_content_valid'];
         }
         
         // Check for existing transactions with same from_address and nonce

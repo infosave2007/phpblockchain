@@ -546,7 +546,7 @@ class WalletManager
     }
     
         /**
-* Get next nonce for address
+* Get next nonce for address (improved to prevent RBF conflicts)
      */
     public function getNextNonce(string $address): int
     {
@@ -583,20 +583,33 @@ class WalletManager
         // Use the higher of confirmed transactions or wallet nonce
         $baseNonce = max($confirmedNonce, $currentNonce);
         
-        // Check for pending transactions with higher nonce
+        // Get the highest pending nonce from mempool
         $stmt = $this->database->prepare("
-            SELECT MAX(nonce) as max_nonce 
+            SELECT COALESCE(MAX(nonce), -1) as max_pending_nonce 
             FROM mempool 
             WHERE from_address = ?
         ");
-        
         $stmt->execute([$address]);
         $result = $stmt->fetch();
+        $pendingNonce = $result ? (int)$result['max_pending_nonce'] : -1;
         
-        $pendingNonce = $result && $result['max_nonce'] !== null ? (int)$result['max_nonce'] : -1;
-        
-        // Next nonce should be max(baseNonce, pendingNonce) + 1
+        // Calculate next nonce
         $nextNonce = max($baseNonce, $pendingNonce) + 1;
+        
+        // Additional validation: ensure no confirmed transaction exists with this nonce
+        $stmt = $this->database->prepare("
+            SELECT COUNT(*) FROM transactions 
+            WHERE from_address = ? AND nonce = ? AND status = 'confirmed'
+        ");
+        $stmt->execute([$address, $nextNonce]);
+        $conflictCount = (int)$stmt->fetchColumn();
+        
+        // If there's a conflict, find the first available nonce after confirmed transactions
+        while ($conflictCount > 0) {
+            $nextNonce++;
+            $stmt->execute([$address, $nextNonce]);
+            $conflictCount = (int)$stmt->fetchColumn();
+        }
         
         writeWalletLog("WalletManager::getNextNonce - Address: $address, Confirmed: $confirmedNonce, Wallet: $currentNonce, Pending: $pendingNonce, Next: $nextNonce", 'DEBUG');
         
@@ -839,7 +852,7 @@ class WalletManager
             // Add to mempool
             $stmt = $this->database->prepare("
                 INSERT INTO mempool (
-                    hash, from_address, to_address, amount, fee, 
+                    tx_hash, from_address, to_address, amount, fee, 
                     nonce, gas_limit, gas_price, data, signature, 
                     timestamp, status
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
