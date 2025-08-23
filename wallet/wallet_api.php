@@ -4019,6 +4019,7 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                         'gas_limit' => isset($parsed['gas']) ? (is_string($parsed['gas']) && str_starts_with(strtolower($parsed['gas']), '0x') ? (int)hexdec($parsed['gas']) : (int)$parsed['gas']) : 21000,
                         'gas_price' => isset($parsed['gasPrice']) ? (is_string($parsed['gasPrice']) && str_starts_with(strtolower($parsed['gasPrice']), '0x') ? (int)hexdec($parsed['gasPrice']) : (int)$parsed['gasPrice']) : 0,
                         'data' => is_string($parsed['input'] ?? null) ? ($parsed['input'] ?: '0x') : '0x',
+                        'raw_data' => $rawHex, // FIX: Save original raw transaction data
                         'signature' => 'raw',
                         'status' => 'pending',
                         'timestamp' => time(),
@@ -6398,6 +6399,14 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
         $dataHex = $transaction['data'] ?? ($transaction['input'] ?? null);
         if ($dataHex === '') { $dataHex = null; }
         
+        // FIX: Use raw_data if available
+        $rawData = $transaction['raw_data'] ?? null;
+        if ($rawData && is_string($rawData)) {
+            // If raw data is available, use it as transaction data
+            $dataHex = $rawData;
+            writeLog('Using raw_data for transaction data: ' . substr($rawData, 0, 100) . '...', 'DEBUG');
+        }
+        
         // Create Transaction object to get the REAL transaction hash
         $tx = new \Blockchain\Core\Transaction\Transaction(
             $from,
@@ -6711,7 +6720,7 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
                     ];
                     @file_put_contents($path, json_encode([
             'hash' => $txHash,
-                        'raw' => null,
+                        'raw' => $transaction['raw_data'] ?? null, // FIX: Save actual raw data instead of null
                         'parsed' => $parsed,
                         'received_at' => time()
                     ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
