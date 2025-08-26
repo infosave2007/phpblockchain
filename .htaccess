@@ -8,7 +8,18 @@ RewriteRule ^(.*)$ index.php [QSA,L]
 RewriteCond %{REQUEST_URI} ^/api/
 RewriteRule ^api/(.*)$ api/$1 [QSA,L]
 
-# Handle other requests
+# Handle explorer requests - allow direct access to static files
+RewriteCond %{REQUEST_URI} ^/explorer/
+RewriteCond %{REQUEST_FILENAME} -f
+RewriteRule ^(.*)$ - [L]
+
+# Handle assets requests - allow direct access
+RewriteCond %{REQUEST_URI} ^/assets/
+RewriteCond %{REQUEST_FILENAME} -f
+RewriteRule ^(.*)$ - [L]
+
+# Handle other requests (but not explorer)
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_URI} !^/explorer/
 RewriteRule ^(.*)$ index.php [QSA,L]
