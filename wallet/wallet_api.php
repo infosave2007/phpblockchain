@@ -1232,12 +1232,104 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             $transaction = $input['transaction'] ?? null;
             $sourceNode = $input['source_node'] ?? '';
             $timestamp = $input['timestamp'] ?? time();
-            
+
             if (!$transaction) {
                 throw new Exception('Transaction data is required');
             }
-            
+
             $result = receiveBroadcastedTransaction($walletManager, $transaction, $sourceNode, $timestamp);
+            break;
+
+        case 'process_transfer_background':
+            // Background processing for transfer transactions (called via HTTP self-request)
+            $transaction = $input['transaction'] ?? null;
+            $fromAddress = $input['from_address'] ?? '';
+            $toAddress = $input['to_address'] ?? '';
+
+            if (!$transaction || !$fromAddress || !$toAddress) {
+                throw new Exception('Transaction data, from_address and to_address are required');
+            }
+
+            writeLog("BACKGROUND: Starting background processing for transfer: $fromAddress -> $toAddress", 'INFO');
+
+            try {
+                // 7. Record in blockchain (background)
+                writeLog("BACKGROUND: Recording transaction in blockchain (background)", 'INFO');
+                $blockchainResult = $blockchainManager->recordTransactionInBlockchain($transaction);
+                writeLog("BACKGROUND: Blockchain recording completed", 'INFO');
+
+                // 8. Update transaction status
+                $transaction['status'] = 'confirmed';
+                writeLog("BACKGROUND: Transaction status updated to confirmed", 'INFO');
+
+                // 9. Broadcast transaction to all network nodes (background)
+                writeLog("BACKGROUND: Broadcasting transaction to network (background)", 'INFO');
+                $networkResult = broadcastTransactionToNetwork($transaction, $pdo);
+                writeLog("BACKGROUND: Network broadcast completed", 'INFO');
+
+                // 10. Force immediate block mining (background)
+                writeLog("BACKGROUND: Starting block mining (background)", 'INFO');
+                $config = getNetworkConfigFromDatabase($pdo);
+                $maxTransactions = $config['auto_mine.max_transactions_per_block'] ?? 100;
+                $mempool = createMempoolManagerWithAutoSync($pdo, $walletManager, $config);
+                $transactions = $mempool->getTransactionsForBlock($maxTransactions);
+
+                $autoMineResult = null;
+                if (!empty($transactions)) {
+                    $forceConfig = array_merge($config, ['auto_mine.min_transactions' => 1]);
+                    $mineResult = autoMineBlocks($walletManager, $forceConfig);
+
+                    if ($mineResult['mined']) {
+                        writeLog("BACKGROUND: Block mined successfully: " . json_encode($mineResult), 'INFO');
+                        $autoMineResult = array_merge($mineResult, ['background' => true]);
+                    } else {
+                        writeLog("BACKGROUND: Mining failed: " . json_encode($mineResult), 'ERROR');
+                        $autoMineResult = array_merge($mineResult, ['background' => true]);
+                    }
+                } else {
+                    writeLog("BACKGROUND: No transactions in mempool for background mining", 'WARNING');
+                    $autoMineResult = [
+                        'mined' => false,
+                        'reason' => 'No transactions in mempool',
+                        'background' => true
+                    ];
+                }
+
+                // Emit wallet events (background)
+                try {
+                    writeLog("BACKGROUND: Emitting wallet events", 'INFO');
+                    emitWalletEvent($walletManager, [
+                        'update_type' => 'transfer',
+                        'address' => $fromAddress,
+                        'data' => [ 'transaction' => $transaction ]
+                    ]);
+                    emitWalletEvent($walletManager, [
+                        'update_type' => 'transfer',
+                        'address' => $toAddress,
+                        'data' => [ 'transaction' => $transaction ]
+                    ]);
+                    writeLog("BACKGROUND: Wallet events emitted", 'INFO');
+                } catch (Exception $e) {
+                    writeLog('BACKGROUND: emitWalletEvent(transfer background) failed: ' . $e->getMessage(), 'WARNING');
+                }
+
+                writeLog("BACKGROUND: Background processing COMPLETED for transfer: $fromAddress -> $toAddress", 'INFO');
+
+                $result = [
+                    'success' => true,
+                    'message' => 'Background processing completed',
+                    'blockchain_result' => $blockchainResult,
+                    'network_result' => $networkResult,
+                    'auto_mine_result' => $autoMineResult
+                ];
+
+            } catch (Exception $e) {
+                writeLog("BACKGROUND: Background processing FAILED: " . $e->getMessage(), 'ERROR');
+                $result = [
+                    'success' => false,
+                    'error' => $e->getMessage()
+                ];
+            }
             break;
             
         case 'listnodes':
@@ -2508,49 +2600,49 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
         
         // 6. Update balances in database
         $pdo = $walletManager->getDatabase();
-        
+
         // Check if we need to start a new transaction
         $needsTransaction = !$pdo->inTransaction();
-        
+
         if ($needsTransaction) {
             $pdo->beginTransaction();
         }
-        
+
         try {
             // Verify sender balance before deduction
             $stmt = $pdo->prepare("SELECT balance FROM wallets WHERE address = ?");
             $stmt->execute([$fromAddress]);
             $currentBalance = $stmt->fetchColumn();
-            
+
             if ($currentBalance === false) {
                 throw new Exception("Sender wallet not found in database: $fromAddress");
             }
-            
+
             $totalDeduction = $amount + $transferTx['fee'];
             if ($currentBalance < $totalDeduction) {
                 throw new Exception("Insufficient balance. Current: $currentBalance, Required: $totalDeduction");
             }
-            
+
             // Auto-create recipient wallet if doesn't exist (for MetaMask/external wallets)
             if (!$walletManager->walletExists($toAddress)) {
                 writeLog("Auto-creating wallet for recipient address: $toAddress (likely MetaMask wallet)", 'INFO');
                 $createResult = $walletManager->createPlaceholderWallet($toAddress);
                 writeLog("Wallet auto-creation result: " . json_encode($createResult), 'DEBUG');
             }
-            
+
             // Deduct from sender
             $stmt = $pdo->prepare("UPDATE wallets SET balance = balance - ?, updated_at = NOW() WHERE address = ?");
             $stmt->execute([$totalDeduction, $fromAddress]);
-            
+
             // Add to recipient
             $stmt = $pdo->prepare("UPDATE wallets SET balance = balance + ?, updated_at = NOW() WHERE address = ?");
             $stmt->execute([$amount, $toAddress]);
-            
+
             if ($needsTransaction) {
                 $pdo->commit();
             }
             writeLog("Database balances updated successfully", 'INFO');
-            
+
         } catch (Exception $e) {
             if ($needsTransaction && $pdo->inTransaction()) {
                 try {
@@ -2561,32 +2653,97 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
             }
             throw new Exception('Failed to update balances: ' . $e->getMessage());
         }
-        
-    // 7. Record in blockchain
+
+        // FAST RESPONSE: Return immediately with transaction details (before heavy operations)
+        $fastResponse = [
+            'success' => true,
+            'transaction' => $transferTx,
+            'blockchain' => ['recorded' => false, 'message' => 'Processing in background'],
+            'network_broadcast' => ['success' => false, 'message' => 'Processing in background'],
+            'auto_mine' => ['mined' => false, 'message' => 'Processing in background'],
+            'new_balances' => [
+                'sender' => $walletManager->getBalance($fromAddress),
+                'recipient' => $walletManager->getBalance($toAddress)
+            ]
+        ];
+
+        // Release sender lock
+        if (isset($lockFp) && $lockFp) { @flock($lockFp, LOCK_UN); @fclose($lockFp); }
+
+        // Use HTTP self-request for background processing (works on shared hosting)
+        writeLog("HTTP self-request supported, sending immediate response", 'INFO');
+        echo json_encode($fastResponse);
+
+        // Trigger background processing via HTTP self-request
+        $thisUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://') .
+                   $_SERVER['HTTP_HOST'] . $_SERVER['SCRIPT_NAME'];
+
+        $backgroundData = [
+            'action' => 'process_transfer_background',
+            'transaction' => $transferTx,
+            'from_address' => $fromAddress,
+            'to_address' => $toAddress
+        ];
+
+        // Use curl for background request
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $thisUrl,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($backgroundData),
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'User-Agent: BackgroundProcessor/1.0'
+            ],
+            CURLOPT_TIMEOUT => 1, // Very short timeout since this is fire-and-forget
+            CURLOPT_CONNECTTIMEOUT => 1,
+            CURLOPT_RETURNTRANSFER => false, // Don't wait for response
+            CURLOPT_NOSIGNAL => true, // Don't send signals on timeout
+            CURLOPT_SSL_VERIFYPEER => false
+        ]);
+
+        // Execute background request (non-blocking)
+        $backgroundRequest = curl_exec($ch);
+        $backgroundError = curl_error($ch);
+        curl_close($ch);
+
+        if ($backgroundError) {
+            writeLog("Background request warning (non-critical): " . $backgroundError, 'WARNING');
+        } else {
+            writeLog("Background processing triggered via HTTP self-request", 'INFO');
+        }
+
+        // Exit immediately after sending response
+        exit;
+
+        // Fallback for servers without fastcgi_finish_request - synchronous processing
+        writeLog("fastcgi_finish_request not available, using synchronous processing", 'INFO');
+
+        // 7. Record in blockchain
         $blockchainResult = $blockchainManager->recordTransactionInBlockchain($transferTx);
-        
+
         // 8. Update transaction status
         $transferTx['status'] = 'confirmed';
-        
+
         // 9. Broadcast transaction to all network nodes via multi_curl
         $networkResult = broadcastTransactionToNetwork($transferTx, $pdo);
-        
+
         // 10. Force immediate block mining for instant transaction confirmation
         $config = getNetworkConfigFromDatabase($pdo);
         $autoMineResult = null;
-        
+
         writeLog("Force mining block immediately after transfer for instant confirmation", 'INFO');
         try {
             // Force mine block regardless of mempool count for instant confirmation
             $maxTransactions = $config['auto_mine.max_transactions_per_block'] ?? 100;
             $mempool = createMempoolManagerWithAutoSync($pdo, $walletManager, $config);
             $transactions = $mempool->getTransactionsForBlock($maxTransactions);
-            
+
             if (!empty($transactions)) {
                 // Use existing autoMineBlocks function which handles mining properly
                 $forceConfig = array_merge($config, ['auto_mine.min_transactions' => 1]);
                 $mineResult = autoMineBlocks($walletManager, $forceConfig);
-                
+
                 if ($mineResult['mined']) {
                     writeLog("Instant block mined: " . json_encode($mineResult), 'INFO');
                     $autoMineResult = array_merge($mineResult, ['instant' => true]);
@@ -2610,7 +2767,7 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
                 'instant' => true
             ];
         }
-        
+
         writeLog("Token transfer completed successfully", 'INFO');
 
         // Emit wallet events (best-effort)
@@ -2626,24 +2783,12 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
                 'data' => [ 'transaction' => $transferTx ]
             ]);
         } catch (Exception $e) { writeLog('emitWalletEvent(transfer) failed: ' . $e->getMessage(), 'WARNING'); }
-        
-        // FAST RESPONSE: Return immediately with transaction details
-        $fastResponse = [
-            'success' => true,
-            'transaction' => $transferTx,
-            'blockchain' => $blockchainResult,
-            'network_broadcast' => $networkResult,
-            'auto_mine' => $autoMineResult,
-            'new_balances' => [
-                'sender' => $walletManager->getBalance($fromAddress),
-                'recipient' => $walletManager->getBalance($toAddress)
-            ]
-    ];
-        
-    // Release sender lock
-    if (isset($lockFp) && $lockFp) { @flock($lockFp, LOCK_UN); @fclose($lockFp); }
-        
-        // Background sync will be handled by the main action handler
+
+        // Return full response (fallback mode)
+        $fastResponse['blockchain'] = $blockchainResult;
+        $fastResponse['network_broadcast'] = $networkResult;
+        $fastResponse['auto_mine'] = $autoMineResult;
+
         return $fastResponse;
         
     } catch (Exception $e) {
