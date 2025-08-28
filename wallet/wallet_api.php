@@ -6707,6 +6707,25 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
         $logTimestamp = date('Y-m-d H:i:s');
         $debugMsg = "[{$logTimestamp}] receiveBroadcastedTransaction: USING_hash={$txHash}, provided_hash=" . ($transaction['hash'] ?? 'none') . ", source={$sourceNode}, hops={$hopCount}" . PHP_EOL;
         @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
+
+        // Reject transactions that are spammy (near-zero or zero-value with no fee/data)
+        $minimumAmount = 0.00001;
+        $amount = $tx->getAmount();
+        $fee = $tx->getFee();
+        $data = $tx->getData();
+
+        $isNearEmpty = ($amount > 0 && $amount < $minimumAmount);
+        $isTrulyEmpty = ($amount == 0 && $fee == 0 && (empty($data) || $data === '0x'));
+
+        if ($isNearEmpty || $isTrulyEmpty) {
+            $reason = $isTrulyEmpty ? 'is zero-value with no fee or data' : 'amount is below minimum';
+            writeLog("Rejected transaction {$txHash}: {$reason}", 'WARNING');
+            return [
+                'success' => false,
+                'error' => 'Transaction rejected: ' . $reason,
+                'status' => 'rejected_spam'
+            ];
+        }
         
         writeLog('receiveBroadcastedTransaction: Using hash ' . $txHash . ' (provided hash: ' . ($transaction['hash'] ?? 'none') . ')', 'INFO');
         writeLog('Transaction data: ' . json_encode($transaction), 'DEBUG');
