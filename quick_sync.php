@@ -587,6 +587,15 @@ function processRawQueueInline($syncManager, $quiet = false, $verbose = false) {
             }
         }
         if (!is_string($to) || strlen($to) !== 42) { @rename($file, $processedDir . '/' . basename($file)); continue; }
+
+        // Early check for zero/empty amount transactions before further processing
+        if ($amount <= 0.0) {
+            if ($verbose) echo "  - skipped early: $hash (zero/empty amount)\n";
+            $processedFiltered++;
+            @rename($file, $processedDir . '/' . basename($file));
+            continue;
+        }
+
         if (!$from) {
             try { $rec = EthereumTx::recoverAddress(isset($json['raw']) ? $json['raw'] : ''); if ($rec) $from = strtolower($rec); } catch (Exception $e) {}
         }
@@ -629,6 +638,14 @@ function processRawQueueInline($syncManager, $quiet = false, $verbose = false) {
         if ($gasPriceInt > 0) {
             $gasPriceToken = $gasPriceInt / 1e18; // float approximation
         }
+
+        // Skip transactions with zero or empty amount to prevent empty transaction spam
+        if ($amount <= 0.0) {
+            if ($verbose) echo "  - skipped empty transaction: $hash (amount=$amount)\n";
+            $processedFiltered++;
+            continue;
+        }
+
         try {
             $tx = new Transaction($from, $to, $amount, $fee, $nonceInt, null, $gasLimit > 0 ? $gasLimit : 21000, $gasPriceToken);
             $ref = new ReflectionClass($tx);
