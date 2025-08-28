@@ -6714,8 +6714,8 @@ function receiveBroadcastedTransaction($walletManager, array $transaction, strin
         $fee = $tx->getFee();
         $data = $tx->getData();
 
-        $isNearEmpty = ($amount > 0 && $amount < $minimumAmount);
-        $isTrulyEmpty = ($amount == 0 && $fee == 0 && (empty($data) || $data === '0x'));
+        $isNearEmpty = ($amount > 0 && abs($amount) < $minimumAmount);
+        $isTrulyEmpty = (abs($amount) < 0.000001 && (empty($data) || $data === '0x'));
 
         if ($isNearEmpty || $isTrulyEmpty) {
             $reason = $isTrulyEmpty ? 'is zero-value with no fee or data' : 'amount is below minimum';
