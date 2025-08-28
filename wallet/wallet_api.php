@@ -799,18 +799,72 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             $result = getDappConfig($networkConfig);
             break;
         case 'create_wallet':
-            $result = createWallet($walletManager, $blockchainManager);
+            $result = createWallet($walletManager);
             
             // Send immediate response
             echo json_encode($result);
+            
+            // Trigger background processing
             if (function_exists('fastcgi_finish_request')) {
                 fastcgi_finish_request();
             }
+
+            // Use a more robust background trigger
+            $thisUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://') .
+                       ($_SERVER['HTTP_HOST'] ?? 'localhost') . ($_SERVER['SCRIPT_NAME'] ?? '');
+
+            $backgroundData = [
+                'action' => 'process_create_wallet_background',
+                'wallet_data' => $result['wallet']
+            ];
+
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $thisUrl,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => json_encode($backgroundData),
+                CURLOPT_HTTPHEADER => [
+                    'Content-Type: application/json',
+                    'User-Agent: BackgroundProcessor/1.0'
+                ],
+                CURLOPT_TIMEOUT => 1,
+                CURLOPT_CONNECTTIMEOUT => 1,
+                CURLOPT_RETURNTRANSFER => false,
+                CURLOPT_NOSIGNAL => true,
+                CURLOPT_SSL_VERIFYPEER => false
+            ]);
+
+            curl_exec($ch);
+            $curl_error = curl_error($ch);
+            curl_close($ch);
+
+            if ($curl_error) {
+                writeLog("Background wallet creation trigger failed: " . $curl_error, 'ERROR');
+            } else {
+                writeLog("Background wallet creation triggered for " . $result['wallet']['address'], 'INFO');
+            }
             
-            // Background processing
-            $config = getNetworkConfigFromDatabase($pdo);
-            performBackgroundSync($walletManager, $config);
-            return;
+            return; // End request
+
+        case 'process_create_wallet_background':
+            $walletData = $input['wallet_data'] ?? null;
+            if (!$walletData) {
+                throw new Exception('Wallet data is required for background processing');
+            }
+            process_create_wallet_background($blockchainManager, $walletManager, $walletData);
+            $result = ['success' => true, 'message' => 'Background processing for wallet creation acknowledged.'];
+            break;
+
+        case 'process_raw_transaction_background':
+            $txHash = $input['tx_hash'] ?? null;
+            $rawHex = $input['raw_hex'] ?? null;
+            $parsed = $input['parsed'] ?? [];
+            if (!$txHash || !$rawHex) {
+                throw new Exception('Transaction hash and raw hex are required for background processing');
+            }
+            process_raw_transaction_background($walletManager, $networkConfig, $txHash, $rawHex, $parsed);
+            $result = ['success' => true, 'message' => 'Background processing for raw transaction acknowledged.'];
+            break;
         case 'ensure_wallet':
             // Ensure a wallet record exists for the provided address (auto-create if missing)
             $address = $input['address'] ?? '';
@@ -1576,40 +1630,153 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
 /**
  * Create a new wallet via WalletManager
  */
-function createWallet($walletManager, $blockchainManager) {
+function createWallet($walletManager) {
     try {
-        writeLog("Creating new wallet with blockchain integration", 'INFO');
+        writeLog("Creating new wallet (database only)", 'INFO');
         
     // 1. Create wallet using WalletManager
         $walletData = $walletManager->createWallet();
-        writeLog("Wallet created successfully: " . $walletData['address'], 'INFO');
+        writeLog("Wallet created successfully in DB: " . $walletData['address'], 'INFO');
         
-    // 2. Record wallet creation in blockchain
-        $blockchainResult = $blockchainManager->createWalletWithBlockchain($walletData);
-        writeLog("Blockchain recording result: " . json_encode($blockchainResult['blockchain_recorded']), 'INFO');
+    // 2. Return wallet data immediately
+        return [
+            'wallet' => $walletData,
+            'blockchain' => [
+                'recorded' => false,
+                'message' => 'Processing in background'
+            ]
+        ];
+    } catch (Exception $e) {
+        writeLog("Error creating wallet in DB: " . $e->getMessage(), 'ERROR');
+        throw new Exception('Failed to create wallet: ' . $e->getMessage());
+    }
+}
 
-        // Emit wallet event (best-effort)
+/**
+ * Process wallet creation in the background
+ */
+function process_create_wallet_background($blockchainManager, $walletManager, $walletData) {
+    try {
+        writeLog("BACKGROUND: Starting background processing for wallet creation: " . $walletData['address'], 'INFO');
+
+        // 1. Record wallet creation in blockchain
+        $blockchainResult = $blockchainManager->createWalletWithBlockchain($walletData);
+        writeLog("BACKGROUND: Blockchain recording result: " . json_encode($blockchainResult['blockchain_recorded']), 'INFO');
+
+        // 2. Emit wallet event
         try {
             emitWalletEvent($walletManager, [
                 'update_type' => 'create_wallet',
                 'address' => $walletData['address'] ?? '',
                 'data' => [ 'public_key' => $walletData['public_key'] ?? null ]
             ]);
-        } catch (Exception $e) { writeLog('emitWalletEvent(create_wallet) failed: ' . $e->getMessage(), 'WARNING'); }
+            writeLog("BACKGROUND: Wallet creation event emitted", 'INFO');
+        } catch (Exception $e) {
+            writeLog('BACKGROUND: emitWalletEvent(create_wallet) failed: ' . $e->getMessage(), 'WARNING');
+        }
 
-    // 3. Return combined result
-        return [
-            'wallet' => $walletData,
-            'blockchain' => [
-                'recorded' => $blockchainResult['blockchain_recorded'],
-                'transaction_hash' => $blockchainResult['transaction']['hash'] ?? null,
-                'block_hash' => $blockchainResult['block']['hash'] ?? null,
-                'block_height' => $blockchainResult['block']['height'] ?? null
-            ]
-        ];
+        // 3. Perform background sync
+        $pdo = $walletManager->getDatabase();
+        $config = getNetworkConfigFromDatabase($pdo);
+        performBackgroundSync($walletManager, $config);
+
+        writeLog("BACKGROUND: Background processing COMPLETED for wallet creation: " . $walletData['address'], 'INFO');
     } catch (Exception $e) {
-        writeLog("Error creating wallet: " . $e->getMessage(), 'ERROR');
-        throw new Exception('Failed to create wallet: ' . $e->getMessage());
+        writeLog("BACKGROUND: Wallet creation background processing FAILED: " . $e->getMessage(), 'ERROR');
+    }
+}
+
+/**
+ * Process raw transaction in the background
+ */
+function process_raw_transaction_background($walletManager, $networkConfig, $txHash, $rawHex, $parsed) {
+    try {
+        writeLog("BACKGROUND: Starting processing for raw tx {$txHash}", 'INFO');
+        
+        $recoveredFrom = null;
+        try {
+            $recoveredFrom = \Blockchain\Core\Crypto\EthereumTx::recoverAddress($rawHex);
+        } catch (\Throwable $e) {
+            writeLog("BACKGROUND: Raw tx recovery failed: " . $e->getMessage(), 'ERROR');
+            return;
+        }
+        if (!is_string($recoveredFrom) || !preg_match('/^0x[a-f0-9]{40}$/', strtolower($recoveredFrom))) {
+            writeLog('BACKGROUND: Rejecting raw tx (invalid signature recovery) for ' . $txHash, 'WARNING');
+            return;
+        }
+
+        $pdo = $walletManager->getDatabase();
+        $topologyStatus = ensureFreshTopology($walletManager);
+        if (($topologyStatus['success'] ?? false) === false) {
+            writeLog('BACKGROUND: Topology check (raw tx) failed: ' . ($topologyStatus['reason'] ?? 'unknown'), 'WARNING');
+        } elseif (($topologyStatus['updated'] ?? false) === true) {
+            writeLog('BACKGROUND: Topology refreshed (raw tx pipeline)', 'INFO');
+        }
+        $decimals = getTokenDecimals($networkConfig);
+        $amountDecimal = 0.0;
+        if (isset($parsed['value']) && is_string($parsed['value'])) {
+            $vHex = strtolower($parsed['value']);
+            if (str_starts_with($vHex, '0x')) { $vHex = substr($vHex, 2); }
+            if ($vHex === '' || !ctype_xdigit($vHex)) { $vHex = '0'; }
+            $weiDec = hexToDecStringSafe($vHex);
+            $amountStr = scaleDownByDecimals($weiDec, max(0, (int)$decimals), 8);
+            $amountDecimal = (float)$amountStr;
+        }
+        $normalized = [
+            'hash' => $txHash,
+            'from_address' => strtolower($recoveredFrom),
+            'to_address' => normalizeHexAddress($parsed['to'] ?? ''),
+            'amount' => $amountDecimal,
+            'fee' => 0.0,
+            'nonce' => isset($parsed['nonce']) ? (is_string($parsed['nonce']) && str_starts_with(strtolower($parsed['nonce']), '0x') ? (int)hexdec($parsed['nonce']) : (int)$parsed['nonce']) : 0,
+            'gas_limit' => isset($parsed['gas']) ? (is_string($parsed['gas']) && str_starts_with(strtolower($parsed['gas']), '0x') ? (int)hexdec($parsed['gas']) : (int)$parsed['gas']) : 21000,
+            'gas_price' => isset($parsed['gasPrice']) ? (is_string($parsed['gasPrice']) && str_starts_with(strtolower($parsed['gasPrice']), '0x') ? (int)hexdec($parsed['gasPrice']) : (int)$parsed['gasPrice']) : 0,
+            'data' => is_string($parsed['input'] ?? null) ? ($parsed['input'] ?: '0x') : '0x',
+            'raw_data' => $rawHex,
+            'signature' => 'raw',
+            'status' => 'pending',
+            'timestamp' => time(),
+        ];
+        writeLog('BACKGROUND: Normalized transaction data: ' . json_encode($normalized), 'DEBUG');
+
+        try {
+            writeLog('BACKGROUND: Attempting to add transaction to local mempool', 'INFO');
+            $result = receiveBroadcastedTransaction($walletManager, $normalized, 'self', time());
+            writeLog('BACKGROUND: Local mempool result: ' . json_encode($result), 'INFO');
+        } catch (\Throwable $e) {
+            writeLog('BACKGROUND: Local accept of raw tx failed: ' . $e->getMessage(), 'WARNING');
+        }
+
+        try {
+            $broadcastResult = broadcastTransactionToNetwork($normalized, $pdo);
+            writeLog('BACKGROUND: Broadcasted raw tx to network: ' . json_encode($broadcastResult), 'INFO');
+        } catch (\Throwable $e) {
+            writeLog('BACKGROUND: Broadcast of raw tx failed: ' . $e->getMessage(), 'ERROR');
+        }
+
+        try {
+            $config = getNetworkConfigFromDatabase($pdo);
+            $maxTransactions = $config['auto_mine.max_transactions_per_block'] ?? 100;
+            $mempool = createMempoolManagerWithAutoSync($pdo, $walletManager, $config);
+            $transactions = $mempool->getTransactionsForBlock($maxTransactions);
+            
+            if (!empty($transactions)) {
+                $forceConfig = array_merge($config, ['auto_mine.min_transactions' => 1]);
+                $mineResult = autoMineBlocks($walletManager, $forceConfig);
+                
+                if ($mineResult['mined']) {
+                    writeLog("BACKGROUND: Instant block mined after raw tx: " . json_encode($mineResult), 'INFO');
+                } else {
+                    writeLog("BACKGROUND: Instant mining after raw tx failed: " . json_encode($mineResult), 'ERROR');
+                }
+            }
+        } catch (\Throwable $e) {
+            writeLog('BACKGROUND: Instant mining after raw tx failed: ' . $e->getMessage(), 'WARNING');
+        }
+
+        writeLog("BACKGROUND: Background processing COMPLETED for raw tx {$txHash}", 'INFO');
+    } catch (Exception $e) {
+        writeLog("BACKGROUND: Raw transaction background processing FAILED: " . $e->getMessage(), 'ERROR');
     }
 }
 
@@ -4082,10 +4249,7 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                     $inTransactions = $stmt->fetchColumn() > 0;
                     
                     // Check in broadcast_tracking (already broadcasted recently)
-                    $stmt = $pdo->prepare("
-                        SELECT COUNT(*) FROM broadcast_tracking 
-                        WHERE transaction_hash = ? AND expires_at > NOW()
-                    ");
+                    $stmt = $pdo->prepare("\n                        SELECT COUNT(*) FROM broadcast_tracking \n                        WHERE transaction_hash = ? AND expires_at > NOW()\n                    ");
                     $stmt->execute([$txHash]);
                     $recentlyBroadcasted = $stmt->fetchColumn() > 0;
                     
@@ -4134,8 +4298,10 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                             if ($b0 <= 0x7f) { $o++; return $b[$o-1]; }
                             if ($b0 <= 0xb7) { $l=$b0-0x80; $o++; $v=substr($b,$o,$l); $o+=$l; return $v; }
                             if ($b0 <= 0xbf) { $ll=$b0-0xb7; $o++; $lBytes=substr($b,$o,$ll); $o+=$ll; $l=intval(bin2hex($lBytes),16); $v=substr($b,$o,$l); $o+=$l; return $v; }
-                            if ($b0 <= 0xf7) { $l=$b0-0xc0; $o++; $end=$o+$l; $arr=[]; while($o<$end){ $arr[]=$decode($b,$o);} return $arr; }
-                            $ll=$b0-0xf7; $o++; $lBytes=substr($b,$o,$ll); $o+=$ll; $l=intval(bin2hex($lBytes),16); $end=$o+$l; $arr=[]; while($o<$end){ $arr[]=$decode($b,$o);} return $arr; };
+                            if ($b0 <= 0xf7) { $l=$b0-0xc0; $o++; $end=$o+$l; $arr=[]; while($o<$end){ $arr[]=$decode($b,$o);}
+ return $arr; }
+                            $ll=$b0-0xf7; $o++; $lBytes=substr($b,$o,$ll); $o+=$ll; $l=intval(bin2hex($lBytes),16); $end=$o+$l; $arr=[]; while($o<$end){ $arr[]=$decode($b,$o);}
+ return $arr; };
                         $list = $decode($payload,$off);
                         if (is_array($list) && count($list) >= 12) {
                             $cfg = method_exists($networkConfig, 'getNetworkInfo') ? $networkConfig->getNetworkInfo() : [];
@@ -4167,100 +4333,10 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                     writeLog('Queued raw tx ' . $txHash . ' (from MetaMask)', 'INFO');
                 }
 
-                // Best-effort: normalize minimal fields and accept locally + broadcast immediately
-                try {
-                    writeLog('Starting transaction normalization and processing', 'INFO');
-                    $pdo = $walletManager->getDatabase();
-                    // Ensure recent network topology before proceeding to broadcast
-                    $topologyStatus = ensureFreshTopology($walletManager);
-                    if (($topologyStatus['success'] ?? false) === false) {
-                        writeLog('Topology check (raw tx) failed: ' . ($topologyStatus['reason'] ?? 'unknown'), 'WARNING');
-                    } elseif (($topologyStatus['updated'] ?? false) === true) {
-                        writeLog('Topology refreshed (raw tx pipeline)', 'INFO');
-                    }
-                    $decimals = getTokenDecimals($networkConfig);
-                    // Convert value (wei-like) from hex to a decimal amount using chain decimals with 8-digit scale
-                    $amountDecimal = 0.0;
-                    if (isset($parsed['value']) && is_string($parsed['value'])) {
-                        $vHex = strtolower($parsed['value']);
-                        if (str_starts_with($vHex, '0x')) { $vHex = substr($vHex, 2); }
-                        if ($vHex === '' || !ctype_xdigit($vHex)) { $vHex = '0'; }
-                        $weiDec = hexToDecStringSafe($vHex);
-                        $amountStr = scaleDownByDecimals($weiDec, max(0, (int)$decimals), 8);
-                        $amountDecimal = (float)$amountStr;
-                    }
-                    $normalized = [
-                        'hash' => $txHash, // keep 0x prefix to match mempool storage
-                        'from_address' => strtolower($recoveredFrom),
-                        'to_address' => normalizeHexAddress($parsed['to'] ?? ''),
-                        'amount' => $amountDecimal,
-                        'fee' => 0.0,
-                        'nonce' => isset($parsed['nonce']) ? (is_string($parsed['nonce']) && str_starts_with(strtolower($parsed['nonce']), '0x') ? (int)hexdec($parsed['nonce']) : (int)$parsed['nonce']) : 0,
-                        'gas_limit' => isset($parsed['gas']) ? (is_string($parsed['gas']) && str_starts_with(strtolower($parsed['gas']), '0x') ? (int)hexdec($parsed['gas']) : (int)$parsed['gas']) : 21000,
-                        'gas_price' => isset($parsed['gasPrice']) ? (is_string($parsed['gasPrice']) && str_starts_with(strtolower($parsed['gasPrice']), '0x') ? (int)hexdec($parsed['gasPrice']) : (int)$parsed['gasPrice']) : 0,
-                        'data' => is_string($parsed['input'] ?? null) ? ($parsed['input'] ?: '0x') : '0x',
-                        'raw_data' => $rawHex, // FIX: Save original raw transaction data
-                        'signature' => 'raw',
-                        'status' => 'pending',
-                        'timestamp' => time(),
-                    ];
-                    writeLog('Normalized transaction data: ' . json_encode($normalized), 'DEBUG');
-
-                    // Accept locally into mempool (idempotent if already present)
-                    try {
-                        writeLog('Attempting to add transaction to local mempool', 'INFO');
-                        $result = receiveBroadcastedTransaction($walletManager, $normalized, 'self', time());
-                        writeLog('Local mempool result: ' . json_encode($result), 'INFO');
-                        
-                        // Simple direct logging to debug
-                        $debugLog = __DIR__ . '/../logs/debug.log';
-                        $timestamp = date('Y-m-d H:i:s');
-                        $debugMsg = "[{$timestamp}] receiveBroadcastedTransaction result: " . json_encode($result) . PHP_EOL;
-                        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
-                        
-                    } catch (\Throwable $e) {
-                        writeLog('Local accept of raw tx failed: ' . $e->getMessage(), 'WARNING');
-                        
-                        // Simple direct logging to debug
-                        $debugLog = __DIR__ . '/../logs/debug.log';
-                        $timestamp = date('Y-m-d H:i:s');
-                        $debugMsg = "[{$timestamp}] receiveBroadcastedTransaction ERROR: " . $e->getMessage() . PHP_EOL;
-                        @file_put_contents($debugLog, $debugMsg, FILE_APPEND);
-                    }
-
-                    // Broadcast to peer nodes (non-blocking via multi_curl)
-                    try {
-                        $broadcastResult = broadcastTransactionToNetwork($normalized, $pdo);
-                        writeLog('Broadcasted raw tx to network: ' . json_encode($broadcastResult), 'INFO');
-                    } catch (\Throwable $e) {
-                        writeLog('Broadcast of raw tx failed: ' . $e->getMessage(), 'ERROR');
-                    }
-
-                    // Force immediate block mining for instant transaction confirmation
-                    writeLog("Force mining block immediately after raw transaction for instant confirmation", 'INFO');
-                    try {
-                        $config = getNetworkConfigFromDatabase($pdo);
-                        $maxTransactions = $config['auto_mine.max_transactions_per_block'] ?? 100;
-                        $mempool = createMempoolManagerWithAutoSync($pdo, $walletManager, $config);
-                        $transactions = $mempool->getTransactionsForBlock($maxTransactions);
-                        
-                        if (!empty($transactions)) {
-                            // Use existing autoMineBlocks function which handles mining properly
-                            $forceConfig = array_merge($config, ['auto_mine.min_transactions' => 1]);
-                            $mineResult = autoMineBlocks($walletManager, $forceConfig);
-                            
-                            if ($mineResult['mined']) {
-                                writeLog("Instant block mined after raw tx: " . json_encode($mineResult), 'INFO');
-                            } else {
-                                writeLog("Instant mining after raw tx failed: " . json_encode($mineResult), 'ERROR');
-                            }
-                        }
-                    } catch (\Throwable $e) {
-                        writeLog('Instant mining after raw tx failed: ' . $e->getMessage(), 'WARNING');
-                    }
-                } catch (\Throwable $e) {
-                    writeLog('Normalization/broadcast pipeline for raw tx failed: ' . $e->getMessage(), 'WARNING');
-                }
+                // Trigger background processing
+                register_shutdown_function(function() use ($walletManager, $networkConfig, $txHash, $rawHex, $parsed) {
+                    process_raw_transaction_background($walletManager, $networkConfig, $txHash, $rawHex, $parsed);
+                });
 
                 return $txHash;
             }
@@ -4924,6 +5000,28 @@ function getTransactionReceipt($walletManager, string $hash): ?array
                         return null;
                     }
                 } else {
+                    // NEW: Check raw_mempool for pending tx submitted via eth_sendRawTransaction
+                    $rawMempoolPath = dirname(__DIR__) . '/storage/raw_mempool/' . str_replace('0x', '', strtolower($hash)) . '.json';
+                    if (file_exists($rawMempoolPath)) {
+                        writeLog("getTransactionReceipt: Found pending tx in raw_mempool: $hash", 'INFO');
+                        $rawTxData = json_decode(file_get_contents($rawMempoolPath), true);
+                        $parsed = $rawTxData['parsed'] ?? [];
+                        
+                        return [
+                            'transactionHash' => $hash,
+                            'transactionIndex' => null,
+                            'blockHash' => null,
+                            'blockNumber' => null,
+                            'from' => $parsed['from'] ?? '0x0000000000000000000000000000000000000000',
+                            'to' => $parsed['to'] ?? null,
+                            'cumulativeGasUsed' => '0x0',
+                            'gasUsed' => '0x0',
+                            'contractAddress' => null,
+                            'logs' => [],
+                            'logsBloom' => '0x' . str_repeat('0', 512),
+                            'status' => null, // Explicitly null for pending
+                        ];
+                    }
                     return null;
                 }
             } catch (Throwable $e) {
@@ -5284,9 +5382,19 @@ function queueRawTransaction(string $txHash, string $rawHex, array $parsed = [])
         writeLog('queueRawTransaction called for hash: ' . $txHash, 'INFO');
         $dir = dirname(__DIR__) . '/storage/raw_mempool';
         if (!is_dir($dir)) {
-            @mkdir($dir, 0755, true);
-            writeLog('Created raw_mempool directory: ' . $dir, 'INFO');
+            if (@mkdir($dir, 0755, true)) {
+                 writeLog('Created raw_mempool directory: ' . $dir, 'INFO');
+            } else {
+                 writeLog('Failed to create raw_mempool directory: ' . $dir, 'ERROR');
+                 return false;
+            }
         }
+
+        if (!is_writable($dir)) {
+            writeLog('raw_mempool directory is not writable: ' . $dir, 'ERROR');
+            return false;
+        }
+
         $path = $dir . '/' . str_replace('0x', '', $txHash) . '.json';
         writeLog('Raw transaction file path: ' . $path, 'DEBUG');
         
@@ -5296,16 +5404,25 @@ function queueRawTransaction(string $txHash, string $rawHex, array $parsed = [])
             'parsed' => $parsed,
             'received_at' => time()
         ];
-        $ok = (bool)@file_put_contents($path, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-        if ($ok) {
-            // Debug log to trace raw queueing (helps diagnose missing mempool entries)
-            $toDbg = isset($parsed['to']) ? $parsed['to'] : '(none)';
-            $valDbg = isset($parsed['value']) ? $parsed['value'] : '(none)';
-            writeLog("Queued raw tx $txHash to=$toDbg value=$valDbg", 'INFO');
-        } else {
-            writeLog("Failed writing raw tx file for $txHash (path=$path)", 'ERROR');
+        
+        $jsonPayload = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        if ($jsonPayload === false) {
+            writeLog('Failed to json_encode payload for ' . $txHash, 'ERROR');
+            return false;
         }
-        return $ok;
+
+        $ok = file_put_contents($path, $jsonPayload);
+
+        if ($ok === false) {
+            writeLog("Failed writing raw tx file for $txHash (path=$path)", 'ERROR');
+            return false;
+        } 
+        
+        $toDbg = isset($parsed['to']) ? $parsed['to'] : '(none)';
+        $valDbg = isset($parsed['value']) ? $parsed['value'] : '(none)';
+        writeLog("Queued raw tx $txHash to=$toDbg value=$valDbg", 'INFO');
+        return true;
+
     } catch (\Throwable $e) {
         writeLog('queueRawTransaction error: ' . $e->getMessage(), 'ERROR');
         return false;
@@ -5414,186 +5531,142 @@ function scaleDownByDecimals(string $integerStr, int $decimals, int $scale = 8):
  */
 function parseEthRawTransaction(string $rawHex): array
 {
+    // Helper function for RLP decoding
+    $rlp_decode = function(string $data, int &$pos) use (&$rlp_decode): mixed {
+        if ($pos >= strlen($data)) {
+            return null; // End of data
+        }
+        $prefix = ord($data[$pos]);
+        $pos++;
+
+        if ($prefix <= 0x7f) { // Single byte
+            return chr($prefix);
+        } elseif ($prefix <= 0xb7) { // Short string
+            $len = $prefix - 0x80;
+            if ($pos + $len > strlen($data)) { return null; }
+            $str = substr($data, $pos, $len);
+            $pos += $len;
+            return $str;
+        } elseif ($prefix <= 0xbf) { // Long string
+            $lenOfLen = $prefix - 0xb7;
+            if ($pos + $lenOfLen > strlen($data)) { return null; }
+            $lenHex = bin2hex(substr($data, $pos, $lenOfLen));
+            $pos += $lenOfLen;
+            $len = hexdec($lenHex);
+            if ($pos + $len > strlen($data)) { return null; }
+            $str = substr($data, $pos, $len);
+            $pos += $len;
+            return $str;
+        } elseif ($prefix <= 0xf7) { // Short list
+            $len = $prefix - 0xc0;
+            $list = [];
+            $endPos = $pos + $len;
+            if ($endPos > strlen($data)) { return null; }
+            while ($pos < $endPos) {
+                $decoded = $rlp_decode($data, $pos);
+                if ($decoded === null) { return null; } // Abort on error
+                $list[] = $decoded;
+            }
+            return $list;
+        } else { // Long list
+            $lenOfLen = $prefix - 0xf7;
+            if ($pos + $lenOfLen > strlen($data)) { return null; }
+            $lenHex = bin2hex(substr($data, $pos, $lenOfLen));
+            $pos += $lenOfLen;
+            $len = hexdec($lenHex);
+            $list = [];
+            $endPos = $pos + $len;
+            if ($endPos > strlen($data)) { return null; }
+            while ($pos < $endPos) {
+                $decoded = $rlp_decode($data, $pos);
+                if ($decoded === null) { return null; } // Abort on error
+                $list[] = $decoded;
+            }
+            return $list;
+        }
+    };
+
     try {
         if (str_starts_with($rawHex, '0x')) $rawHex = substr($rawHex, 2);
         $bin = @hex2bin($rawHex);
         if ($bin === false) return [];
 
-        $isTyped = false;
         $typeByte = null;
-        // Typed transaction detection (EIP-2718 / EIP-1559 0x02)
+        $isTyped = false;
         if (strlen($bin) > 0) {
             $first = ord($bin[0]);
-            if ($first <= 0x7f && in_array($first, [0x01, 0x02, 0x03], true)) { // known typed prefixes (support 0x02 now)
-                $isTyped = true;
+            if ($first <= 0x7f && in_array($first, [0x01, 0x02], true)) {
                 $typeByte = $first;
-                $bin = substr($bin, 1); // strip the type byte; remaining is RLP list
+                $isTyped = true;
+                $bin = substr($bin, 1); // Strip type byte
             }
         }
 
-        // Simplified parsing to avoid memory issues
+        $pos = 0;
+        $decoded = $rlp_decode($bin, $pos);
 
-        // Simplified parsing to avoid memory issues
-        // Simple output structure with basic field extraction
-        $out = [
-            'type' => $isTyped ? '0x' . dechex($typeByte) : '0x0',
-            'nonce' => '0x0',
-            'gasPrice' => '0x0',
-            'gas' => '0x0',
-            'to' => '0x',
-            'value' => '0x0',
-            'input' => '0x'
-        ];
-        
-        // Parse both legacy and EIP-1559 transactions
-        if ($isTyped && $typeByte === 0x02) {
-            // EIP-1559 transaction parsing
-            // Nonce: find after chainId. Look for '840135' (chainId with RLP short-len prefix) then take next 8 hex
-            $cidPos = strpos($rawHex, '840135');
-            if ($cidPos !== false && strlen($rawHex) >= $cidPos + 6 + 8) {
-                $nonceHex = substr($rawHex, $cidPos + 6, 8);
-                if (ctype_xdigit($nonceHex)) {
-                    $out['nonce'] = '0x' . $nonceHex;
-                }
+        if (!is_array($decoded)) {
+            // Fallback for simple legacy transactions that are not list-encoded
+            if (!$isTyped && strlen($bin) > 0) {
+                 $pos = 0;
+                 $decoded = $rlp_decode($bin, $pos);
+                 if (!is_array($decoded)) return [];
+            } else {
+                return []; // Failed to decode
             }
+        }
 
-            // To address: find RLP '94' then 40 hex chars
-            $toMarker = '94';
-            $toPos = strpos($rawHex, $toMarker);
-            if ($toPos !== false && $toPos + 42 <= strlen($rawHex)) {
-                $toHex = substr($rawHex, $toPos + 2, 40);
-                if (ctype_xdigit($toHex)) {
-                    $out['to'] = '0x' . $toHex;
-                }
-            }
+        $out = [];
+        if ($isTyped && $typeByte === 0x02) { // EIP-1559
+            $keys = ['chainId', 'nonce', 'maxPriorityFeePerGas', 'maxFeePerGas', 'gasLimit', 'to', 'value', 'data', 'accessList', 'v', 'r', 's'];
+            $out['type'] = '0x2';
+        } else if ($isTyped && $typeByte === 0x01) { // EIP-2930
+            $keys = ['chainId', 'nonce', 'gasPrice', 'gasLimit', 'to', 'value', 'data', 'accessList', 'v', 'r', 's'];
+            $out['type'] = '0x1';
+        } else { // Legacy
+            $keys = ['nonce', 'gasPrice', 'gasLimit', 'to', 'value', 'data', 'v', 'r', 's'];
+            $out['type'] = '0x0';
+        }
 
-            // Value: search for 0x88..0x8f length prefixes after the 'to' address
-            $scanStart = $toPos !== false ? $toPos + 42 : 0;
-            if ($scanStart > 0 && $scanStart + 2 <= strlen($rawHex)) {
-                for ($i = $scanStart; $i + 2 <= strlen($rawHex); $i += 2) {
-                    $prefix = substr($rawHex, $i, 2);
-                    if (preg_match('/^8[0-9a-f]$/i', $prefix)) {
-                        $lenNibble = hexdec(substr($prefix, 1, 1));
-                        // handle only up to 0x8f (15 bytes) safely
-                        if ($lenNibble >= 0 && $lenNibble <= 0x0f) {
-                            $valLen = $lenNibble; // bytes
-                            if ($i + 2 + ($valLen * 2) <= strlen($rawHex) && $valLen > 0) {
-                                $valHex = substr($rawHex, $i + 2, $valLen * 2);
-                                if (ctype_xdigit($valHex)) {
-                                    $out['value'] = '0x' . $valHex;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            // Legacy transaction parsing (type 0x0)
-            // RLP structure: [nonce, gasPrice, gasLimit, to, value, data, v, r, s]
-            
-            // Skip RLP list prefix (f8xx or f9xxxx)
-            $pos = 0;
-            if (str_starts_with($rawHex, 'f8') || str_starts_with($rawHex, 'f9')) {
-                $pos = str_starts_with($rawHex, 'f8') ? 4 : 6;
-            }
-            
-            // Parse nonce (first field)
-            if ($pos < strlen($rawHex)) {
-                $prefix = substr($rawHex, $pos, 2);
-                // Single byte nonce (0x01-0x7f)
-                if (preg_match('/^[0-7][0-9a-f]$/i', $prefix)) {
-                    $out['nonce'] = '0x' . $prefix;
-                    $pos += 2;
-                } elseif (preg_match('/^8[0-9a-f]$/i', $prefix)) {
-                    $len = hexdec(substr($prefix, 1, 1)) * 2;
-                    if ($pos + 2 + $len <= strlen($rawHex)) {
-                        $out['nonce'] = '0x' . substr($rawHex, $pos + 2, $len);
-                        $pos += 2 + $len;
-                    }
-                }
-            }
-            
-            // Parse gasPrice (second field)
-            if ($pos < strlen($rawHex)) {
-                $prefix = substr($rawHex, $pos, 2);
-                if ($prefix === '84') { // 4-byte gasPrice
-                    if ($pos + 10 <= strlen($rawHex)) {
-                        $out['gasPrice'] = '0x' . substr($rawHex, $pos + 2, 8);
-                        $pos += 10;
-                    }
-                } elseif (preg_match('/^8[0-9a-f]$/i', $prefix)) {
-                    $len = hexdec(substr($prefix, 1, 1)) * 2;
-                    if ($pos + 2 + $len <= strlen($rawHex)) {
-                        $out['gasPrice'] = '0x' . substr($rawHex, $pos + 2, $len);
-                        $pos += 2 + $len;
-                    }
-                }
-            }
-            
-            // Parse gasLimit (third field)
-            if ($pos < strlen($rawHex)) {
-                $prefix = substr($rawHex, $pos, 2);
-                if ($prefix === '82') { // 2-byte gasLimit
-                    if ($pos + 6 <= strlen($rawHex)) {
-                        $out['gas'] = '0x' . substr($rawHex, $pos + 2, 4);
-                        $pos += 6;
-                    }
-                } elseif (preg_match('/^8[0-9a-f]$/i', $prefix)) {
-                    $len = hexdec(substr($prefix, 1, 1)) * 2;
-                    if ($pos + 2 + $len <= strlen($rawHex)) {
-                        $out['gas'] = '0x' . substr($rawHex, $pos + 2, $len);
-                        $pos += 2 + $len;
-                    }
-                }
-            }
-            
-            // Parse to address (fourth field)
-            if ($pos < strlen($rawHex)) {
-                $prefix = substr($rawHex, $pos, 2);
-                if ($prefix === '94') { // 20-byte address
-                    if ($pos + 42 <= strlen($rawHex)) {
-                        $toHex = substr($rawHex, $pos + 2, 40);
-                        if (ctype_xdigit($toHex) && $toHex !== '0000000000000000000000000000000000000000') {
-                            $out['to'] = '0x' . $toHex;
-                        }
-                        $pos += 42;
-                    }
-                }
-            }
-            
-            // Parse value (fifth field)
-            if ($pos < strlen($rawHex)) {
-                $prefix = substr($rawHex, $pos, 2);
-                if ($prefix === '88') { // 8-byte value
-                    if ($pos + 18 <= strlen($rawHex)) {
-                        $out['value'] = '0x' . substr($rawHex, $pos + 2, 16);
-                        $pos += 18;
-                    }
-                } elseif (preg_match('/^8[0-9a-f]$/i', $prefix)) {
-                    $len = hexdec(substr($prefix, 1, 1)) * 2;
-                    if ($pos + 2 + $len <= strlen($rawHex)) {
-                        $out['value'] = '0x' . substr($rawHex, $pos + 2, $len);
-                        $pos += 2 + $len;
+        foreach ($keys as $i => $key) {
+            if (isset($decoded[$i])) {
+                if ($key === 'accessList') {
+                    // accessList is a list of lists, keep it structured
+                    $out[$key] = $decoded[$i];
+                } else {
+                    $val = $decoded[$i];
+                    // Handle empty values from RLP, which can be empty strings
+                    if ($val === '') {
+                        $out[$key] = '0x0';
+                    } else {
+                        $out[$key] = '0x' . bin2hex($val);
                     }
                 }
             }
         }
         
+        // Rename 'v' to 'yParity' for EIP-1559 for clarity if needed, but 'v' is common
+        if ($isTyped) {
+            $out['v'] = isset($out['v']) ? $out['v'] : '0x0';
+        }
+
         // Use EthereumTx::recoverAddress to get the 'from' address
         try {
-            $fullRawHex = '0x' . $rawHex;
-            $fromAddress = \Blockchain\Core\Crypto\EthereumTx::recoverAddress($fullRawHex);
+            $fromAddress = \Blockchain\Core\Crypto\EthereumTx::recoverAddress('0x' . $rawHex);
             if ($fromAddress) {
                 $out['from'] = $fromAddress;
             }
         } catch (\Throwable $e) {
-            // Ignore signature recovery errors
+            // Ignore signature recovery errors during parsing
         }
         
-        // Note: Do NOT fallback to a fake 'from'. If recovery failed, caller must reject the tx.
-        
+        // Rename 'input' for compatibility
+        if (isset($out['data'])) {
+            $out['input'] = $out['data'];
+        }
+
         return $out;
+
     } catch (\Throwable $e) {
         writeLog('parseEthRawTransaction error: ' . $e->getMessage(), 'ERROR');
         return [];
@@ -8523,43 +8596,17 @@ function checkAndHandleTransactionReplacement(PDO $pdo, $newTransaction, string 
         $confirmedTx = $confirmedStmt->fetch(PDO::FETCH_ASSOC);
         
         if ($confirmedTx) {
-            // This nonce is already used in a confirmed transaction
-            // Check if it's an identical transaction (same amount, to_address)
-            $newAmount = $newTransaction->getAmount();
-            $newToAddress = $newTransaction->getTo();
-            $confirmedAmount = (float)$confirmedTx['amount'];
-            $confirmedToAddress = $confirmedTx['to_address'];
+            // CRITICAL FIX: A nonce that has been confirmed in a block can never be used again,
+            // regardless of the transaction content. Reject immediately.
+            writeLog("🔥 RBF: REJECTED - Nonce {$nonce} already used in confirmed transaction {$confirmedTx['hash']}", 'ERROR');
+            @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: REJECTED - Nonce {$nonce} already used in confirmed tx {$confirmedTx['hash']}" . PHP_EOL, FILE_APPEND);
             
-            writeLog("🔥 RBF: Nonce {$nonce} already used in confirmed transaction {$confirmedTx['hash']}", 'WARNING');
-            writeLog("🔥 RBF: Comparing - New: amount={$newAmount}, to={$newToAddress} vs Confirmed: amount={$confirmedAmount}, to={$confirmedToAddress}", 'INFO');
-            @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: Nonce {$nonce} already confirmed in tx {$confirmedTx['hash']}" . PHP_EOL, FILE_APPEND);
-            @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: Comparing transactions - New: amount={$newAmount}, to={$newToAddress} vs Confirmed: amount={$confirmedAmount}, to={$confirmedToAddress}" . PHP_EOL, FILE_APPEND);
-            
-            // Enhanced debugging - show exact comparison details
-            $amountMatch = ($newAmount === $confirmedAmount);
-            $addressMatch = (strtolower($newToAddress) === strtolower($confirmedToAddress));
-            writeLog("🔥 RBF: Amount match: {$amountMatch} ({$newAmount} === {$confirmedAmount}), Address match: {$addressMatch}", 'INFO');
-            @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: Detailed comparison - Amount match: {$amountMatch}, Address match: {$addressMatch}" . PHP_EOL, FILE_APPEND);
-            
-            // If this is an identical transaction, reject it (duplicate)
-            if ($newAmount === $confirmedAmount && strtolower($newToAddress) === strtolower($confirmedToAddress)) {
-                writeLog("🔥 RBF: REJECTING identical transaction (duplicate)", 'WARNING');
-                @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: REJECTING identical transaction (duplicate)" . PHP_EOL, FILE_APPEND);
-                return [
-                    'action' => 'rejected',
-                    'existing_hash' => $confirmedTx['hash'],
-                    'reason' => 'duplicate_transaction',
-                    'message' => "Duplicate transaction: identical amount and recipient already confirmed with hash {$confirmedTx['hash']}"
-                ];
-            }
-            
-            // Different transaction content with same nonce - this is valid, allow it
-            writeLog("🔥 RBF: ALLOWING different transaction with same nonce (valid new transaction)", 'INFO');
-            writeLog("🔥 RBF: CONFIRMED: amount={$confirmedAmount}, to={$confirmedToAddress} vs NEW: amount={$newAmount}, to={$newToAddress}", 'INFO');
-            @file_put_contents($debugLog, "[{$timestamp}] 🔥 RBF: ALLOWING different transaction - valid case" . PHP_EOL, FILE_APPEND);
-            
-            // Continue processing normally (no action needed, just log and continue)
-            return ['action' => 'add', 'reason' => 'different_content_valid'];
+            return [
+                'action' => 'rejected',
+                'existing_hash' => $confirmedTx['hash'],
+                'reason' => 'nonce_already_confirmed',
+                'message' => "Nonce {$nonce} has already been used in a confirmed transaction."
+            ];
         }
         
         // Check for existing transactions with same from_address and nonce

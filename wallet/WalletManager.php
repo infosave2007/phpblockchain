@@ -552,68 +552,78 @@ class WalletManager
     {
         // Normalize address
         $address = strtolower($address);
-        
-        // Get the highest confirmed nonce from transactions table
-        $stmt = $this->database->prepare("
-            SELECT COALESCE(MAX(nonce), -1) as max_confirmed_nonce 
-            FROM transactions 
-            WHERE from_address = ? AND status = 'confirmed'
-        ");
-        $stmt->execute([$address]);
-        $result = $stmt->fetch();
-        $confirmedNonce = $result ? (int)$result['max_confirmed_nonce'] : -1;
-        
-        // Get current nonce from wallet (should match confirmed nonce)
-        $stmt = $this->database->prepare("
-            SELECT nonce FROM wallets WHERE address = ?
-        ");
-        
-        $stmt->execute([$address]);
-        $result = $stmt->fetch();
-        
-        if (!$result) {
-            // Auto-create wallet for MetaMask/external addresses
-            writeWalletLog("WalletManager::getNextNonce - Auto-creating wallet for address $address", 'DEBUG');
-            $this->autoCreateWallet($address);
-            $currentNonce = -1;
-        } else {
-            $currentNonce = (int)$result['nonce'];
-        }
-        
-        // Use the higher of confirmed transactions or wallet nonce
-        $baseNonce = max($confirmedNonce, $currentNonce);
-        
-        // Get the highest pending nonce from mempool
-        $stmt = $this->database->prepare("
-            SELECT COALESCE(MAX(nonce), -1) as max_pending_nonce 
-            FROM mempool 
-            WHERE from_address = ?
-        ");
-        $stmt->execute([$address]);
-        $result = $stmt->fetch();
-        $pendingNonce = $result ? (int)$result['max_pending_nonce'] : -1;
-        
-        // Calculate next nonce
-        $nextNonce = max($baseNonce, $pendingNonce) + 1;
-        
-        // Additional validation: ensure no confirmed transaction exists with this nonce
-        $stmt = $this->database->prepare("
-            SELECT COUNT(*) FROM transactions 
-            WHERE from_address = ? AND nonce = ? AND status = 'confirmed'
-        ");
-        $stmt->execute([$address, $nextNonce]);
-        $conflictCount = (int)$stmt->fetchColumn();
-        
-        // If there's a conflict, find the first available nonce after confirmed transactions
-        while ($conflictCount > 0) {
-            $nextNonce++;
+
+        try {
+            $this->database->beginTransaction();
+
+            // Get the highest confirmed nonce from transactions table
+            $stmt = $this->database->prepare("
+                SELECT COALESCE(MAX(nonce), -1) as max_confirmed_nonce 
+                FROM transactions 
+                WHERE from_address = ? AND status = 'confirmed'
+            ");
+            $stmt->execute([$address]);
+            $result = $stmt->fetch();
+            $confirmedNonce = $result ? (int)$result['max_confirmed_nonce'] : -1;
+
+            // Get current nonce from wallet and lock the row
+            $stmt = $this->database->prepare("
+                SELECT nonce FROM wallets WHERE address = ? FOR UPDATE
+            ");
+            
+            $stmt->execute([$address]);
+            $result = $stmt->fetch();
+            
+            if (!$result) {
+                // Auto-create wallet for MetaMask/external addresses
+                writeWalletLog("WalletManager::getNextNonce - Auto-creating wallet for address $address", 'DEBUG');
+                $this->autoCreateWallet($address);
+                $currentNonce = -1;
+            } else {
+                $currentNonce = (int)$result['nonce'];
+            }
+            
+            // Use the higher of confirmed transactions or wallet nonce
+            $baseNonce = max($confirmedNonce, $currentNonce);
+            
+            // Get the highest pending nonce from mempool
+            $stmt = $this->database->prepare("
+                SELECT COALESCE(MAX(nonce), -1) as max_pending_nonce 
+                FROM mempool 
+                WHERE from_address = ?
+            ");
+            $stmt->execute([$address]);
+            $result = $stmt->fetch();
+            $pendingNonce = $result ? (int)$result['max_pending_nonce'] : -1;
+            
+            // Calculate next nonce
+            $nextNonce = max($baseNonce, $pendingNonce) + 1;
+            
+            // The while loop for conflict resolution is still useful in case of edge cases.
+            $stmt = $this->database->prepare("
+                SELECT COUNT(*) FROM transactions 
+                WHERE from_address = ? AND nonce = ? AND status = 'confirmed'
+            ");
             $stmt->execute([$address, $nextNonce]);
             $conflictCount = (int)$stmt->fetchColumn();
+            
+            while ($conflictCount > 0) {
+                $nextNonce++;
+                $stmt->execute([$address, $nextNonce]);
+                $conflictCount = (int)$stmt->fetchColumn();
+            }
+            
+            writeWalletLog("WalletManager::getNextNonce - Address: $address, Confirmed: $confirmedNonce, Wallet: $currentNonce, Pending: $pendingNonce, Next: $nextNonce", 'DEBUG');
+            
+            $this->database->commit();
+
+            return $nextNonce;
+
+        } catch (Exception $e) {
+            $this->database->rollBack();
+            writeWalletLog("WalletManager::getNextNonce - Transaction failed: " . $e->getMessage(), 'ERROR');
+            throw $e; // re-throw the exception
         }
-        
-        writeWalletLog("WalletManager::getNextNonce - Address: $address, Confirmed: $confirmedNonce, Wallet: $currentNonce, Pending: $pendingNonce, Next: $nextNonce", 'DEBUG');
-        
-        return $nextNonce;
     }
     
     /**
