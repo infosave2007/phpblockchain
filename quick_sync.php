@@ -459,9 +459,19 @@ function processRawQueueInline($syncManager, $quiet = false, $verbose = false) {
     $mpRef = new ReflectionClass($mempool);
     $minFee = 0.0;
     if ($mpRef->hasProperty('minFee')) { $pf = $mpRef->getProperty('minFee'); $pf->setAccessible(true); $minFee = (float)$pf->getValue($mempool); }
-    $added = 0; $processed = 0;
+    $added = 0; $processed = 0; $processedFiltered = 0; $skippedDuplicates = 0;
     foreach ($files as $file) {
         $processed++;
+
+        // Check file age (skip files older than 3 minutes)
+        $fileAge = time() - filemtime($file);
+        $maxAgeSeconds = 3 * 60; // 3 minutes
+        if ($fileAge > $maxAgeSeconds) {
+            if ($verbose) echo "  Skipping old file: " . basename($file) . " (age: " . round($fileAge / 60, 1) . "m)\n";
+            $processedFiltered++;
+            continue;
+        }
+
         $json = json_decode(@file_get_contents($file), true);
         if (!is_array($json)) { @rename($file, $processedDir . '/' . basename($file)); continue; }
         $hash = isset($json['hash']) ? $json['hash'] : '';
@@ -623,6 +633,19 @@ function processRawQueueInline($syncManager, $quiet = false, $verbose = false) {
             $tx = new Transaction($from, $to, $amount, $fee, $nonceInt, null, $gasLimit > 0 ? $gasLimit : 21000, $gasPriceToken);
             $ref = new ReflectionClass($tx);
             if ($ref->hasProperty('signature')) { $p = $ref->getProperty('signature'); $p->setAccessible(true); $p->setValue($tx, 'external_raw'); }
+
+            // Check for duplicate transaction before adding to mempool
+            try {
+                if ($mempool->hasTransaction($tx->getHash())) {
+                    if ($verbose) echo "  - skipped duplicate transaction: {$tx->getHash()}\n";
+                    $skippedDuplicates++;
+                    $processedFiltered++;
+                    continue;
+                }
+            } catch (Exception $dupEx) {
+                // If hasTransaction check fails, continue with processing (may be first-time transaction)
+            }
+
             $addedOk = $mempool->addTransaction($tx);
             if ($addedOk) {
                 $added++;
@@ -706,7 +729,26 @@ function processRawQueueInline($syncManager, $quiet = false, $verbose = false) {
             @rename($file, $processedDir . '/' . basename($file));
         }
     }
-    if (!$quiet) echo "  Processed $processed raw file(s), added $added to mempool\n";
+    if (!$quiet) echo "  Processed $processed raw file(s), added $added to mempool, skipped $processedFiltered (old/duplicate)\n";
+    if ($verbose && ($processedFiltered > 0 || $skippedDuplicates > 0)) {
+        echo "    Filtered $processedFiltered files (too old or duplicate), skipped $skippedDuplicates duplicate transactions\n";
+    }
+
+    // Cleanup processed files (files older than 2 hours to keep recent ones)
+    $cleanupAgeSeconds = 2 * 60 * 60; // 2 hours
+    $cleanedCount = 0;
+    foreach (glob($processedDir . '/*.json') as $processedFile) {
+        if (file_exists($processedFile)) {
+            $fileAge = time() - filemtime($processedFile);
+            if ($fileAge > $cleanupAgeSeconds) {
+                unlink($processedFile);
+                $cleanedCount++;
+            }
+        }
+    }
+    if (!$quiet && $cleanedCount > 0) {
+        echo "  Cleaned up $cleanedCount old processed files (older than 2 hours)\n";
+    }
 }
 
 // Main execution
