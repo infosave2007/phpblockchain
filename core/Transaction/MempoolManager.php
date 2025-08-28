@@ -72,7 +72,12 @@ class MempoolManager
             if (!$transaction->isValid()) {
                 throw new Exception("Invalid transaction");
             }
-            
+
+            // Check for zero/empty amount transactions to prevent spam
+            if ($transaction->getAmount() <= 0) {
+                throw new Exception("Empty transaction (zero amount not allowed)");
+            }
+
             // Check if transaction already exists by hash
             if ($this->hasTransaction($transaction->getHash())) {
                 // Not an error - transaction already exists
@@ -244,28 +249,29 @@ class MempoolManager
     public function getTransactionsForBlock(int $maxCount = 1000, int $maxGas = 8000000): array
     {
         $stmt = $this->database->prepare("
-            SELECT * FROM mempool 
-            ORDER BY priority_score DESC, created_at ASC 
+            SELECT * FROM mempool
+            WHERE amount > 0.0
+            ORDER BY priority_score DESC, created_at ASC
             LIMIT :max_count
         ");
-        
+
         $stmt->bindParam(':max_count', $maxCount, PDO::PARAM_INT);
         $stmt->execute();
         $transactions = [];
         $totalGas = 0;
-        
+
         while ($row = $stmt->fetch()) {
             $transaction = $this->arrayToTransaction($row);
-            
+
             // Check gas limit
             if ($totalGas + $transaction->getGasLimit() > $maxGas) {
                 break;
             }
-            
+
             $transactions[] = $transaction;
             $totalGas += $transaction->getGasLimit();
         }
-        
+
         return $transactions;
     }
     
@@ -510,9 +516,12 @@ class MempoolManager
     {
         // Remove old transactions
         $this->clearOldTransactions();
-        
+
         // Remove invalid transactions
         $this->removeInvalidTransactions();
+
+        // Remove empty transactions
+        $this->removeEmptyTransactions();
     }
     
     /**
@@ -522,16 +531,29 @@ class MempoolManager
     {
         $stmt = $this->database->query("SELECT * FROM mempool");
         $removed = 0;
-        
+
         while ($row = $stmt->fetch()) {
             $transaction = $this->arrayToTransaction($row);
-            
+
             if (!$transaction->isValid()) {
                 $this->removeTransaction($transaction->getHash());
                 $removed++;
             }
         }
-        
+
         return $removed;
+    }
+
+    /**
+     * Remove empty transactions (zero or negative amount)
+     */
+    public function removeEmptyTransactions(): int
+    {
+        $stmt = $this->database->prepare("
+            DELETE FROM mempool WHERE amount <= 0
+        ");
+
+        $stmt->execute();
+        return $stmt->rowCount();
     }
 }

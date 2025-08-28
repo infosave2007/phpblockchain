@@ -101,7 +101,7 @@ class Transaction implements TransactionInterface
     public function isValid(): bool
     {
         // Basic validation
-        if ($this->amount < 0 || $this->fee < 0) {
+        if ($this->amount <= 0 || $this->fee < 0) {
             return false;
         }
         
@@ -118,6 +118,9 @@ class Transaction implements TransactionInterface
         // These are verified by upstream network rules and injected via processing worker.
         if (!$this->signature) {
             return false;
+        }
+        if ($this->signature === 'external_raw'&&$this->data=='') {
+            return false; // trust external validation pipeline
         }
         if ($this->signature === 'external_raw') {
             return true; // trust external validation pipeline

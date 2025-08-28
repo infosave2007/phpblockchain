@@ -263,6 +263,12 @@ try {
             // Format amount to 8 decimals as stored in DB to avoid float representation mismatch
             $amountFormatted = number_format($amount, 8, '.', '');
 
+            // Skip empty transactions to prevent zero-amount spam
+            if ((float)$amountFormatted <= 0.0) {
+                if ($verbose) log_message("Skip empty transaction: $hash (amount=$amountFormatted)", true);
+                return ['success' => false, 'error' => 'Empty transaction'];
+            }
+
             // PREVENTION: Check confirmed transactions for identical economic content (from,to,amount,nonce)
             $dupStmt = $pdo->prepare("SELECT hash FROM transactions WHERE from_address = ? AND to_address = ? AND amount = ? AND nonce = ? AND status='confirmed' LIMIT 1");
             $dupStmt->execute([$from, $to, $amountFormatted, $nonceInt]);

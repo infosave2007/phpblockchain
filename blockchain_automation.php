@@ -257,6 +257,15 @@ try {
                 // Format amount to 8 decimals to match DB precision
                 $amountFormatted = number_format($amount, 8, '.', '');
 
+                // Skip empty transactions to prevent zero-amount spam
+                if ((float)$amountFormatted <= 0.0) {
+                    log_message("Skip empty transaction file $filename (amount=$amountFormatted)", $verbose);
+                    // Move to processed even if empty to avoid reprocessing
+                    $newPath = $processedDir . '/' . $filename;
+                    @rename($file, $newPath);
+                    continue;
+                }
+
                 // PREVENTION: Check confirmed transactions for identical economic content
                 $dupStmt = $pdo->prepare("SELECT hash FROM transactions WHERE from_address = ? AND to_address = ? AND amount = ? AND nonce = ? AND status='confirmed' LIMIT 1");
                 $dupStmt->execute([$from, $to, $amountFormatted, $nonceInt]);
