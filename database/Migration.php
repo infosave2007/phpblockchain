@@ -259,7 +259,8 @@ class Migration
                 INDEX idx_staker (staker),
                 INDEX idx_status (status),
                 INDEX idx_start_block (start_block),
-                INDEX idx_contract_address (contract_address)
+                INDEX idx_contract_address (contract_address),
+                UNIQUE KEY uk_validator_staker_start (validator, staker, start_block)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             
             -- Validators table

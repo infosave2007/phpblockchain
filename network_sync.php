@@ -1503,25 +1503,73 @@ class NetworkSyncManager {
                 break;
             }
             
-            $stakes = $response['data']['staking'] ?? [];
+            // API `get_staking_records` returns ['success'=>true, 'data'=> [ ...records... ], ...]
+            // Older callers expected ['data']['staking'] — accept both shapes for compatibility.
+            if (isset($response['data']['staking']) && is_array($response['data']['staking'])) {
+                $stakes = $response['data']['staking'];
+            } elseif (isset($response['data']) && is_array($response['data'])) {
+                $stakes = $response['data'];
+            } else {
+                $stakes = [];
+            }
             if (empty($stakes)) {
                 $this->log("No staking records found on page $page");
                 break;
             }
             
+            // Add unique constraint if not exists to prevent duplicates
+            try {
+                $this->pdo->exec("ALTER TABLE staking ADD UNIQUE KEY `uk_validator_staker_start` (`validator`, `staker`, `start_block`)");
+            } catch (Exception $e) {
+                if (strpos($e->getMessage(), '1060') === false) {
+                    // Not a duplicate key error - log it
+                    $this->log("Add unique constraint warning: " . $e->getMessage());
+                }
+                // The key likely already exists or migration was run
+            }
+            
             $newStakes = 0;
             foreach ($stakes as $stake) {
+                // Map API fields to database schema
+                $validator = $stake['validator'] ?? ($stake['validator_address'] ?? '');
+                $staker = $stake['staker'] ?? ($stake['staker_address'] ?? '');
+                $amount = $stake['amount'] ?? 0;
+                $rewardRate = $stake['reward_rate'] ?? 0.05;
+                $startBlock = $stake['start_block'] ?? ($stake['block_number'] ?? 0);
+                $endBlock = $stake['end_block'] ?? null;
+                $status = $stake['status'] ?? 'active';
+                $rewardsEarned = $stake['rewards_earned'] ?? ($stake['rewards'] ?? 0);
+                $lastRewardBlock = $stake['last_reward_block'] ?? 0;
+                $contractAddress = $stake['contract_address'] ?? null;
+                
+                // Use AUTO_INCREMENT for ID - don't specify it in INSERT
                 $stmt = $this->pdo->prepare("
-                    INSERT IGNORE INTO staking (validator_address, staker_address, amount, status, staked_at, rewards)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO staking (validator, staker, amount, reward_rate, start_block, end_block, status, rewards_earned, last_reward_block, contract_address, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE
+                        amount = VALUES(amount),
+                        reward_rate = VALUES(reward_rate),
+                        end_block = VALUES(end_block),
+                        status = VALUES(status),
+                        rewards_earned = VALUES(rewards_earned),
+                        last_reward_block = VALUES(last_reward_block),
+                        contract_address = VALUES(contract_address),
+                        updated_at = NOW()
                 ");
+                
                 $result = $stmt->execute([
-                    $stake['validator_address'] ?? '',
-                    $stake['staker_address'] ?? '',
-                    $stake['amount'] ?? 0,
-                    $stake['status'] ?? 'active',
-                    $stake['staked_at'] ?? date('Y-m-d H:i:s'),
-                    $stake['rewards'] ?? 0
+                    $validator,
+                    $staker,
+                    $amount,
+                    $rewardRate,
+                    $startBlock,
+                    $endBlock,
+                    $status,
+                    $rewardsEarned,
+                    $lastRewardBlock,
+                    $contractAddress,
+                    date('Y-m-d H:i:s'),
+                    date('Y-m-d H:i:s')
                 ]);
                 
                 if ($result && $stmt->rowCount() > 0) {

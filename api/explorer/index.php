@@ -2617,7 +2617,9 @@ function getStakingRecords(PDO $pdo, string $network, int $page = 0, int $limit 
         
         return [
             'success' => true,
+            // Newer clients expect a flat array in data; older syncers expect data['staking'].
             'data' => $stakingRecords,
+            'staking' => $stakingRecords,
             'pagination' => [
                 'page' => $page,
                 'limit' => $limit,
