@@ -45,11 +45,13 @@ function writeWalletLog($message, $level = 'INFO') {
 class WalletManager
 {
     private PDO $database;
+    private PDO $pdo; // Alias for backward compatibility with queueBackgroundOperation
     private array $config;
     
     public function __construct(PDO $database, array $config = [])
     {
         $this->database = $database;
+        $this->pdo = $database; // Alias for backward compatibility with queueBackgroundOperation
         $this->config = $config;
     }
     

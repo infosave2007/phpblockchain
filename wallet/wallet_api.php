@@ -8801,31 +8801,111 @@ function createMempoolManagerWithAutoSync(PDO $pdo, $walletManager, array $confi
 
 /**
  * Perform background synchronization after transfer (non-blocking)
+ * Queues heavy operations instead of executing them immediately
  */
 function performBackgroundSync($walletManager, array $config): void {
     try {
-        writeLog("Starting background sync after transfer", 'INFO');
+        writeLog("Queueing background sync operations", 'INFO');
         
-        // Auto-sync after transfer if enabled
+        // Get PDO connection to access database for queuing
+        $reflection = new ReflectionClass($walletManager);
+        $pdoProperty = $reflection->getProperty('pdo');
+        $pdoProperty->setAccessible(true);
+        $pdo = $pdoProperty->getValue($walletManager);
+        
+        if (!$pdo) {
+            writeLog("Failed to get PDO connection for background queue", 'ERROR');
+            return;
+        }
+        
+        // Queue auto-sync after transfer if enabled
         if ($config['auto_sync.enabled'] ?? true) {
-            writeLog("Checking auto-sync in background", 'INFO');
-            $autoSyncResult = autoSyncNetwork($walletManager, $config);
-            if ($autoSyncResult['triggered']) {
-                writeLog("Background auto-sync triggered: " . json_encode($autoSyncResult), 'INFO');
+            queueBackgroundOperation('auto_sync', [
+                'config' => $config,
+                'timestamp' => time()
+            ], 3); // Priority 3 (medium)
+            writeLog("Auto-sync operation queued", 'INFO');
+        }
+
+        // Queue blockchain height monitoring after transfer
+        if ($config['monitor.enabled'] ?? true) {
+            queueBackgroundOperation('height_monitoring', [
+                'config' => $config,
+                'timestamp' => time()
+            ], 4); // Priority 4 (medium-high)
+            writeLog("Height monitoring operation queued", 'INFO');
+        }
+        
+        writeLog("Background operations queued successfully", 'INFO');
+        
+    } catch (Exception $e) {
+        writeLog("Background sync queuing failed: " . $e->getMessage(), 'ERROR');
+    }
+}
+
+/**
+ * Queue a background operation in event_queue table
+ */
+function queueBackgroundOperation($eventType, $eventData, $priority = 5): bool {
+    try {
+        // Get PDO connection
+        $backtrace = debug_backtrace();
+        $caller = $backtrace[1] ?? null;
+        $sourceNode = '';
+
+        if (isset($caller['class'])) {
+            $sourceNode = $caller['class'];
+        } elseif (isset($caller['file'])) {
+            $sourceNode = basename($caller['file']);
+        } else {
+            $sourceNode = 'wallet_api';
+        }
+
+        // Generate unique event ID
+        $eventId = uniqid($eventType . '_', true);
+
+        // Get PDO from wallet manager via reflection if available
+        $pdo = null;
+        if (isset($caller['object']) && is_object($caller['object'])) {
+            $reflection = new ReflectionClass($caller['object']);
+            if ($reflection->hasProperty('pdo')) {
+                $pdoProperty = $reflection->getProperty('pdo');
+                $pdoProperty->setAccessible(true);
+                $pdo = $pdoProperty->getValue($caller['object']);
             }
         }
 
-        // Monitor blockchain height after transfer
-        if ($config['monitor.enabled'] ?? true) {
-            $monitorResult = monitorBlockchainHeight($walletManager, $config);
-            if ($monitorResult['status'] !== 'healthy') {
-                writeLog("Background height monitor alert: " . json_encode($monitorResult), 'WARNING');
-            }
+        // Fallback to direct database connection if not available
+        if (!$pdo) {
+            // Use the existing getDatabaseConnection function which handles all the configuration properly
+            $pdo = getDatabaseConnection();
         }
         
-        writeLog("Background sync completed", 'INFO');
+        // Insert into event_queue table
+        $stmt = $pdo->prepare("
+            INSERT INTO event_queue (
+                event_type, event_data, event_id, source_node, priority, created_at, status
+            ) VALUES (?, ?, ?, ?, ?, NOW(), 'pending')
+        ");
+        
+        $result = $stmt->execute([
+            $eventType,
+            json_encode($eventData, JSON_UNESCAPED_UNICODE),
+            $eventId,
+            $sourceNode,
+            $priority
+        ]);
+        
+        if ($result) {
+            writeLog("Background operation queued: $eventType (ID: $eventId)", 'INFO');
+            return true;
+        } else {
+            writeLog("Failed to queue background operation: $eventType", 'ERROR');
+            return false;
+        }
         
     } catch (Exception $e) {
-        writeLog("Background sync failed: " . $e->getMessage(), 'ERROR');
+        writeLog("Failed to queue background operation: " . $e->getMessage(), 'ERROR');
+        return false;
     }
 }

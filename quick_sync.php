@@ -225,11 +225,16 @@ function performSync($syncManager, $options = []) {
             echo "Current transactions: " . $preStatus['tables']['transactions'] . "\n";
         }
         
-        // Step 2: Perform main synchronization
+        // Step 2: Process wallet background tasks from event_queue (if any)
+        if (!$quiet) echo "🔄 Processing wallet background operations...\n";
+        $walletBgResult = processWalletBackgroundTasks($syncManager, $quiet, $verbose);
+        if (!$quiet) echo "✅ Wallet background tasks processed: {$walletBgResult['processed']} tasks\n";
+        
+        // Step 3: Perform main synchronization
         if (!$quiet) echo "🔄 Performing blockchain synchronization...\n";
         $result = $syncManager->syncAll();
 
-        // Step 2.5: Inline processing of raw Ethereum-style queued transactions (storage/raw_mempool)
+        // Step 3.5: Inline processing of raw Ethereum-style queued transactions (storage/raw_mempool)
         if (in_array($command ?? '', ['enhanced-sync','sync']) || $verbose) {
             if (!$quiet) echo "📥 Processing raw transaction queue (inline)...\n";
             try {
@@ -1214,6 +1219,318 @@ function fixPendingTransactions($syncManager, $quiet = false, $verbose = false) 
         return [
             'fixed' => 0,
             'error' => $error
+        ];
+    }
+}
+
+/**
+ * Process wallet background tasks from event_queue table
+ */
+function processWalletBackgroundTasks($syncManager, $quiet = false, $verbose = false): array {
+    try {
+        // Get PDO connection via reflection
+        $reflection = new ReflectionClass($syncManager);
+        if (!$reflection->hasProperty('pdo')) {
+            throw new Exception("PDO property not accessible in NetworkSyncManager");
+        }
+        
+        $property = $reflection->getProperty('pdo');
+        $property->setAccessible(true);
+        $pdo = $property->getValue($syncManager);
+        
+        if (!$pdo) {
+            throw new Exception("PDO connection not available");
+        }
+        
+        if (!$quiet) echo "🔄 Processing wallet background tasks...\n";
+        
+        // Get pending wallet background tasks
+        $stmt = $pdo->prepare("
+            SELECT id, event_type, event_data, event_id, created_at, priority
+            FROM event_queue
+            WHERE status = 'pending'
+            AND event_type IN ('auto_sync', 'height_monitoring', 'topology_update')
+            ORDER BY priority ASC, created_at ASC
+            LIMIT 10
+        ");
+        
+        $stmt->execute();
+        $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        if (empty($tasks)) {
+            if ($verbose) echo "  No wallet background tasks found\n";
+            return ['processed' => 0, 'message' => 'No wallet background tasks'];
+        }
+        
+        $processed = 0;
+        
+        foreach ($tasks as $task) {
+            try {
+                $taskId = $task['id'];
+                $eventType = $task['event_type'];
+                $eventData = json_decode($task['event_data'], true);
+                
+                if ($verbose) echo "  Processing {$eventType} (ID: {$task['event_id']})\n";
+                
+                // Update task status to processing
+                $updateStmt = $pdo->prepare("
+                    UPDATE event_queue
+                    SET status = 'processing', processed_at = NOW()
+                    WHERE id = ? AND status = 'pending'
+                ");
+                
+                $updateStmt->execute([$taskId]);
+                
+                // Process based on event type
+                $walletManager = null;
+                $config = $eventData['config'] ?? [];
+                
+                switch ($eventType) {
+                    case 'auto_sync':
+                        // Load required classes
+                        require_once __DIR__ . '/wallet/wallet_api.php';
+                        $walletManager = new \Blockchain\Wallet\WalletManager($pdo);
+                        
+                        // Call the auto-sync function (simplified version for quick sync)
+                        if (isset($config['auto_sync']) && $config['auto_sync']['enabled'] === '1') {
+                            // Simple height check instead of full auto sync
+                            $localHeight = getCurrentBlockHeight($pdo);
+                            $maxHeight = getNetworkMaxHeight($syncManager, $pdo);
+                            
+                            if ($maxHeight > 0 && $maxHeight - $localHeight > 2) {
+                                if ($verbose) echo "  Auto-sync needed - local: $localHeight, network: $maxHeight\n";
+                                $syncResult = $syncManager->syncAll();
+                                if ($verbose) echo "  Auto-sync result: " . json_encode($syncResult) . "\n";
+                            } else {
+                                if ($verbose) echo "  Auto-sync not needed - heights are close\n";
+                            }
+                        }
+                        break;
+                        
+                    case 'height_monitoring':
+                        // Load required classes
+                        require_once __DIR__ . '/wallet/wallet_api.php';
+                        $walletManager = new \Blockchain\Wallet\WalletManager($pdo);
+                        
+                        // Simplified height monitoring
+                        $monitorResult = checkBlockHeightSync($syncManager, $pdo, $verbose);
+                        if ($monitorResult['status'] !== 'healthy') {
+                            if ($verbose) echo "  Height monitoring alert: " . json_encode($monitorResult) . "\n";
+                        }
+                        break;
+                        
+                    case 'topology_update':
+                        // Load required classes
+                        require_once __DIR__ . '/wallet/wallet_api.php';
+                        $walletManager = new \Blockchain\Wallet\WalletManager($pdo);
+                        
+                        // Update network topology
+                        $topologyResult = updateNetworkTopologyQuick($syncManager, $pdo, $verbose);
+                        if ($verbose) echo "  Topology update result: " . json_encode($topologyResult) . "\n";
+                        break;
+                        
+                    default:
+                        if ($verbose) echo "  Unknown event type: {$eventType}\n";
+                        break;
+                }
+                
+                // Mark task as completed
+                $completeStmt = $pdo->prepare("
+                    UPDATE event_queue
+                    SET status = 'completed', processed_at = NOW()
+                    WHERE id = ? AND status = 'processing'
+                ");
+                
+                $completeStmt->execute([$taskId]);
+                $processed++;
+                
+            } catch (Exception $e) {
+                // Mark task as failed
+                try {
+                    $failStmt = $pdo->prepare("
+                        UPDATE event_queue
+                        SET status = 'failed', processed_at = NOW()
+                        WHERE id = ? AND status = 'processing'
+                    ");
+                    
+                    $failStmt->execute([$taskId]);
+                } catch (Exception $e2) {
+                    if ($verbose) echo "  Failed to mark task as failed: {$e2->getMessage()}\n";
+                }
+                
+                if ($verbose) echo "  Failed to process task: {$e->getMessage()}\n";
+                error_log("[quick_sync] processWalletBackgroundTasks error for {$eventType}: " . $e->getMessage());
+            }
+        }
+        
+        if (!$quiet) echo "✅ Processed {$processed} wallet background tasks\n";
+        
+        return [
+            'processed' => $processed,
+            'total' => count($tasks),
+            'message' => "Successfully processed {$processed} wallet background tasks"
+        ];
+        
+    } catch (Exception $e) {
+        $error = "Wallet background tasks processing failed: " . $e->getMessage();
+        if (!$quiet) echo "❌ $error\n";
+        error_log("[quick_sync] processWalletBackgroundTasks error: " . $error);
+        
+        return [
+            'processed' => 0,
+            'error' => $error
+        ];
+    }
+}
+
+/**
+ * Get current block height from database
+ */
+function getCurrentBlockHeight($pdo): int {
+    try {
+        $stmt = $pdo->query("SELECT MAX(height) as max_height FROM blocks");
+        $result = $stmt->fetch();
+        return (int)($result['max_height'] ?? 0);
+    } catch (Exception $e) {
+        error_log("[quick_sync] getCurrentBlockHeight error: " . $e->getMessage());
+        return 0;
+    }
+}
+
+/**
+ * Get maximum block height from network
+ */
+function getNetworkMaxHeight($syncManager, $pdo): int {
+    try {
+        $maxHeight = 0;
+        
+        // Get active nodes from database
+        $stmt = $pdo->query("SELECT node_id, ip_address, port, metadata FROM nodes WHERE status = 'active' LIMIT 5");
+        $nodes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        foreach ($nodes as $node) {
+            try {
+                $metadata = json_decode($node['metadata'], true);
+                $domain = $metadata['domain'] ?? $node['ip_address'];
+                $protocol = $metadata['protocol'] ?? 'https';
+                $url = "$protocol://$domain/api/explorer/blocks?limit=1";
+                
+                $response = @file_get_contents($url);
+                if ($response) {
+                    $data = json_decode($response, true);
+                    if (isset($data['blocks'][0]['index'])) {
+                        $height = $data['blocks'][0]['index'];
+                        if ($height > $maxHeight) {
+                            $maxHeight = $height;
+                        }
+                    }
+                }
+            } catch (Exception $e) {
+                // Skip this node
+            }
+        }
+        
+        return $maxHeight;
+    } catch (Exception $e) {
+        error_log("[quick_sync] getNetworkMaxHeight error: " . $e->getMessage());
+        return 0;
+    }
+}
+
+/**
+ * Check block height synchronicity
+ */
+function checkBlockHeightSync($syncManager, $pdo, $verbose = false): array {
+    try {
+        $localHeight = getCurrentBlockHeight($pdo);
+        $networkHeight = getNetworkMaxHeight($syncManager, $pdo);
+        
+        if ($verbose) echo "    Local height: {$localHeight}, Network height: {$networkHeight}\n";
+        
+        if ($networkHeight === 0) {
+            return [
+                'status' => 'error',
+                'message' => 'No responsive nodes found'
+            ];
+        }
+        
+        $difference = $networkHeight - $localHeight;
+        
+        if ($difference <= 2) {
+            return [
+                'status' => 'healthy',
+                'local_height' => $localHeight,
+                'network_height' => $networkHeight,
+                'difference' => $difference,
+                'message' => 'In sync'
+            ];
+        } elseif ($difference <= 5) {
+            return [
+                'status' => 'warning',
+                'local_height' => $localHeight,
+                'network_height' => $networkHeight,
+                'difference' => $difference,
+                'message' => 'Slightly behind'
+            ];
+        } else {
+            return [
+                'status' => 'critical',
+                'local_height' => $localHeight,
+                'network_height' => $networkHeight,
+                'difference' => $difference,
+                'message' => 'Significantly behind'
+            ];
+        }
+    } catch (Exception $e) {
+        return [
+            'status' => 'error',
+            'message' => 'Height check failed: ' . $e->getMessage()
+        ];
+    }
+}
+
+/**
+ * Quick network topology update
+ */
+function updateNetworkTopologyQuick($syncManager, $pdo, $verbose = false): array {
+    try {
+        // Get some active nodes to update topology
+        $stmt = $pdo->query("SELECT node_id, ip_address, port, metadata FROM nodes WHERE status = 'active' LIMIT 3");
+        $nodes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        $updated = 0;
+        
+        foreach ($nodes as $node) {
+            try {
+                $metadata = json_decode($node['metadata'], true);
+                $domain = $metadata['domain'] ?? $node['ip_address'];
+                $protocol = $metadata['protocol'] ?? 'https';
+                
+                // Update topology cache with simplified approach
+                $stmt = $pdo->prepare("
+                    INSERT INTO network_topology_cache (cache_key, cache_data, expires_at)
+                    VALUES (?, ?, NOW() + INTERVAL 1 HOUR)
+                    ON DUPLICATE KEY UPDATE cache_data = VALUES(cache_data), expires_at = VALUES(expires_at)
+                ");
+                
+                $cacheData = json_encode(['nodes' => [$node], 'updated_at' => time()]);
+                $stmt->execute(['quick_topology_' . $node['node_id'], $cacheData]);
+                
+                $updated++;
+            } catch (Exception $e) {
+                // Skip this node
+            }
+        }
+        
+        return [
+            'updated' => $updated,
+            'total' => count($nodes),
+            'message' => "Updated topology for {$updated}/" . count($nodes) . " nodes"
+        ];
+    } catch (Exception $e) {
+        return [
+            'updated' => 0,
+            'error' => 'Topology update failed: ' . $e->getMessage()
         ];
     }
 }
