@@ -8877,8 +8877,10 @@ function queueBackgroundOperation($eventType, $eventData, $priority = 5): bool {
 
         // Fallback to direct database connection if not available
         if (!$pdo) {
-            // Use the existing getDatabaseConnection function which handles all the configuration properly
-            $pdo = getDatabaseConnection();
+            // Use the central DatabaseManager so queueing uses the same environment/config as the rest of the app
+            // This avoids ad-hoc PDO creation that may use a different fallback (like 'database' hostname)
+            require_once __DIR__ . '/../core/Database/DatabaseManager.php';
+            $pdo = \Blockchain\Core\Database\DatabaseManager::getConnection();
         }
         
         // Insert into event_queue table
