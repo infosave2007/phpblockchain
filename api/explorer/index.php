@@ -2034,8 +2034,8 @@ function getAllTransactions(PDO $pdo, string $network, int $page = 0, int $limit
         
         $offset = $page * $limit;
         
-        // Get transactions with pagination
-        $stmt = $pdo->prepare("SELECT hash, block_hash, block_height, from_address, to_address, amount, fee, gas_limit, gas_used, gas_price, nonce, data, signature, status, timestamp FROM transactions ORDER BY block_height ASC, timestamp ASC LIMIT ?, ?");
+    // Get transactions with pagination (newest-first)
+    $stmt = $pdo->prepare("SELECT hash, block_hash, block_height, from_address, to_address, amount, fee, gas_limit, gas_used, gas_price, nonce, data, signature, status, timestamp FROM transactions ORDER BY timestamp DESC, block_height DESC LIMIT ?, ?");
         $stmt->bindValue(1, $offset, PDO::PARAM_INT);
         $stmt->bindValue(2, $limit, PDO::PARAM_INT);
         $stmt->execute();
