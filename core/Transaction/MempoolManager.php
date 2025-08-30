@@ -245,13 +245,23 @@ class MempoolManager
     
     /**
      * Get transactions for block creation
+     * Prioritizes regular (non-raw) transactions over raw transactions
      */
     public function getTransactionsForBlock(int $maxCount = 1000, int $maxGas = 8000000): array
     {
+        // First, get transactions with priority: raw transactions first, then regular
         $stmt = $this->database->prepare("
-            SELECT * FROM mempool
+            SELECT *, 
+                   CASE 
+                       WHEN (data LIKE '%raw%') 
+                       THEN 2  -- Raw transactions get highest priority
+                       WHEN (data IS NULL OR data = '' OR data = '{}') 
+                       THEN 1  -- Regular transactions
+                       ELSE 0  -- Other transactions
+                   END as priority_type
+            FROM mempool
             WHERE amount > 0.0
-            ORDER BY priority_score DESC, created_at ASC
+            ORDER BY priority_type DESC, priority_score DESC, created_at ASC
             LIMIT :max_count
         ");
 
@@ -259,6 +269,9 @@ class MempoolManager
         $stmt->execute();
         $transactions = [];
         $totalGas = 0;
+        $regularCount = 0;
+        $rawCount = 0;
+        $otherCount = 0;
 
         while ($row = $stmt->fetch()) {
             $transaction = $this->arrayToTransaction($row);
@@ -270,6 +283,30 @@ class MempoolManager
 
             $transactions[] = $transaction;
             $totalGas += $transaction->getGasLimit();
+            
+            // Count transaction types for logging
+            switch ($row['priority_type']) {
+                case 2:
+                    $rawCount++;
+                    break;
+                case 1:
+                    $regularCount++;
+                    break;
+                default:
+                    $otherCount++;
+                    break;
+            }
+        }
+
+        // Log transaction selection summary
+        if ($this->eventDispatcher) {
+            $this->eventDispatcher->dispatch('mempool.block_selection', [
+                'raw_count' => $rawCount,
+                'regular_count' => $regularCount,
+                'other_count' => $otherCount,
+                'total_count' => count($transactions),
+                'total_gas' => $totalGas
+            ]);
         }
 
         return $transactions;

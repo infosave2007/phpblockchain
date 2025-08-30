@@ -7041,21 +7041,58 @@ function autoMineBlocks($walletManager, array $config): array {
         
         writeLog("autoMineBlocks: Starting auto-mine check", 'INFO');
         
-        // Check number of transactions in mempool
+        // Check number of regular (non-raw) transactions in mempool
+        $stmt = $pdo->query("
+            SELECT COUNT(*) FROM mempool 
+            WHERE status='pending' 
+            AND (data IS NULL OR data = '' OR data = '{}' OR data NOT LIKE '%raw%')
+        ");
+        $regularTxCount = $stmt->fetchColumn();
+        
+        // Also get total count for logging
         $stmt = $pdo->query("SELECT COUNT(*) FROM mempool WHERE status='pending'");
-        $mempoolCount = $stmt->fetchColumn();
+        $totalTxCount = $stmt->fetchColumn();
         
-        writeLog("autoMineBlocks: Found {$mempoolCount} pending transactions in mempool", 'INFO');
+        writeLog("autoMineBlocks: Found {$totalTxCount} total pending transactions, {$regularTxCount} regular (non-raw) transactions", 'INFO');
         
-        // If transactions are less than threshold, don't mine
-        $minTransactions = $config['auto_mine.min_transactions'] ?? 10;
-        if ($mempoolCount < $minTransactions) {
-            writeLog("autoMineBlocks: Not enough transactions ({$mempoolCount} < {$minTransactions})", 'INFO');
+        // Get mining thresholds from configuration
+        $minRegularTransactions = $config['auto_mine.min_regular_transactions'] ?? 5;
+        $minTotalTransactions = $config['auto_mine.min_transactions'] ?? 10;
+        
+        // SPECIAL CASE: If we have raw transactions, mine immediately regardless of counts
+        $stmt = $pdo->query("
+            SELECT COUNT(*) FROM mempool 
+            WHERE status='pending' 
+            AND data LIKE '%raw%'
+        ");
+        $rawTxCount = $stmt->fetchColumn();
+        
+        if ($rawTxCount > 0) {
+            writeLog("autoMineBlocks: Found {$rawTxCount} raw transactions - mining immediately", 'INFO');
+            // Continue to mining with raw transactions
+        } 
+        // Check if we have enough regular transactions to mine
+        elseif ($regularTxCount >= $minRegularTransactions) {
+            writeLog("autoMineBlocks: Sufficient regular transactions ({$regularTxCount} >= {$minRegularTransactions})", 'INFO');
+            // Continue to mining with regular transactions
+        }
+        // Check if we have enough total transactions (fallback for mixed types)
+        elseif ($totalTxCount >= $minTotalTransactions) {
+            writeLog("autoMineBlocks: Sufficient total transactions ({$totalTxCount} >= {$minTotalTransactions}) - mining with mixed types", 'INFO');
+            // Continue to mining with mixed transaction types
+        }
+        // Not enough transactions of any type
+        else {
+            writeLog("autoMineBlocks: Not enough transactions for mining", 'INFO');
+            writeLog("autoMineBlocks: Regular: {$regularTxCount}/{$minRegularTransactions}, Total: {$totalTxCount}/{$minTotalTransactions}", 'INFO');
             return [
                 'mined' => false,
-                'reason' => 'Not enough transactions',
-                'mempool_count' => $mempoolCount,
-                'min_required' => $minTransactions
+                'reason' => 'Insufficient transactions for mining',
+                'total_mempool_count' => $totalTxCount,
+                'regular_transactions_count' => $regularTxCount,
+                'raw_transactions_count' => $rawTxCount,
+                'min_regular_required' => $minRegularTransactions,
+                'min_total_required' => $minTotalTransactions
             ];
         }
         

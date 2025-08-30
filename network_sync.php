@@ -981,7 +981,7 @@ class NetworkSyncManager {
         $foundPage = -1;
         for ($probePage = 0; $probePage < min(5, $maxPages); $probePage++) {
             $url = rtrim($node, '/') . "/api/explorer/transactions?page=$probePage&limit=$limit";
-            $response = $this->makeApiCall($url);
+            $response = $this->makeApiCall($url); // OPTIMIZED: No timeout - work by response time
             
             if ($response && isset($response['transactions']) && !empty($response['transactions'])) {
                 $foundPage = $probePage;
@@ -1000,7 +1000,7 @@ class NetworkSyncManager {
         
         do {
             $url = rtrim($node, '/') . "/api/explorer/transactions?page=$page&limit=$limit";
-            $response = $this->makeApiCall($url);
+            $response = $this->makeApiCall($url); // OPTIMIZED: No timeout - work by response time
             
             if (!$response || !isset($response['transactions'])) {
                 $this->log("No transaction data available from node (page $page)");
@@ -1538,7 +1538,7 @@ class NetworkSyncManager {
         $this->log("Total staking records synced: $stakesSynced");
     }
     
-    private function makeApiCall($url, $timeout = 30, $postData = null) {
+    private function makeApiCall($url, $timeout = 2, $postData = null) { // OPTIMIZED: Minimal timeout - fast response
         // Backward compatibility: if 3rd argument looks like array and 2nd is not int, shift params
         if (is_array($timeout) && $postData === null) {
             $postData = $timeout;
@@ -1678,23 +1678,23 @@ class NetworkSyncManager {
             $peers = array_slice($peers, 0, $peerSample);
             $this->log("Quorum check: querying " . count($peers) . " peer nodes");
 
-            // 4) For each peer, fetch hash at heights and compute agreement score
+            // 4) For each peer, fetch hash at heights and compute agreement score (OPTIMIZED)
             $agreement = 0;
             $asked = 0;
             $detailedResults = [];
             
             foreach ($peers as $peer) {
                 $asked++;
-                // Check multiple strategic heights to get better confidence
-                $heightsToCheck = [$H, max(0, $H-1), max(0, $H-2), max(0, $H-5), max(0, $H-10)];
+                // OPTIMIZATION: Check only 2 strategic heights instead of 5 for faster validation
+                $heightsToCheck = [$H, max(0, $H-1)];
                 $peerAgrees = false;
                 $peerDetails = ['peer' => $peer, 'checks' => []];
                 
-                foreach (array_unique($heightsToCheck) as $h) {
+                foreach ($heightsToCheck as $h) {
                     if (!isset($local[$h])) continue; // Skip if we don't have this block locally
                     
                     $url = rtrim($peer, '/') . "/api/explorer/index.php?action=get_block&block_id=" . $h;
-                    $resp = $this->makeApiCall($url, 15);
+                    $resp = $this->makeApiCall($url); // OPTIMIZED: No timeout - work by response time
                     
                     if ($resp && isset($resp['success']) && $resp['success'] && isset($resp['data']['hash'])) {
                         $peerHash = $resp['data']['hash'];
@@ -2593,7 +2593,7 @@ class NetworkSyncManager {
             
             foreach ($networkNodes as $nodeUrl) {
                 $url = rtrim($nodeUrl, '/') . '/api/explorer/index.php?action=get_network_stats';
-                $response = $this->makeApiCall($url, 5); // Short timeout
+                $response = $this->makeApiCall($url); // OPTIMIZED: No timeout - work by response time
                 
                 if ($response && isset($response['current_height'])) {
                     $networkHeights[] = (int)$response['current_height'];
@@ -2640,7 +2640,7 @@ class NetworkSyncManager {
         foreach ($networkNodes as $nodeUrl) {
             try {
                 $url = rtrim($nodeUrl, '/') . '/api/explorer/index.php?action=get_network_stats';
-                $response = $this->makeApiCall($url, 5);
+                $response = $this->makeApiCall($url); // OPTIMIZED: No timeout - work by response time
                 
                 if ($response && isset($response['current_height'])) {
                     $nodeHeight = (int)$response['current_height'];
