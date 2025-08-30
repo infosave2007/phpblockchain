@@ -8883,6 +8883,28 @@ function queueBackgroundOperation($eventType, $eventData, $priority = 5): bool {
             $pdo = \Blockchain\Core\Database\DatabaseManager::getConnection();
         }
         
+        // Known non-unique / periodic event types that should not be enqueued multiple times
+        $nonUniqueTypes = [
+            'auto_sync', 'height_monitoring', 'sync_mempool', 'auto_mine',
+            'topology_update', 'update_topology', 'broadcast_stats', 'quick_sync'
+        ];
+
+        // If this event type is considered non-unique, skip insert when a pending/processing exists
+        if (in_array($eventType, $nonUniqueTypes, true)) {
+            try {
+                $checkStmt = $pdo->prepare("SELECT id FROM event_queue WHERE event_type = ? AND status IN ('pending','processing') LIMIT 1");
+                $checkStmt->execute([$eventType]);
+                $exists = $checkStmt->fetch(PDO::FETCH_ASSOC);
+                if ($exists) {
+                    writeLog("Skipping enqueue of non-unique event type '$eventType' because a pending/processing entry exists (ID: " . ($exists['id'] ?? 'unknown') . ")", 'INFO');
+                    return true; // treat as success (already queued)
+                }
+            } catch (Exception $e) {
+                // If check fails for some reason, proceed to attempt insert to avoid losing the operation
+                writeLog("Warning: failed to check existing non-unique event queue items: " . $e->getMessage(), 'WARNING');
+            }
+        }
+
         // Insert into event_queue table
         $stmt = $pdo->prepare("
             INSERT INTO event_queue (

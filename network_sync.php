@@ -967,12 +967,36 @@ class NetworkSyncManager {
     }
     
     private function syncTransactions($node) {
-        $this->log("Starting direct transaction sync from paginated API...");
+        $this->log("Starting optimized transaction sync from paginated API...");
         $totalSynced = 0;
         
-        // Use paginated transactions API directly instead of extracting from blocks
+        // Use optimized pagination with early exit
         $page = 0;
         $limit = 100;
+        $maxPages = 50; // Safety limit
+        $consecutiveEmptyPages = 0;
+        $maxConsecutiveEmpty = 3; // Stop after 3 consecutive empty pages
+        
+        // First, probe to find a page with transactions
+        $foundPage = -1;
+        for ($probePage = 0; $probePage < min(5, $maxPages); $probePage++) {
+            $url = rtrim($node, '/') . "/api/explorer/transactions?page=$probePage&limit=$limit";
+            $response = $this->makeApiCall($url);
+            
+            if ($response && isset($response['transactions']) && !empty($response['transactions'])) {
+                $foundPage = $probePage;
+                $this->log("Found transactions on page $probePage, starting sync from there");
+                break;
+            }
+        }
+        
+        if ($foundPage === -1) {
+            $this->log("No transactions found on any probed page");
+            return 0;
+        }
+        
+        // Start from the found page
+        $page = $foundPage;
         
         do {
             $url = rtrim($node, '/') . "/api/explorer/transactions?page=$page&limit=$limit";
@@ -980,13 +1004,21 @@ class NetworkSyncManager {
             
             if (!$response || !isset($response['transactions'])) {
                 $this->log("No transaction data available from node (page $page)");
-                break;
+                $consecutiveEmptyPages++;
+                $page++;
+                continue;
             }
             
             $transactions = $response['transactions'] ?? [];
-            if (empty($transactions)) break;
+            if (empty($transactions)) {
+                $consecutiveEmptyPages++;
+                $page++;
+                continue;
+            }
             
             $newTransactions = 0;
+            $pageHasNewTx = false;
+            
             foreach ($transactions as $tx) {
                 $txHash = $tx['hash'] ?? '';
                 $fromAddr = $tx['from'] ?? '';
@@ -1026,12 +1058,20 @@ class NetworkSyncManager {
                     
                     if ($result && $stmt->rowCount() > 0) {
                         $newTransactions++;
+                        $pageHasNewTx = true;
                     }
                 }
             }
             
             $totalSynced += $newTransactions;
-            $this->log("Page $page: synced $newTransactions new transactions");
+            
+            if ($pageHasNewTx) {
+                $consecutiveEmptyPages = 0; // Reset counter
+                $this->log("Page $page: synced $newTransactions new transactions");
+            } else {
+                $consecutiveEmptyPages++;
+                $this->log("Page $page: no new transactions (empty pages: $consecutiveEmptyPages)");
+            }
             
             if ($this->isWebMode) {
                 echo json_encode(['status' => 'progress', 'message' => "Page $page: synced $newTransactions transactions"]) . "\n";
@@ -1040,9 +1080,25 @@ class NetworkSyncManager {
             
             $page++;
             
+            // Early exit conditions
+            if ($consecutiveEmptyPages >= $maxConsecutiveEmpty) {
+                $this->log("Stopping after $consecutiveEmptyPages consecutive empty pages");
+                break;
+            }
+            
+            if ($page >= $maxPages) {
+                $this->log("Reached maximum page limit ($maxPages)");
+                break;
+            }
+            
+            if ($totalSynced >= 1000) {
+                $this->log("Reached sync limit of 1000 transactions");
+                break;
+            }
+            
         } while (count($transactions) == $limit);
         
-        $this->log("Total transactions synced: $totalSynced");
+        $this->log("Total transactions synced: $totalSynced (stopped at page $page)");
         return $totalSynced;
     }
     
