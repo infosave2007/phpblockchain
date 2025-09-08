@@ -21,6 +21,7 @@ class SmartContractManager
     private int $gasPrice;
     private int $maxGasPerTransaction;
     private array $config;
+    private ?\PDO $database;
 
     public function __construct(
         VirtualMachine $vm,
@@ -28,7 +29,8 @@ class SmartContractManager
         LoggerInterface $logger,
         array $config = [],
         int $gasPrice = 1,
-        int $maxGasPerTransaction = 1000000
+        int $maxGasPerTransaction = 1000000,
+        ?\PDO $database = null
     ) {
         $this->vm = $vm;
         $this->stateStorage = $stateStorage;
@@ -37,6 +39,7 @@ class SmartContractManager
         $this->gasPrice = $gasPrice;
         $this->maxGasPerTransaction = $maxGasPerTransaction;
         $this->config = $config;
+        $this->database = $database;
     }
 
     /**
@@ -371,26 +374,93 @@ class SmartContractManager
     {
         $results = [];
 
-    // ERC-20 token
-        $erc20Code = $this->getERC20Template();
-        $tokenName = $this->config['blockchain']['network_name'] ?? 'My Blockchain Token';
-        $tokenSymbol = $this->config['blockchain']['token_symbol'] ?? 'MBC';
-        $tokenSupply = $this->config['blockchain']['initial_supply'] ?? 1000000;
+        // Get network and token configuration from database
+        $tokenConfig = $this->getTokenConfigFromDatabase();
+        $networkConfig = $this->getNetworkConfigFromDatabase();
+
+        // Main network token (from database settings)
+        $tokenCode = $this->getMainTokenTemplate();
+        $tokenSupply = $this->calculateTokenSupplyWithDecimals(
+            $tokenConfig['initial_supply'] ?? $networkConfig['total_supply'] ?? '2100000000',
+            $tokenConfig['decimals'] ?? 18
+        );
         
+        $results['main_token'] = $this->deployContract(
+            $tokenCode,
+            [
+                'deployer' => $deployer, 
+                'totalSupply' => $tokenSupply,
+                'name' => $tokenConfig['token_name'] ?? 'Blockchain Token',
+                'symbol' => $tokenConfig['token_symbol'] ?? 'COIN'
+            ],
+            $deployer,
+            100000,
+            $tokenConfig['token_name'] ?? 'MainToken'
+        );
+
+        // Uniswap V2 Factory
+        $factoryCode = $this->getUniswapV2FactoryTemplate();
+        $results['uniswap_factory'] = $this->deployContract(
+            $factoryCode,
+            ['feeToSetter' => $deployer],
+            $deployer,
+            100000,
+            'UniswapV2Factory'
+        );
+
+        // WETH Token (Wrapped version of main token)
+        $wethCode = $this->getWETHTemplate();
+        $wethName = 'Wrapped ' . ($tokenConfig['token_name'] ?? 'Token');
+        $wethSymbol = 'W' . ($tokenConfig['token_symbol'] ?? 'COIN');
+        
+        $results['weth'] = $this->deployContract(
+            $wethCode,
+            ['name' => $wethName, 'symbol' => $wethSymbol],
+            $deployer,
+            100000,
+            'WETH'
+        );
+
+        // Uniswap V2 Router
+        $routerCode = $this->getUniswapV2RouterTemplate();
+        $factoryAddress = $results['uniswap_factory']['address'] ?? '';
+        $wethAddress = $results['weth']['address'] ?? '';
+        $results['uniswap_router'] = $this->deployContract(
+            $routerCode,
+            ['factory' => $factoryAddress, 'WETH' => $wethAddress],
+            $deployer,
+            100000,
+            'UniswapV2Router'
+        );
+
+        // Legacy ERC-20 token (for compatibility)
+        $erc20Code = $this->getERC20Template();
+        $legacyTokenName = ($networkConfig['name'] ?? 'Blockchain') . ' Legacy Token';
+        $legacyTokenSymbol = ($tokenConfig['token_symbol'] ?? 'COIN') . 'L';
+        $legacyTokenSupply = (int)($tokenConfig['initial_supply'] ?? 1000000);
+
         $results['erc20'] = $this->deployContract(
             $erc20Code,
-            [$tokenName, $tokenSymbol, 18, $tokenSupply],
+            [$legacyTokenName, $legacyTokenSymbol, 18, $legacyTokenSupply],
             $deployer,
             100000,
             'ERC20'
         );
 
-        // Staking contract with configurable duration
+        // Staking contract with configurable settings from database
         $stakingCode = $this->getStakingTemplateInternal();
-        $stakingDuration = $this->config['staking']['default_duration'] ?? 30 * 24 * 60 * 60 / 15; // 30 days in blocks (15s blocks) as default
+        $stakingConfig = $this->getStakingConfigFromDatabase();
+        $blockTime = (int)($networkConfig['block_time'] ?? 10); // seconds per block
+        $defaultDurationDays = 30;
+        $stakingDuration = $stakingConfig['default_duration'] ?? ($defaultDurationDays * 24 * 60 * 60 / $blockTime);
+        
         $results['staking'] = $this->deployContract(
             $stakingCode,
-            [1000, 10, $stakingDuration], // minimum stake, reward per block, duration
+            [
+                $stakingConfig['minimum_stake'] ?? 1000,
+                $stakingConfig['reward_per_block'] ?? 10,
+                $stakingDuration
+            ],
             $deployer,
             100000,
             'Staking'
@@ -417,6 +487,301 @@ class SmartContractManager
         return $this->getStakingTemplateInternal();
     }
 
+
+
+    /**
+     * Uniswap V2 Factory template
+     */
+    private function getUniswapV2FactoryTemplate(): string
+    {
+        return '
+        contract UniswapV2Factory {
+            address public feeTo;
+            address public feeToSetter;
+            mapping(address => mapping(address => address)) public getPair;
+            address[] public allPairs;
+
+            event PairCreated(address indexed token0, address indexed token1, address pair, uint);
+
+            constructor(address _feeToSetter) {
+                feeToSetter = _feeToSetter;
+            }
+
+            function createPair(address tokenA, address tokenB) external returns (address pair) {
+                require(tokenA != tokenB, "UniswapV2: IDENTICAL_ADDRESSES");
+                (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+                require(token0 != address(0), "UniswapV2: ZERO_ADDRESS");
+                require(getPair[token0][token1] == address(0), "UniswapV2: PAIR_EXISTS");
+
+                bytes memory bytecode = type(UniswapV2Pair).creationCode;
+                bytes32 salt = keccak256(abi.encodePacked(token0, token1));
+                assembly {
+                    pair := create2(0, add(bytecode, 32), mload(bytecode), salt)
+                }
+
+                getPair[token0][token1] = pair;
+                getPair[token1][token0] = pair;
+                allPairs.push(pair);
+
+                emit PairCreated(token0, token1, pair, allPairs.length);
+            }
+
+            function setFeeTo(address _feeTo) external {
+                require(msg.sender == feeToSetter, "UniswapV2: FORBIDDEN");
+                feeTo = _feeTo;
+            }
+
+            function setFeeToSetter(address _feeToSetter) external {
+                require(msg.sender == feeToSetter, "UniswapV2: FORBIDDEN");
+                feeToSetter = _feeToSetter;
+            }
+
+            function allPairsLength() external view returns (uint) {
+                return allPairs.length;
+            }
+        }
+
+        contract UniswapV2Pair {
+            address public factory;
+            address public token0;
+            address public token1;
+
+            uint112 private reserve0;
+            uint112 private reserve1;
+            uint32 private blockTimestampLast;
+
+            uint256 public price0CumulativeLast;
+            uint256 public price1CumulativeLast;
+            uint256 public kLast;
+
+            constructor() {
+                factory = msg.sender;
+            }
+
+            function initialize(address _token0, address _token1) external {
+                require(msg.sender == factory, "UniswapV2: FORBIDDEN");
+                token0 = _token0;
+                token1 = _token1;
+            }
+        }';
+    }
+
+    /**
+     * Uniswap V2 Router template
+     */
+    private function getUniswapV2RouterTemplate(): string
+    {
+        return '
+        contract UniswapV2Router {
+            address public immutable factory;
+            address public immutable WETH;
+
+            modifier ensure(uint deadline) {
+                require(deadline >= block.timestamp, "UniswapV2Router: EXPIRED");
+                _;
+            }
+
+            constructor(address _factory, address _WETH) {
+                factory = _factory;
+                WETH = _WETH;
+            }
+
+            function addLiquidity(
+                address tokenA,
+                address tokenB,
+                uint amountADesired,
+                uint amountBDesired,
+                uint amountAMin,
+                uint amountBMin,
+                address to,
+                uint deadline
+            ) external ensure(deadline) returns (uint amountA, uint amountB, uint liquidity) {
+                (amountA, amountB) = _addLiquidity(tokenA, tokenB, amountADesired, amountBDesired, amountAMin, amountBMin);
+                address pair = UniswapV2Factory(factory).getPair(tokenA, tokenB);
+
+                _safeTransferFrom(tokenA, msg.sender, pair, amountA);
+                _safeTransferFrom(tokenB, msg.sender, pair, amountB);
+
+                liquidity = UniswapV2Pair(pair).mint(to);
+            }
+
+            function swapExactTokensForTokens(
+                uint amountIn,
+                uint amountOutMin,
+                address[] calldata path,
+                address to,
+                uint deadline
+            ) external ensure(deadline) returns (uint[] memory amounts) {
+                amounts = UniswapV2Library.getAmountsOut(factory, amountIn, path);
+                require(amounts[amounts.length - 1] >= amountOutMin, "UniswapV2Router: INSUFFICIENT_OUTPUT_AMOUNT");
+
+                _safeTransferFrom(path[0], msg.sender, UniswapV2Library.pairFor(factory, path[0], path[1]), amounts[0]);
+
+                _swap(amounts, path, to);
+            }
+
+            function _addLiquidity(
+                address tokenA,
+                address tokenB,
+                uint amountADesired,
+                uint amountBDesired,
+                uint amountAMin,
+                uint amountBMin
+            ) internal returns (uint amountA, uint amountB) {
+                if (UniswapV2Factory(factory).getPair(tokenA, tokenB) == address(0)) {
+                    UniswapV2Factory(factory).createPair(tokenA, tokenB);
+                }
+
+                (uint reserveA, uint reserveB) = UniswapV2Library.getReserves(factory, tokenA, tokenB);
+
+                if (reserveA == 0 && reserveB == 0) {
+                    (amountA, amountB) = (amountADesired, amountBDesired);
+                } else {
+                    uint amountBOptimal = UniswapV2Library.quote(amountADesired, reserveA, reserveB);
+                    if (amountBOptimal <= amountBDesired) {
+                        require(amountBOptimal >= amountBMin, "UniswapV2Router: INSUFFICIENT_B_AMOUNT");
+                        (amountA, amountB) = (amountADesired, amountBOptimal);
+                    } else {
+                        uint amountAOptimal = UniswapV2Library.quote(amountBDesired, reserveB, reserveA);
+                        require(amountAOptimal <= amountADesired);
+                        require(amountAOptimal >= amountAMin, "UniswapV2Router: INSUFFICIENT_A_AMOUNT");
+                        (amountA, amountB) = (amountAOptimal, amountBDesired);
+                    }
+                }
+            }
+
+            function _swap(uint[] memory amounts, address[] memory path, address _to) internal {
+                for (uint i; i < path.length - 1; i++) {
+                    (address input, address output) = (path[i], path[i + 1]);
+                    (address token0,) = UniswapV2Library.sortTokens(input, output);
+                    uint amountOut = amounts[i + 1];
+
+                    (uint amount0Out, uint amount1Out) = input == token0 ? (uint(0), amountOut) : (amountOut, uint(0));
+
+                    address to = i < path.length - 2 ? UniswapV2Library.pairFor(factory, output, path[i + 2]) : _to;
+                    UniswapV2Pair(UniswapV2Library.pairFor(factory, input, output)).swap(amount0Out, amount1Out, to, new bytes(0));
+                }
+            }
+
+            function _safeTransferFrom(address token, address from, address to, uint value) private {
+                (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+                require(success && (data.length == 0 || abi.decode(data, (bool))), "TransferHelper: TRANSFER_FROM_FAILED");
+            }
+        }
+
+        library UniswapV2Library {
+            function sortTokens(address tokenA, address tokenB) internal pure returns (address token0, address token1) {
+                require(tokenA != tokenB, "UniswapV2Library: IDENTICAL_ADDRESSES");
+                (token0, token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+                require(token0 != address(0), "UniswapV2Library: ZERO_ADDRESS");
+            }
+
+            function pairFor(address factory, address tokenA, address tokenB) internal pure returns (address pair) {
+                (address token0, address token1) = sortTokens(tokenA, tokenB);
+                pair = address(uint160(uint256(keccak256(abi.encodePacked(
+                        hex"ff",
+                        factory,
+                        keccak256(abi.encodePacked(token0, token1)),
+                        hex"96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f
+                )))));
+            }
+
+            function getReserves(address factory, address tokenA, address tokenB) internal view returns (uint reserveA, uint reserveB) {
+                (address token0,) = sortTokens(tokenA, tokenB);
+                (uint reserve0, uint reserve1,) = UniswapV2Pair(pairFor(factory, tokenA, tokenB)).getReserves();
+                (reserveA, reserveB) = tokenA == token0 ? (reserve0, reserve1) : (reserve1, reserve0);
+            }
+
+            function quote(uint amountA, uint reserveA, uint reserveB) internal pure returns (uint amountB) {
+                require(amountA > 0, "UniswapV2Library: INSUFFICIENT_AMOUNT");
+                require(reserveA > 0 && reserveB > 0, "UniswapV2Library: INSUFFICIENT_LIQUIDITY");
+                amountB = amountA * reserveB / reserveA;
+            }
+
+            function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) internal pure returns (uint amountOut) {
+                require(amountIn > 0, "UniswapV2Library: INSUFFICIENT_INPUT_AMOUNT");
+                require(reserveIn > 0 && reserveOut > 0, "UniswapV2Library: INSUFFICIENT_LIQUIDITY");
+                uint amountInWithFee = amountIn * 997;
+                uint numerator = amountInWithFee * reserveOut;
+                uint denominator = reserveIn * 1000 + amountInWithFee;
+                amountOut = numerator / denominator;
+            }
+
+            function getAmountsOut(address factory, uint amountIn, address[] memory path) internal view returns (uint[] memory amounts) {
+                require(path.length >= 2, "UniswapV2Library: INVALID_PATH");
+                amounts = new uint[](path.length);
+                amounts[0] = amountIn;
+                for (uint i; i < path.length - 1; i++) {
+                    (uint reserveIn, uint reserveOut) = getReserves(factory, path[i], path[i + 1]);
+                    amounts[i + 1] = getAmountOut(amounts[i], reserveIn, reserveOut);
+                }
+            }
+        }';
+    }
+
+    /**
+     * WETH (Wrapped Token) template - universal version
+     */
+    private function getWETHTemplate(): string
+    {
+        return '
+        contract WETH {
+            string public name;
+            string public symbol;
+            uint8 public decimals = 18;
+
+            event Deposit(address indexed dst, uint wad);
+            event Withdrawal(address indexed src, uint wad);
+
+            mapping(address => uint) public balanceOf;
+            mapping(address => mapping(address => uint)) public allowance;
+
+            constructor(string memory _name, string memory _symbol) {
+                name = _name;
+                symbol = _symbol;
+            }
+
+            function deposit() public payable {
+                balanceOf[msg.sender] += msg.value;
+                emit Deposit(msg.sender, msg.value);
+            }
+
+            function withdraw(uint wad) public {
+                require(balanceOf[msg.sender] >= wad);
+                balanceOf[msg.sender] -= wad;
+                payable(msg.sender).transfer(wad);
+                emit Withdrawal(msg.sender, wad);
+            }
+
+            function totalSupply() public view returns (uint) {
+                return address(this).balance;
+            }
+
+            function approve(address guy, uint wad) public returns (bool) {
+                allowance[msg.sender][guy] = wad;
+                return true;
+            }
+
+            function transfer(address dst, uint wad) public returns (bool) {
+                return transferFrom(msg.sender, dst, wad);
+            }
+
+            function transferFrom(address src, address dst, uint wad) public returns (bool) {
+                require(balanceOf[src] >= wad);
+
+                if (src != msg.sender && allowance[src][msg.sender] != type(uint).max) {
+                    require(allowance[src][msg.sender] >= wad);
+                    allowance[src][msg.sender] -= wad;
+                }
+
+                balanceOf[src] -= wad;
+                balanceOf[dst] += wad;
+
+                return true;
+            }
+        }';
+    }
+
     /**
      * ERC-20 token template
      */
@@ -428,10 +793,10 @@ class SmartContractManager
             string public symbol;
             uint8 public decimals;
             uint256 public totalSupply;
-            
+
             mapping(address => uint256) public balanceOf;
             mapping(address => mapping(address => uint256)) public allowance;
-            
+
             constructor(string _name, string _symbol, uint8 _decimals, uint256 _totalSupply) {
                 name = _name;
                 symbol = _symbol;
@@ -439,19 +804,19 @@ class SmartContractManager
                 totalSupply = _totalSupply;
                 balanceOf[msg.sender] = _totalSupply;
             }
-            
+
             function transfer(address _to, uint256 _value) public returns (bool) {
                 require(balanceOf[msg.sender] >= _value);
                 balanceOf[msg.sender] -= _value;
                 balanceOf[_to] += _value;
                 return true;
             }
-            
+
             function approve(address _spender, uint256 _value) public returns (bool) {
                 allowance[msg.sender][_spender] = _value;
                 return true;
             }
-            
+
             function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
                 require(balanceOf[_from] >= _value);
                 require(allowance[_from][msg.sender] >= _value);
@@ -722,5 +1087,207 @@ class SmartContractManager
         } else {
             return 'Custom';
         }
+    }
+
+    /**
+     * Get token configuration from database
+     */
+    private function getTokenConfigFromDatabase(): array
+    {
+        if (!$this->database) {
+            // Fallback to config if no database connection
+            return [
+                'token_name' => $this->config['blockchain']['token_name'] ?? 'Blockchain Token',
+                'token_symbol' => $this->config['blockchain']['token_symbol'] ?? 'COIN',
+                'initial_supply' => $this->config['blockchain']['initial_supply'] ?? '2100000000',
+                'decimals' => $this->config['blockchain']['decimals'] ?? 18
+            ];
+        }
+
+        try {
+            $stmt = $this->database->prepare("
+                SELECT key_name, value 
+                FROM config 
+                WHERE key_name IN ('network.token_name', 'network.token_symbol', 'network.initial_supply', 'network.total_supply', 'network.decimals')
+            ");
+            $stmt->execute();
+            $results = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+            $config = [];
+            foreach ($results as $row) {
+                $key = str_replace('network.', '', $row['key_name']);
+                $config[$key] = $row['value'];
+            }
+
+            return [
+                'token_name' => $config['token_name'] ?? 'Blockchain Token',
+                'token_symbol' => $config['token_symbol'] ?? 'COIN',
+                'initial_supply' => $config['initial_supply'] ?? $config['total_supply'] ?? '2100000000',
+                'decimals' => (int)($config['decimals'] ?? 18)
+            ];
+        } catch (\Exception $e) {
+            $this->logger->error('Failed to load token config from database: ' . $e->getMessage());
+            return [
+                'token_name' => 'Blockchain Token',
+                'token_symbol' => 'COIN',
+                'initial_supply' => '2100000000',
+                'decimals' => 18
+            ];
+        }
+    }
+
+    /**
+     * Get network configuration from database
+     */
+    private function getNetworkConfigFromDatabase(): array
+    {
+        if (!$this->database) {
+            return $this->config['network'] ?? [];
+        }
+
+        try {
+            $stmt = $this->database->prepare("
+                SELECT key_name, value 
+                FROM config 
+                WHERE key_name LIKE 'network.%'
+            ");
+            $stmt->execute();
+            $results = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+            $config = [];
+            foreach ($results as $row) {
+                $key = str_replace('network.', '', $row['key_name']);
+                $config[$key] = $row['value'];
+            }
+
+            return $config;
+        } catch (\Exception $e) {
+            $this->logger->error('Failed to load network config from database: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Calculate token supply with decimals
+     */
+    private function calculateTokenSupplyWithDecimals(string $supply, int $decimals): string
+    {
+        // Convert supply to wei (smallest unit)
+        // Supply * 10^decimals
+        if (function_exists('bcmul') && function_exists('bcpow')) {
+            $multiplier = bcpow('10', (string)$decimals);
+            return bcmul($supply, $multiplier);
+        } else {
+            // Fallback without bcmath
+            $multiplier = str_repeat('0', $decimals);
+            return $supply . $multiplier;
+        }
+    }
+
+    /**
+     * Get staking configuration from database
+     */
+    private function getStakingConfigFromDatabase(): array
+    {
+        if (!$this->database) {
+            return $this->config['staking'] ?? [];
+        }
+
+        try {
+            $stmt = $this->database->prepare("
+                SELECT key_name, value 
+                FROM config 
+                WHERE key_name LIKE 'staking.%'
+            ");
+            $stmt->execute();
+            $results = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+            $config = [];
+            foreach ($results as $row) {
+                $key = str_replace('staking.', '', $row['key_name']);
+                $config[$key] = $row['value'];
+            }
+
+            return $config;
+        } catch (\Exception $e) {
+            $this->logger->error('Failed to load staking config from database: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Get main token template (universal version)
+     */
+    private function getMainTokenTemplate(): string
+    {
+        return '
+        contract MainToken {
+            string public name;
+            string public symbol;
+            uint8 public decimals = 18;
+            uint256 public totalSupply;
+
+            mapping(address => uint256) public balanceOf;
+            mapping(address => mapping(address => uint256)) public allowance;
+
+            event Transfer(address indexed from, address indexed to, uint256 value);
+            event Approval(address indexed owner, address indexed spender, uint256 value);
+
+            constructor(string memory _name, string memory _symbol, uint256 _totalSupply) {
+                name = _name;
+                symbol = _symbol;
+                totalSupply = _totalSupply;
+                balanceOf[msg.sender] = _totalSupply;
+                emit Transfer(address(0), msg.sender, _totalSupply);
+            }
+
+            function transfer(address _to, uint256 _value) public returns (bool) {
+                require(balanceOf[msg.sender] >= _value, "Insufficient balance");
+                require(_to != address(0), "Cannot transfer to zero address");
+
+                balanceOf[msg.sender] -= _value;
+                balanceOf[_to] += _value;
+                emit Transfer(msg.sender, _to, _value);
+                return true;
+            }
+
+            function approve(address _spender, uint256 _value) public returns (bool) {
+                allowance[msg.sender][_spender] = _value;
+                emit Approval(msg.sender, _spender, _value);
+                return true;
+            }
+
+            function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
+                require(balanceOf[_from] >= _value, "Insufficient balance");
+                require(allowance[_from][msg.sender] >= _value, "Insufficient allowance");
+                require(_to != address(0), "Cannot transfer to zero address");
+
+                balanceOf[_from] -= _value;
+                balanceOf[_to] += _value;
+                allowance[_from][msg.sender] -= _value;
+                
+                emit Transfer(_from, _to, _value);
+                return true;
+            }
+
+            function mint(address _to, uint256 _value) public returns (bool) {
+                require(msg.sender == deployer, "Only deployer can mint");
+                require(_to != address(0), "Cannot mint to zero address");
+
+                totalSupply += _value;
+                balanceOf[_to] += _value;
+                emit Transfer(address(0), _to, _value);
+                return true;
+            }
+
+            function burn(uint256 _value) public returns (bool) {
+                require(balanceOf[msg.sender] >= _value, "Insufficient balance");
+
+                balanceOf[msg.sender] -= _value;
+                totalSupply -= _value;
+                emit Transfer(msg.sender, address(0), _value);
+                return true;
+            }
+        }';
     }
 }

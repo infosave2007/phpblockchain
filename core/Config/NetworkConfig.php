@@ -91,25 +91,27 @@ class NetworkConfig
     public function getTokenInfo(): array
     {
         return [
-            'symbol' => $this->get('network.token_symbol', 'COIN'),
-            'name' => $this->get('network.token_name', 'Blockchain Token'),
+            'symbol' => $this->get('network.token_symbol', 'VFLW'),
+            'name' => $this->get('network.token_name', 'VFLW Token'),
             'decimals' => (int)$this->get('network.decimals', 18),
-            'initial_supply' => (int)$this->get('network.initial_supply', 1000000)
+            'initial_supply' => (int)$this->get('network.initial_supply', 1000000000)
         ];
     }
-    
+
     /**
      * Get network information
      */
     public function getNetworkInfo(): array
     {
         return [
-            'name' => $this->get('network.name', 'Blockchain Network'),
-            'chain_id' => (int)$this->get('network.chain_id', 1),
+            'name' => $this->get('network.name', 'VFLW'),
+            'chain_id' => (int)$this->get('network.chain_id', 20250808),
             'protocol_version' => $this->get('network.protocol_version', '1.0.0'),
             'consensus_algorithm' => $this->get('consensus.algorithm', 'pos'),
             'min_stake' => (int)$this->get('consensus.min_stake', 1000),
-            'block_time' => (int)$this->get('blockchain.block_time', 10)
+            'block_time' => (int)$this->get('blockchain.block_time', 10),
+            'rpc_url' => $this->get('network.rpc_url', 'https://wallet.allaigate.com/wallet/wallet_api.php'),
+            'explorer_url' => $this->get('network.explorer_url', 'https://wallet.allaigate.com/explorer')
         ];
     }
     
