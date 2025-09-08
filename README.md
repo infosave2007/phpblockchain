@@ -27,6 +27,13 @@ A professional blockchain platform built with PHP 8+, featuring Proof of Stake c
 - **Node Management** - Multi-node network coordination
 - **Health Monitoring** - Real-time node health checks
 
+### 💱 Decentralized Exchange (DEX)
+- **Uniswap V2 Protocol** - Complete decentralized exchange integration
+- **AMM Calculations** - Automated market maker for token swaps
+- **Liquidity Pools** - Create and manage token liquidity pairs
+- **DEX API Suite** - 14 comprehensive API endpoints for DEX operations
+- **Smart Contract Integration** - Factory and Router contract deployment
+
 ### 🛡️ Enterprise Security
 - **Hardware Security Module** - Professional key management
 - **Multi-signature Support** - Enhanced transaction security
