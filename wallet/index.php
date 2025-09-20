@@ -180,6 +180,16 @@ function loadLanguage($lang) {
             'transaction_confirmed' => 'Transaction confirmed in blockchain',
             'rewards_earned' => 'Rewards Earned',
             'total_received' => 'Total Received',
+            'staking_information' => 'Staking Information',
+            'total_staked' => 'Total Staked',
+            'unlocked_amount' => 'Unlocked Amount',
+            'available_to_stake' => 'Available to Stake',
+            'active_stakes' => 'Active Stakes',
+            'reward_rate' => 'Reward Rate',
+            'unlimited_staking' => 'Unlimited staking - can unstake anytime',
+            'created' => 'Created',
+            'ready_to_unstake' => 'Ready to unstake!',
+            'unlock_date' => 'Unlock date',
             'days_until_unlock' => 'Days Until Unlock',
             'about' => 'About',
             'about_description' => 'About this blockchain wallet',
@@ -193,7 +203,19 @@ function loadLanguage($lang) {
             'wallet_loaded' => 'Wallet loaded successfully',
             'wallet_not_found' => 'Wallet not found',
             'delete_wallet' => 'Delete Wallet',
-            'load_wallet' => 'Load Wallet'
+            'load_wallet' => 'Load Wallet',
+            
+            // Additional staking translations
+            'active_stakes' => 'Active Stakes',
+            'expected_rewards' => 'Expected Rewards',
+            'reward_rate' => 'Reward Rate',
+            'created' => 'Created',
+            'unlock_date' => 'Unlock Date',
+            'ready_to_unstake' => 'Ready to unstake!',
+            'unlimited_staking' => 'Unlimited staking - can unstake anytime',
+            'no_active_stakes' => 'No active stakes found.',
+            'unstake_now' => 'Unstake Now',
+            'unstake' => 'Unstake'
         ],
         'ru' => [
             'title' => 'Blockchain Кошелёк',
@@ -352,6 +374,17 @@ function loadLanguage($lang) {
             'transaction_confirmed' => 'Транзакция подтверждена в блокчейне',
             'rewards_earned' => 'Заработанные награды',
             'total_received' => 'Получено всего',
+            'staking_information' => 'Информация о стейкинге',
+            'total_staked' => 'Всего в стейкинге',
+            'unlocked_amount' => 'Разблокированная сумма',
+            'available_to_stake' => 'Доступно для стейкинга',
+            'active_stakes' => 'Активные стейки',
+            'reward_rate' => 'Ставка награды',
+            'unlimited_staking' => 'Неограниченный стейкинг - можно разблокировать в любое время',
+            'created' => 'Создано',
+            'ready_to_unstake' => 'Готово к разблокировке!',
+            'unlock_date' => 'Дата разблокировки',
+            'no_active_stakes' => 'Активных стейков не найдено.',
             'days_until_unlock' => 'Дней до разблокировки',
             'about' => 'О приложении',
             'about_description' => 'О данном блокчейн кошельке',
@@ -365,7 +398,19 @@ function loadLanguage($lang) {
             'wallet_loaded' => 'Кошелёк успешно загружен',
             'wallet_not_found' => 'Кошелёк не найден',
             'delete_wallet' => 'Удалить кошелёк',
-            'load_wallet' => 'Загрузить кошелёк'
+            'load_wallet' => 'Загрузить кошелёк',
+            
+            // Дополнительные переводы для стейкинга
+            'active_stakes' => 'Активные стейки',
+            'expected_rewards' => 'Ожидаемые награды',
+            'reward_rate' => 'Ставка награды',
+            'created' => 'Создано',
+            'unlock_date' => 'Дата разблокировки',
+            'ready_to_unstake' => 'Готов к разблокировке!',
+            'unlimited_staking' => 'Неограниченный стейкинг - можно разблокировать в любое время',
+            'no_active_stakes' => 'Активные стейки не найдены.',
+            'unstake_now' => 'Разблокировать сейчас',
+            'unstake' => 'Разблокировать'
         ]
     ];
     
@@ -1454,7 +1499,7 @@ function getLanguageOptions($currentLang) {
                                 <div class="col-6">Amount: <span id="previewAmount">0</span> COIN</div>
                                 <div class="col-6">Period: <span id="previewPeriod">0</span> days</div>
                                 <div class="col-6">APY: <span id="previewAPY">0</span>%</div>
-                                <div class="col-6">Expected Rewards: <span id="previewRewards">0</span> COIN</div>
+                                <div class="col-6">${t.expected_rewards}: <span id="previewRewards">0</span> COIN</div>
                             </div>
                         </div>
                     </form>
@@ -2718,8 +2763,8 @@ function getLanguageOptions($currentLang) {
                             <p>Amount Staked: ${data.staking_info.amount} ${cryptoSymbol}</p>
                             <p>Period: ${data.staking_info.period} days</p>
                             <p>APY: ${data.staking_info.apy}%</p>
-                            <p>Expected Rewards: ${data.staking_info.expected_rewards.toFixed(4)} ${cryptoSymbol}</p>
-                            <p>Unlock Date: ${data.staking_info.unlock_date}</p>
+                            <p>${t.expected_rewards}: ${data.staking_info.expected_rewards.toFixed(4)} ${cryptoSymbol}</p>
+                            <p>${t.unlock_date}: ${data.staking_info.unlock_date}</p>
                             ${data.blockchain.recorded ? '<p class="text-success">✅ Recorded in blockchain</p>' : ''}
                         </div>
                     `;
@@ -2766,36 +2811,36 @@ function getLanguageOptions($currentLang) {
                     
                     let stakingHtml = `
                         <div class="action-card">
-                            <h5><i class="fas fa-chart-line me-2"></i>Staking Information - ${address.substring(0, 20)}...</h5>
+                            <h5><i class="fas fa-chart-line me-2"></i>${t.staking_information} - ${address.substring(0, 20)}...</h5>
                             
                             <div class="row mb-4">
                                 <div class="col-md-3">
                                     <div class="text-center">
-                                        <h6 class="text-primary">Total Staked</h6>
+                                        <h6 class="text-primary">${t.total_staked}</h6>
                                         <h4 class="text-success">${totalStaked} ${cryptoSymbol}</h4>
                                     </div>
                                 </div>
                                 <div class="col-md-3">
                                     <div class="text-center">
-                                        <h6 class="text-primary">Expected Rewards</h6>
+                                        <h6 class="text-primary">${t.expected_rewards}</h6>
                                         <h4 class="text-warning">${totalRewards.toFixed(4)} ${cryptoSymbol}</h4>
                                     </div>
                                 </div>
                                 <div class="col-md-3">
                                     <div class="text-center">
-                                        <h6 class="text-primary">Unlocked Amount</h6>
+                                        <h6 class="text-primary">${t.unlocked_amount}</h6>
                                         <h4 class="text-info">${unlockedAmount} ${cryptoSymbol}</h4>
                                     </div>
                                 </div>
                                 <div class="col-md-3">
                                     <div class="text-center">
-                                        <h6 class="text-primary">Available to Stake</h6>
+                                        <h6 class="text-primary">${t.available_to_stake}</h6>
                                         <h4 class="text-secondary">${stakingAvailable} ${cryptoSymbol}</h4>
                                     </div>
                                 </div>
                             </div>
                             
-                            <h6>Active Stakes:</h6>
+                            <h6>${t.active_stakes}:</h6>
                             <div class="row">
                     `;
                     
@@ -2817,18 +2862,18 @@ function getLanguageOptions($currentLang) {
                                                     <i class="fas fa-${statusIcon} me-1"></i>${stake.lock_status || 'active'}
                                                 </span>
                                             </div>
-                                            <p class="mb-1">Reward Rate: ${((stake.reward_rate || stake.apy || 0) * 100).toFixed(2)}%</p>
-                                            <p class="mb-1">Expected Rewards: ${stake.rewards_earned || 0} ${cryptoSymbol}</p>
-                                            <p class="mb-1">Created: ${stake.created_at || 'N/A'}</p>
+                                            <p class="mb-1">${t.reward_rate}: ${((stake.reward_rate || stake.apy || 0) * 100).toFixed(2)}%</p>
+                                            <p class="mb-1">${t.expected_rewards}: ${stake.rewards_earned || 0} ${cryptoSymbol}</p>
+                                            <p class="mb-1">${t.created}: ${stake.created_at || 'N/A'}</p>
                                             <p class="mb-0">
                                                 ${isUnlocked ? 
-                                                    'Ready to unstake!' : 
-                                                    (isUnlimited ? 'Unlimited staking - can unstake anytime' : `Unlock date: ${stake.unlock_date || 'N/A'}`)
+                                                    t.ready_to_unstake : 
+                                                    (isUnlimited ? t.unlimited_staking : `${t.unlock_date}: ${stake.unlock_date || 'N/A'}`)
                                                 }
                                             </p>
                                             ${canUnstake ? `
                                                 <button class="btn btn-sm ${isUnlocked ? 'btn-success' : 'btn-primary'} mt-2" onclick="showUnstakeModal('${address}', ${stake.amount || 0})">
-                                                    <i class="fas fa-${isUnlocked ? 'unlock' : 'hand-paper'} me-1"></i>${isUnlimited && !isUnlocked ? 'Unstake Now' : 'Unstake'}
+                                                    <i class="fas fa-${isUnlocked ? 'unlock' : 'hand-paper'} me-1"></i>${isUnlimited && !isUnlocked ? t.unstake_now : t.unstake}
                                                 </button>
                                             ` : ''}
                                         </div>
@@ -2837,7 +2882,7 @@ function getLanguageOptions($currentLang) {
                             `;
                         });
                     } else {
-                        stakingHtml += '<div class="col-12"><p class="text-muted">No active stakes found.</p></div>';
+                        stakingHtml += `<div class="col-12"><p class="text-muted">${t.no_active_stakes}</p></div>`;
                     }
                     
                     stakingHtml += '</div></div>';
