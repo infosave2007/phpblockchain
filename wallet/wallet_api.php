@@ -2386,7 +2386,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             $result = createWallet($walletManager);
             
             // Send immediate response
-            echo json_encode($result);
+            echo json_encode(['success' => true, ...$result]);
             
             // Trigger background processing
             if (function_exists('fastcgi_finish_request')) {
@@ -2496,7 +2496,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
 
             // FAST RESPONSE + background sync after staking
             if (function_exists('fastcgi_finish_request')) {
-                echo json_encode($result);
+                echo json_encode(['success' => true, ...$result]);
                 fastcgi_finish_request();
 
                 // Background processing
@@ -2645,7 +2645,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             
             // FAST RESPONSE: Send response immediately to client, then continue with background sync
             if (function_exists('fastcgi_finish_request')) {
-                echo json_encode($result);
+                echo json_encode(['success' => true, ...$result]);
                 fastcgi_finish_request();
                 
                 // Now perform background sync after response is sent
@@ -2789,7 +2789,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
 
             // FAST RESPONSE + background sync after staking
             if (function_exists('fastcgi_finish_request')) {
-                echo json_encode($result);
+                echo json_encode(['success' => true, ...$result]);
                 fastcgi_finish_request();
 
                 // Background processing
@@ -2798,6 +2798,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
                 performBackgroundSync($walletManager, $cfg);
                 return;
             }
+            // Result is already in $result variable for normal processing
             break;
             
         case 'unstake_tokens':
@@ -2813,7 +2814,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
 
             // FAST RESPONSE + background sync after unstaking
             if (function_exists('fastcgi_finish_request')) {
-                echo json_encode($result);
+                echo json_encode(['success' => true, ...$result]);
                 fastcgi_finish_request();
 
                 // Background processing
@@ -2822,6 +2823,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
                 performBackgroundSync($walletManager, $cfg);
                 return;
             }
+            // Result is already in $result variable for normal processing
             break;
 
         case 'get_staking_contract':
@@ -8934,7 +8936,7 @@ function autoMineBlocks($walletManager, array $config): array {
             'block_height' => $blockResult['height'],
             'block_hash' => $blockResult['hash'],
             'transactions_processed' => count($transactions),
-            'mempool_remaining' => $mempoolCount - count($transactions)
+            'mempool_remaining' => $totalTxCount - count($transactions)
         ];
         
     } catch (Exception $e) {
