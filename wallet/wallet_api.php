@@ -4920,7 +4920,7 @@ function unstakeTokens($walletManager, $blockchainManager, string $address, floa
         // 1. Get current block height
         $currentBlock = $blockchainManager->getCurrentBlockHeight();
         
-        // 2. Get staking records (unlocked = end_block IS NULL OR current_block >= end_block)
+        // 2. Get staking records (unlocked = current_block >= end_block OR pending_withdrawal OR NULL end_block for manual unstake)
         $pdo = $walletManager->getDatabase();
         $stmt = $pdo->prepare("
             SELECT * 
@@ -5100,18 +5100,18 @@ function getStakingInfo($walletManager, string $address) {
                 $totalRewardsEarning += $stakeRewards;
                 
                 // Check if stake is unlocked 
-                // Unlocked if: 1) pending withdrawal, 2) has end_block > current, 3) end_block is NULL (unlimited)
+                // Unlocked if: 1) pending withdrawal, 2) has end_block and current >= end_block
+                // NOTE: NULL end_block means unlimited staking - NOT unlocked until manual unstake
                 $currentBlock = time(); // Using timestamp as block approximation
                 $isUnlocked = false;
                 
                 if ($stake['status'] === 'pending_withdrawal') {
                     $isUnlocked = true;
-                } elseif (empty($stake['end_block']) || $stake['end_block'] === null) {
-                    // NULL end_block means unlimited staking - always unlocked
-                    $isUnlocked = true;
-                } elseif (!empty($stake['end_block']) && $currentBlock >= $stake['end_block']) {
+                } elseif (!empty($stake['end_block']) && $stake['end_block'] !== null && $currentBlock >= $stake['end_block']) {
+                    // Only unlock if end_block is set AND has passed
                     $isUnlocked = true;
                 }
+                // NOTE: Removed the NULL end_block case - unlimited staking should remain locked
                 
                 if ($isUnlocked) {
                     $unlockedAmount += $stakeAmount + $stakeRewards;
