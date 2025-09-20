@@ -4942,7 +4942,7 @@ function unstakeTokens($walletManager, $blockchainManager, string $address, floa
             throw new Exception("Insufficient staked amount. Available: $availableToUnstake, Requested: $amount");
         }
         
-        // 4. Calculate rewards
+        // 4. Calculate actual accumulated rewards (real-time calculation)
         $totalRewards = 0;
         $amountRemaining = $amount;
         $recordsToProcess = [];
@@ -4951,7 +4951,22 @@ function unstakeTokens($walletManager, $blockchainManager, string $address, floa
             if ($amountRemaining <= 0) break;
             
             $recordAmount = min($record['amount'], $amountRemaining);
-            $recordRewards = $record['rewards_earned'] * ($recordAmount / $record['amount']);
+            
+            // Calculate actual accumulated rewards based on time elapsed
+            $currentTime = time();
+            $stakingStartTime = strtotime($record['created_at']);
+            $stakingDurationDays = ($currentTime - $stakingStartTime) / (24 * 60 * 60);
+            
+            // Use the reward rate from the record
+            $rewardRate = (float)($record['reward_rate'] ?? 0.05); // Default 5%
+            
+            // Calculate accumulated rewards: (amount * rate * days) / 365
+            $accumulatedRewards = $record['amount'] * $rewardRate * ($stakingDurationDays / 365);
+            
+            // Calculate proportional rewards for the amount being unstaked
+            $recordRewards = $accumulatedRewards * ($recordAmount / $record['amount']);
+            
+            writeLog("Unstaking calculation: ID={$record['id']}, Days=$stakingDurationDays, Rate=$rewardRate, Accumulated=$accumulatedRewards, Proportional=$recordRewards", 'INFO');
             
             $recordsToProcess[] = [
                 'id' => $record['id'],
@@ -4997,8 +5012,23 @@ function unstakeTokens($walletManager, $blockchainManager, string $address, floa
             
             // Update staking records
             foreach ($recordsToProcess as $processRecord) {
-                $stmt = $pdo->prepare("UPDATE staking SET status = 'withdrawn', updated_at = NOW() WHERE id = ?");
+                // Get original record to check if it's partial or full unstaking
+                $stmt = $pdo->prepare("SELECT amount FROM staking WHERE id = ?");
                 $stmt->execute([$processRecord['id']]);
+                $originalRecord = $stmt->fetch();
+                
+                if ($originalRecord && $processRecord['amount'] >= $originalRecord['amount']) {
+                    // Full unstaking - mark as withdrawn
+                    $stmt = $pdo->prepare("UPDATE staking SET status = 'withdrawn', updated_at = NOW() WHERE id = ?");
+                    $stmt->execute([$processRecord['id']]);
+                    writeLog("Full unstaking: Stake ID {$processRecord['id']} marked as withdrawn", 'INFO');
+                } else {
+                    // Partial unstaking - reduce the amount
+                    $remainingAmount = $originalRecord['amount'] - $processRecord['amount'];
+                    $stmt = $pdo->prepare("UPDATE staking SET amount = ?, updated_at = NOW() WHERE id = ?");
+                    $stmt->execute([$remainingAmount, $processRecord['id']]);
+                    writeLog("Partial unstaking: Stake ID {$processRecord['id']} amount reduced from {$originalRecord['amount']} to {$remainingAmount}", 'INFO');
+                }
             }
             
             $pdo->commit();
@@ -5094,10 +5124,24 @@ function getStakingInfo($walletManager, string $address) {
         if (is_array($activeStakes) && !empty($activeStakes)) {
             foreach ($activeStakes as $index => $stake) {
                 $stakeAmount = (float)($stake['amount'] ?? 0);
-                $stakeRewards = (float)($stake['rewards_earned'] ?? 0);
+                
+                // Calculate real-time accumulated rewards
+                $currentTime = time();
+                $stakingStartTime = strtotime($stake['created_at']);
+                $stakingDurationDays = ($currentTime - $stakingStartTime) / (24 * 60 * 60);
+                
+                // Use the reward rate from the record
+                $rewardRate = (float)($stake['reward_rate'] ?? 0.05); // Default 5%
+                
+                // Calculate accumulated rewards: (amount * rate * days) / 365
+                $accumulatedRewards = $stakeAmount * $rewardRate * ($stakingDurationDays / 365);
+                
+                // Update the stake record with calculated rewards
+                $activeStakes[$index]['rewards_earned'] = number_format($accumulatedRewards, 8);
+                $activeStakes[$index]['current_rewards'] = number_format($accumulatedRewards, 8);
                 
                 $totalStaked += $stakeAmount;
-                $totalRewardsEarning += $stakeRewards;
+                $totalRewardsEarning += $accumulatedRewards;
                 
                 // Check if stake is unlocked 
                 // Unlocked if: 1) pending withdrawal, 2) has end_block and current >= end_block
@@ -5114,7 +5158,7 @@ function getStakingInfo($walletManager, string $address) {
                 // NOTE: Removed the NULL end_block case - unlimited staking should remain locked
                 
                 if ($isUnlocked) {
-                    $unlockedAmount += $stakeAmount + $stakeRewards;
+                    $unlockedAmount += $stakeAmount + $accumulatedRewards;
                     // Update the original array element
                     $activeStakes[$index]['lock_status'] = 'unlocked';
                 }

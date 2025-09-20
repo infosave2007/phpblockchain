@@ -2802,8 +2802,10 @@ function getLanguageOptions($currentLang) {
                     if (activeStakes.length > 0) {
                         activeStakes.forEach(stake => {
                             const isUnlocked = stake.lock_status === 'unlocked' || stake.lock_status === 'pending';
-                            const statusClass = isUnlocked ? 'success' : 'warning';
-                            const statusIcon = isUnlocked ? 'unlock' : 'lock';
+                            const isUnlimited = stake.end_block === null || stake.end_block === undefined;
+                            const canUnstake = isUnlocked || isUnlimited; // Можно анстейкнуть если разблокирован ИЛИ неограниченный
+                            const statusClass = isUnlocked ? 'success' : (isUnlimited ? 'info' : 'warning');
+                            const statusIcon = isUnlocked ? 'unlock' : (isUnlimited ? 'infinity' : 'lock');
                             
                             stakingHtml += `
                                 <div class="col-md-6 mb-3">
@@ -2821,12 +2823,12 @@ function getLanguageOptions($currentLang) {
                                             <p class="mb-0">
                                                 ${isUnlocked ? 
                                                     'Ready to unstake!' : 
-                                                    `Unlock date: ${stake.unlock_date || 'N/A'}`
+                                                    (isUnlimited ? 'Unlimited staking - can unstake anytime' : `Unlock date: ${stake.unlock_date || 'N/A'}`)
                                                 }
                                             </p>
-                                            ${isUnlocked ? `
-                                                <button class="btn btn-sm btn-success mt-2" onclick="showUnstakeModal('${address}', ${stake.amount || 0})">
-                                                    <i class="fas fa-unlock me-1"></i>Unstake
+                                            ${canUnstake ? `
+                                                <button class="btn btn-sm ${isUnlocked ? 'btn-success' : 'btn-primary'} mt-2" onclick="showUnstakeModal('${address}', ${stake.amount || 0})">
+                                                    <i class="fas fa-${isUnlocked ? 'unlock' : 'hand-paper'} me-1"></i>${isUnlimited && !isUnlocked ? 'Unstake Now' : 'Unstake'}
                                                 </button>
                                             ` : ''}
                                         </div>
