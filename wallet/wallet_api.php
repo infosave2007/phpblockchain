@@ -3171,6 +3171,39 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             $result = getDexInfo($networkConfig);
             break;
 
+        case 'get_available_tokens':
+            try {
+                $stmt = $pdo->query("
+                    SELECT DISTINCT name, address, metadata 
+                    FROM smart_contracts 
+                    WHERE (metadata LIKE '%token%' OR name LIKE '%Token%' OR name LIKE '%WETH%' OR name LIKE '%VFLW%') 
+                    AND status = 'active'
+                    ORDER BY name
+                ");
+                $contracts = $stmt->fetchAll();
+                
+                $tokens = [
+                    ['symbol' => 'VFLW', 'name' => 'Universal Token', 'address' => 'native_token'],
+                    ['symbol' => 'WETH', 'name' => 'Wrapped Ether', 'address' => 'weth_contract']
+                ];
+                
+                foreach ($contracts as $contract) {
+                    $metadata = json_decode($contract['metadata'], true);
+                    if ($metadata && isset($metadata['symbol'])) {
+                        $tokens[] = [
+                            'symbol' => $metadata['symbol'],
+                            'name' => $metadata['name'] ?? $contract['name'],
+                            'address' => $contract['address']
+                        ];
+                    }
+                }
+                
+                $result = ['tokens' => $tokens];
+            } catch (Exception $e) {
+                $result = ['error' => $e->getMessage()];
+            }
+            break;
+
         case 'get_pool_reserves':
             $tokenA = $input['tokenA'] ?? '';
             $tokenB = $input['tokenB'] ?? '';
@@ -3211,6 +3244,67 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
 
         case 'get_all_pairs':
             $result = getAllPairs($pdo);
+            break;
+
+        case 'get_user_positions':
+            $address = $input['address'] ?? '';
+            
+            if (!$address) {
+                throw new Exception('address is required');
+            }
+            
+            try {
+                // Получаем все транзакции пользователя связанные с ликвидностью
+                $stmt = $pdo->prepare("
+                    SELECT t.hash, t.timestamp, t.data, t.from_address
+                    FROM transactions t
+                    WHERE (t.from_address = ? OR t.to_address = ?)
+                    AND (t.data LIKE '%add_liquidity%' OR t.data LIKE '%create_pool%')
+                    AND t.status = 'confirmed'
+                    ORDER BY t.timestamp DESC
+                ");
+                
+                $stmt->execute([$address, $address]);
+                $positions = [];
+                
+                while ($row = $stmt->fetch()) {
+                    $txData = json_decode($row['data'], true);
+                    
+                    if ($txData && isset($txData['action']) && $txData['action'] === 'add_liquidity') {
+                        // Получаем информацию о пуле
+                        $poolStmt = $pdo->prepare("
+                            SELECT address, metadata FROM smart_contracts 
+                            WHERE address = ? AND metadata LIKE '%pair_type%'
+                        ");
+                        
+                        $poolAddress = $txData['pool_address'] ?? '';
+                        if ($poolAddress) {
+                            $poolStmt->execute([$poolAddress]);
+                            $poolInfo = $poolStmt->fetch();
+                            
+                            if ($poolInfo) {
+                                $metadata = json_decode($poolInfo['metadata'], true);
+                                
+                                $positions[] = [
+                                    'pool_address' => $poolAddress,
+                                    'token0' => $metadata['token0'] ?? ($txData['tokenA'] ?? 'Unknown'),
+                                    'token1' => $metadata['token1'] ?? ($txData['tokenB'] ?? 'Unknown'),
+                                    'reserves0' => $metadata['reserves0'] ?? '0',
+                                    'reserves1' => $metadata['reserves1'] ?? '0',
+                                    'lp_tokens' => $txData['lp_tokens'] ?? '0',
+                                    'provided_at' => $row['timestamp'],
+                                    'share_percent' => '0.00'
+                                ];
+                            }
+                        }
+                    }
+                }
+                
+                $result = ['positions' => $positions];
+                
+            } catch (Exception $e) {
+                $result = ['error' => $e->getMessage()];
+            }
             break;
 
         case 'get_pair_address':

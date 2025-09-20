@@ -215,7 +215,33 @@ function loadLanguage($lang) {
             'unlimited_staking' => 'Unlimited staking - can unstake anytime',
             'no_active_stakes' => 'No active stakes found.',
             'unstake_now' => 'Unstake Now',
-            'unstake' => 'Unstake'
+            'unstake' => 'Unstake',
+            'add_liquidity' => 'Add Liquidity',
+            'add_liquidity_desc' => 'Provide liquidity and earn fees',
+            'defi_liquidity' => 'DeFi Liquidity',
+            'token_a' => 'Token A',
+            'token_b' => 'Token B',
+            'amount_a' => 'Amount A',
+            'amount_b' => 'Amount B',
+            'select_token' => 'Select Token',
+            'main_token' => 'Main Token',
+            'wrapped_token' => 'Wrapped Token',
+            'slippage_tolerance' => 'Slippage Tolerance',
+            'add_to_pool' => 'Add to Pool',
+            'liquidity_pools' => 'Liquidity Pools',
+            'your_positions' => 'Your Positions',
+            'pool_share' => 'Pool Share',
+            'estimated_apy' => 'Estimated APY',
+            'connect_metamask' => 'Connect MetaMask',
+            'metamask_required' => 'MetaMask Required',
+            'loading_pools' => 'Loading pools...',
+            'loading_positions' => 'Loading your positions...',
+            'no_positions_found' => 'No positions found',
+            'remove_liquidity' => 'Remove Liquidity',
+            'total_liquidity' => 'Total Liquidity',
+            'pool_tokens' => 'Pool Tokens',
+            'pool_reserves' => 'Reserves',
+            'add_to_existing' => 'Add to Pool'
         ],
         'ru' => [
             'title' => 'Blockchain Кошелёк',
@@ -410,7 +436,33 @@ function loadLanguage($lang) {
             'unlimited_staking' => 'Неограниченный стейкинг - можно разблокировать в любое время',
             'no_active_stakes' => 'Активные стейки не найдены.',
             'unstake_now' => 'Разблокировать сейчас',
-            'unstake' => 'Разблокировать'
+            'unstake' => 'Разблокировать',
+            'add_liquidity' => 'Добавить ликвидность',
+            'add_liquidity_desc' => 'Предоставьте ликвидность и получайте комиссии',
+            'defi_liquidity' => 'DeFi ликвидность',
+            'token_a' => 'Токен A',
+            'token_b' => 'Токен B',
+            'amount_a' => 'Количество A',
+            'amount_b' => 'Количество B',
+            'select_token' => 'Выберите токен',
+            'main_token' => 'Основной токен',
+            'wrapped_token' => 'Обернутый токен',
+            'slippage_tolerance' => 'Допустимое проскальзывание',
+            'add_to_pool' => 'Добавить в пул',
+            'liquidity_pools' => 'Пулы ликвидности',
+            'your_positions' => 'Ваши позиции',
+            'pool_share' => 'Доля в пуле',
+            'estimated_apy' => 'Ожидаемый APY',
+            'connect_metamask' => 'Подключить MetaMask',
+            'metamask_required' => 'Требуется MetaMask',
+            'loading_pools' => 'Загрузка пулов...',
+            'loading_positions' => 'Загрузка ваших позиций...',
+            'no_positions_found' => 'Позиции не найдены',
+            'remove_liquidity' => 'Удалить ликвидность',
+            'total_liquidity' => 'Общая ликвидность',
+            'pool_tokens' => 'Токены пула',
+            'pool_reserves' => 'Резервы',
+            'add_to_existing' => 'Добавить в пул'
         ]
     ];
     
@@ -1241,6 +1293,43 @@ function getLanguageOptions($currentLang) {
                     </div>
                     <h5 class="fw-bold"><?php echo $t['my_wallets']; ?></h5>
                     <p class="text-muted mb-0"><?php echo $t['my_saved_wallets']; ?></p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- DeFi Section -->
+        <div class="row mb-4" id="defiControls">
+            <div class="col-12 mb-3">
+                <h4 class="text-center mb-4">
+                    <i class="fas fa-exchange-alt me-2 text-primary"></i>
+                    <?php echo $t['defi_liquidity']; ?>
+                </h4>
+            </div>
+            <div class="col-lg-4 col-md-6 mb-3">
+                <div class="action-card" onclick="showLiquidityModal()">
+                    <div class="action-icon" style="background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);">
+                        <i class="fas fa-plus-circle"></i>
+                    </div>
+                    <h5 class="fw-bold"><?php echo $t['add_liquidity']; ?></h5>
+                    <p class="text-muted mb-0"><?php echo $t['add_liquidity_desc']; ?></p>
+                </div>
+            </div>
+            <div class="col-lg-4 col-md-6 mb-3">
+                <div class="action-card" onclick="showPoolsModal()">
+                    <div class="action-icon" style="background: linear-gradient(45deg, #f093fb 0%, #f5576c 100%);">
+                        <i class="fas fa-swimming-pool"></i>
+                    </div>
+                    <h5 class="fw-bold"><?php echo $t['liquidity_pools']; ?></h5>
+                    <p class="text-muted mb-0">View existing liquidity pools</p>
+                </div>
+            </div>
+            <div class="col-lg-4 col-md-6 mb-3">
+                <div class="action-card" onclick="showMyPositions()">
+                    <div class="action-icon" style="background: linear-gradient(45deg, #4facfe 0%, #00f2fe 100%);">
+                        <i class="fas fa-chart-line"></i>
+                    </div>
+                    <h5 class="fw-bold"><?php echo $t['your_positions']; ?></h5>
+                    <p class="text-muted mb-0">Manage your liquidity positions</p>
                 </div>
             </div>
         </div>
@@ -4334,6 +4423,415 @@ function getLanguageOptions($currentLang) {
                 showNotification(t.error + ' ' + error.message, 'danger');
             }
         }
+        
+        // DeFi Liquidity Functions
+        function showLiquidityModal() {
+            const modal = new bootstrap.Modal(document.getElementById('liquidityModal'));
+            modal.show();
+            loadAvailableTokens();
+        }
+        
+        function showPoolsModal() {
+            const modal = new bootstrap.Modal(document.getElementById('poolsModal'));
+            modal.show();
+            loadAllPools();
+        }
+        
+        function showMyPositions() {
+            const modal = new bootstrap.Modal(document.getElementById('positionsModal'));
+            modal.show();
+        }
+        
+        async function loadAllPools() {
+            const loadingEl = document.getElementById('poolsLoading');
+            const contentEl = document.getElementById('poolsContent');
+            const errorEl = document.getElementById('poolsError');
+            
+            loadingEl.style.display = 'block';
+            contentEl.style.display = 'none';
+            errorEl.style.display = 'none';
+            
+            try {
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'get_all_pairs' })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success && data.pairs) {
+                    const tbody = document.getElementById('poolsTableBody');
+                    tbody.innerHTML = '';
+                    
+                    data.pairs.forEach(pool => {
+                        const row = `
+                            <tr>
+                                <td><strong>${pool.name || 'Pool'}</strong><br>
+                                    <small class="text-muted">${pool.address}</small></td>
+                                <td>${pool.token0} / ${pool.token1}</td>
+                                <td>${pool.reserves0} / ${pool.reserves1}</td>
+                                <td>${pool.total_supply} LP</td>
+                                <td>~5.2%</td>
+                                <td>
+                                    <button class="btn btn-sm btn-primary" onclick="addLiquidityToExisting('${pool.token0}', '${pool.token1}')">
+                                        <i class="fas fa-plus"></i> Add
+                                    </button>
+                                </td>
+                            </tr>
+                        `;
+                        tbody.innerHTML += row;
+                    });
+                    
+                    loadingEl.style.display = 'none';
+                    contentEl.style.display = 'block';
+                } else {
+                    throw new Error(data.error || 'Failed to load pools');
+                }
+            } catch (error) {
+                loadingEl.style.display = 'none';
+                errorEl.style.display = 'block';
+                document.getElementById('poolsErrorMessage').textContent = error.message;
+            }
+        }
+        
+        async function loadUserPositions() {
+            const address = document.getElementById('positionsAddress').value;
+            if (!address) {
+                showNotification('Please enter your address', 'warning');
+                return;
+            }
+            
+            const loadingEl = document.getElementById('positionsLoading');
+            const contentEl = document.getElementById('positionsContent');
+            const errorEl = document.getElementById('positionsError');
+            
+            loadingEl.style.display = 'block';
+            contentEl.style.display = 'none';
+            errorEl.style.display = 'none';
+            
+            try {
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        action: 'get_user_positions',
+                        address: address 
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success && data.positions) {
+                    const tbody = document.getElementById('positionsTableBody');
+                    tbody.innerHTML = '';
+                    
+                    if (data.positions.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="5" class="text-center">No positions found</td></tr>';
+                    } else {
+                        data.positions.forEach(position => {
+                            const providedDate = new Date(position.provided_at * 1000).toLocaleDateString();
+                            const row = `
+                                <tr>
+                                    <td><strong>${position.token0} / ${position.token1}</strong><br>
+                                        <small class="text-muted">${position.pool_address}</small></td>
+                                    <td>${position.lp_tokens}</td>
+                                    <td>${position.share_percent || '0.00'}%</td>
+                                    <td>${providedDate}</td>
+                                    <td>
+                                        <button class="btn btn-sm btn-danger" onclick="removeLiquidityFromPosition('${position.pool_address}', '${position.lp_tokens}')">
+                                            <i class="fas fa-minus"></i> Remove
+                                        </button>
+                                    </td>
+                                </tr>
+                            `;
+                            tbody.innerHTML += row;
+                        });
+                    }
+                    
+                    loadingEl.style.display = 'none';
+                    contentEl.style.display = 'block';
+                } else {
+                    throw new Error(data.error || 'Failed to load positions');
+                }
+            } catch (error) {
+                loadingEl.style.display = 'none';
+                errorEl.style.display = 'block';
+                document.getElementById('positionsErrorMessage').textContent = error.message;
+            }
+        }
+        
+        function addLiquidityToExisting(tokenA, tokenB) {
+            // Закрываем модал пулов и открываем модал добавления ликвидности
+            bootstrap.Modal.getInstance(document.getElementById('poolsModal')).hide();
+            
+            // Заполняем форму
+            setTimeout(() => {
+                document.getElementById('tokenA').value = tokenA;
+                document.getElementById('tokenB').value = tokenB;
+                showLiquidityModal();
+            }, 300);
+        }
+        
+        function removeLiquidityFromPosition(poolAddress, lpTokens) {
+            if (confirm(`Remove ${lpTokens} LP tokens from this position?`)) {
+                showNotification('Remove liquidity feature coming soon!', 'info');
+            }
+        }
+        
+        async function loadAvailableTokens() {
+            try {
+                const tokenASelect = document.getElementById('tokenA');
+                const tokenBSelect = document.getElementById('tokenB');
+                
+                // Add main token option
+                const mainOption = '<option value="main_token">VFLW - Main Token</option>';
+                tokenASelect.innerHTML = '<option value="">Select Token A</option>' + mainOption;
+                tokenBSelect.innerHTML = '<option value="">Select Token B</option>' + mainOption;
+                
+                // Get available WETH tokens
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'get_dex_info' })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    const wethOption = '<option value="weth_074781511f0019d7565f718d89588e8f">WETH - Wrapped Token</option>';
+                    tokenASelect.innerHTML += wethOption;
+                    tokenBSelect.innerHTML += wethOption;
+                }
+            } catch (error) {
+                console.error('Error loading tokens:', error);
+            }
+        }
+        
+        async function addLiquidityToPool() {
+            const tokenA = document.getElementById('tokenA').value;
+            const tokenB = document.getElementById('tokenB').value;
+            const amountA = parseFloat(document.getElementById('amountA').value);
+            const amountB = parseFloat(document.getElementById('amountB').value);
+            const address = document.getElementById('liquidityAddress').value;
+            
+            if (!tokenA || !tokenB || !amountA || !amountB || !address) {
+                showNotification('Please fill all fields', 'warning');
+                return;
+            }
+            
+            if (tokenA === tokenB) {
+                showNotification('Please select different tokens', 'warning');
+                return;
+            }
+            
+            try {
+                const button = document.getElementById('addLiquidityBtn');
+                button.disabled = true;
+                button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Processing...';
+                
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'create_liquidity_pool',
+                        address: address,
+                        tokenA: tokenA,
+                        tokenB: tokenB,
+                        amountA: amountA,
+                        amountB: amountB
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showNotification(`Liquidity added successfully! LP Tokens: ${data.lp_tokens || 0}`, 'success');
+                    
+                    // Reset form
+                    document.getElementById('liquidityForm').reset();
+                    
+                    // Close modal
+                    bootstrap.Modal.getInstance(document.getElementById('liquidityModal')).hide();
+                } else {
+                    showNotification('Error: ' + (data.error || 'Unknown error'), 'danger');
+                }
+            } catch (error) {
+                console.error('Error adding liquidity:', error);
+                showNotification('Error: ' + error.message, 'danger');
+            } finally {
+                const button = document.getElementById('addLiquidityBtn');
+                button.disabled = false;
+                button.innerHTML = '<i class="fas fa-plus me-2"></i>Add Liquidity';
+            }
+        }
     </script>
+
+    <!-- Liquidity Modal -->
+    <div class="modal fade" id="liquidityModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="fas fa-plus-circle me-2"></i><?php echo $t['add_liquidity']; ?>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="liquidityForm">
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label"><?php echo $t['token_a']; ?></label>
+                                <select class="form-select" id="tokenA" required>
+                                    <option value=""><?php echo $t['select_token']; ?></option>
+                                </select>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label"><?php echo $t['token_b']; ?></label>
+                                <select class="form-select" id="tokenB" required>
+                                    <option value=""><?php echo $t['select_token']; ?></option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label"><?php echo $t['amount_a']; ?></label>
+                                <input type="number" class="form-control" id="amountA" 
+                                       step="0.01" min="0.01" placeholder="0.00" required>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label"><?php echo $t['amount_b']; ?></label>
+                                <input type="number" class="form-control" id="amountB" 
+                                       step="0.01" min="0.01" placeholder="0.00" required>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label"><?php echo $t['address']; ?></label>
+                            <input type="text" class="form-control" id="liquidityAddress" 
+                                   placeholder="0x..." required>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label"><?php echo $t['slippage_tolerance']; ?></label>
+                            <select class="form-select" id="slippage">
+                                <option value="0.5">0.5%</option>
+                                <option value="1" selected>1%</option>
+                                <option value="3">3%</option>
+                                <option value="5">5%</option>
+                            </select>
+                        </div>
+                        
+                        <div class="alert alert-info">
+                            <i class="fas fa-info-circle me-2"></i>
+                            <strong>Info:</strong> By adding liquidity, you'll receive LP tokens representing your share in the pool. You'll earn trading fees from all swaps in this pool.
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal"><?php echo $t['cancel']; ?></button>
+                    <button type="button" class="btn btn-primary" id="addLiquidityBtn" onclick="addLiquidityToPool()">
+                        <i class="fas fa-plus me-2"></i><?php echo $t['add_liquidity']; ?>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Pools Modal -->
+    <div class="modal fade" id="poolsModal" tabindex="-1">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="fas fa-swimming-pool me-2"></i><?php echo $t['liquidity_pools']; ?>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="poolsLoading" class="text-center">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <p class="mt-2">Loading pools...</p>
+                    </div>
+                    <div id="poolsContent" style="display: none;">
+                        <div class="table-responsive">
+                            <table class="table table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>Pool</th>
+                                        <th>Tokens</th>
+                                        <th>Reserves</th>
+                                        <th>Total Liquidity</th>
+                                        <th>APY</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="poolsTableBody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div id="poolsError" style="display: none;" class="alert alert-danger">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        <span id="poolsErrorMessage"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Positions Modal -->
+    <div class="modal fade" id="positionsModal" tabindex="-1">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="fas fa-chart-line me-2"></i><?php echo $t['your_positions']; ?>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Your Address:</label>
+                        <input type="text" class="form-control" id="positionsAddress" 
+                               placeholder="Enter your wallet address..." value="0x74250ff08e6a4bcc09611f9576013a740f7beb0d">
+                        <button class="btn btn-primary mt-2" onclick="loadUserPositions()">
+                            <i class="fas fa-search me-2"></i>Load Positions
+                        </button>
+                    </div>
+                    
+                    <div id="positionsLoading" class="text-center" style="display: none;">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <p class="mt-2">Loading your positions...</p>
+                    </div>
+                    <div id="positionsContent" style="display: none;">
+                        <div class="table-responsive">
+                            <table class="table table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>Pool</th>
+                                        <th>Your LP Tokens</th>
+                                        <th><?php echo $t['pool_share']; ?></th>
+                                        <th>Provided At</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="positionsTableBody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div id="positionsError" style="display: none;" class="alert alert-danger">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        <span id="positionsErrorMessage"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
