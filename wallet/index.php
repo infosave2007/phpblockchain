@@ -4677,6 +4677,38 @@ function getLanguageOptions($currentLang) {
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
+                    <!-- MetaMask Connection Status -->
+                    <div class="metamask-status mb-3">
+                        <div class="alert alert-info">
+                            <i class="fas fa-wallet me-2"></i>
+                            Connect your MetaMask wallet to add liquidity
+                        </div>
+                    </div>
+                    
+                    <div class="metamask-connect-btn mb-3">
+                        <button type="button" class="btn btn-warning w-100" onclick="connectMetaMask()">
+                            <i class="fab fa-ethereum me-2"></i><?php echo $t['connect_metamask']; ?>
+                        </button>
+                    </div>
+                    
+                    <!-- Method Selection -->
+                    <div class="card mb-3">
+                        <div class="card-body">
+                            <h6 class="card-title"><i class="fas fa-cogs me-2"></i>Choose Method:</h6>
+                            <div class="btn-group w-100" role="group">
+                                <input type="radio" class="btn-check" name="liquidityMethod" id="methodMetaMask" value="metamask" checked>
+                                <label class="btn btn-outline-primary" for="methodMetaMask">
+                                    <i class="fab fa-ethereum me-2"></i>MetaMask
+                                </label>
+                                
+                                <input type="radio" class="btn-check" name="liquidityMethod" id="methodBackend" value="backend">
+                                <label class="btn btn-outline-secondary" for="methodBackend">
+                                    <i class="fas fa-server me-2"></i>Manual Address
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    
                     <form id="liquidityForm">
                         <div class="row">
                             <div class="col-md-6 mb-3">
@@ -4706,10 +4738,14 @@ function getLanguageOptions($currentLang) {
                             </div>
                         </div>
                         
-                        <div class="mb-3">
+                        <!-- Address field - only shown for manual method -->
+                        <div class="mb-3" id="addressField" style="display: none;">
                             <label class="form-label"><?php echo $t['address']; ?></label>
                             <input type="text" class="form-control" id="liquidityAddress" 
-                                   placeholder="0x..." required>
+                                   placeholder="0x..." value="">
+                            <small class="form-text text-muted">
+                                Enter your wallet address manually (not recommended if MetaMask is available)
+                            </small>
                         </div>
                         
                         <div class="mb-3">
@@ -4833,5 +4869,293 @@ function getLanguageOptions($currentLang) {
             </div>
         </div>
     </div>
+
+    <!-- Web3 and MetaMask Integration -->
+    <script src="https://cdn.jsdelivr.net/npm/web3@1.8.0/dist/web3.min.js"></script>
+    <script>
+    // MetaMask and Web3 Integration
+    class MetaMaskIntegration {
+        constructor() {
+            this.web3 = null;
+            this.account = null;
+            this.chainId = null;
+            this.contracts = {};
+            this.networkConfig = null;
+            
+            this.init();
+        }
+        
+        async init() {
+            if (typeof window.ethereum !== 'undefined') {
+                this.web3 = new Web3(window.ethereum);
+                await this.loadNetworkConfig();
+                this.setupEventListeners();
+                this.updateConnectionStatus();
+            } else {
+                console.log('MetaMask not detected');
+            }
+        }
+        
+        async loadNetworkConfig() {
+            try {
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'get_metamask_config' })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    this.networkConfig = data.network_config;
+                    this.contracts = data.contracts || {};
+                }
+            } catch (error) {
+                console.error('Failed to load network config:', error);
+            }
+        }
+        
+        setupEventListeners() {
+            // Account change listener
+            if (window.ethereum && window.ethereum.on) {
+                window.ethereum.on('accountsChanged', (accounts) => {
+                    this.account = accounts[0] || null;
+                    this.updateConnectionStatus();
+                });
+                
+                // Chain change listener
+                window.ethereum.on('chainChanged', (chainId) => {
+                    this.chainId = chainId;
+                    window.location.reload();
+                });
+            }
+        }
+        
+        async connectWallet() {
+            try {
+                if (!window.ethereum) {
+                    throw new Error('MetaMask not installed');
+                }
+                
+                // Request account access
+                const accounts = await window.ethereum.request({
+                    method: 'eth_requestAccounts'
+                });
+                
+                this.account = accounts[0];
+                
+                // Get chain ID
+                this.chainId = await window.ethereum.request({
+                    method: 'eth_chainId'
+                });
+                
+                this.updateConnectionStatus();
+                return this.account;
+            } catch (error) {
+                console.error('Failed to connect wallet:', error);
+                throw error;
+            }
+        }
+        
+        updateConnectionStatus() {
+            const statusElements = document.querySelectorAll('.metamask-status');
+            const connectButtons = document.querySelectorAll('.metamask-connect-btn');
+            const addressFields = document.querySelectorAll('#liquidityAddress');
+            
+            statusElements.forEach(el => {
+                if (this.account) {
+                    el.innerHTML = `
+                        <div class="alert alert-success">
+                            <i class="fas fa-check-circle me-2"></i>
+                            <strong>Connected:</strong> ${this.account.substring(0, 10)}...${this.account.substring(this.account.length - 4)}
+                        </div>
+                    `;
+                } else {
+                    el.innerHTML = `
+                        <div class="alert alert-warning">
+                            <i class="fas fa-exclamation-triangle me-2"></i>
+                            MetaMask not connected
+                        </div>
+                    `;
+                }
+            });
+            
+            connectButtons.forEach(btn => {
+                if (this.account) {
+                    btn.style.display = 'none';
+                } else {
+                    btn.style.display = 'block';
+                }
+            });
+            
+            // Auto-fill address if connected
+            addressFields.forEach(field => {
+                if (this.account && !field.value) {
+                    field.value = this.account;
+                }
+            });
+        }
+        
+        async addLiquidityWithMetaMask(tokenA, tokenB, amountA, amountB) {
+            if (!this.account) {
+                throw new Error('Please connect MetaMask first');
+            }
+            
+            // For now, use the backend API but with MetaMask address
+            return await this.addLiquidityViaBackend(tokenA, tokenB, amountA, amountB);
+        }
+        
+        async addLiquidityViaBackend(tokenA, tokenB, amountA, amountB) {
+            const response = await fetch('wallet_api.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'create_liquidity_pool',
+                    address: this.account,
+                    tokenA: tokenA,
+                    tokenB: tokenB,
+                    amountA: amountA,
+                    amountB: amountB
+                })
+            });
+            
+            const data = await response.json();
+            if (!data.success) {
+                throw new Error(data.error || 'Failed to add liquidity');
+            }
+            
+            return data;
+        }
+        
+        isConnected() {
+            return !!this.account;
+        }
+        
+        getAccount() {
+            return this.account;
+        }
+    }
+
+    // Initialize MetaMask integration
+    let metaMask;
+    document.addEventListener('DOMContentLoaded', function() {
+        metaMask = new MetaMaskIntegration();
+        
+        // Setup method selection change handler
+        const methodInputs = document.querySelectorAll('input[name="liquidityMethod"]');
+        methodInputs.forEach(input => {
+            input.addEventListener('change', function() {
+                toggleMethodFields(this.value);
+            });
+        });
+    });
+
+    // Global functions for MetaMask
+    async function connectMetaMask() {
+        try {
+            if (!metaMask) {
+                throw new Error('MetaMask integration not initialized');
+            }
+            
+            await metaMask.connectWallet();
+            showNotification('MetaMask connected successfully!', 'success');
+        } catch (error) {
+            console.error('MetaMask connection error:', error);
+            showNotification('Failed to connect MetaMask: ' + error.message, 'danger');
+        }
+    }
+
+    function toggleMethodFields(method) {
+        const addressField = document.getElementById('addressField');
+        const liquidityAddress = document.getElementById('liquidityAddress');
+        
+        if (method === 'metamask') {
+            addressField.style.display = 'none';
+            liquidityAddress.required = false;
+            
+            // Auto-fill if MetaMask connected
+            if (metaMask && metaMask.isConnected()) {
+                liquidityAddress.value = metaMask.getAccount();
+            }
+        } else {
+            addressField.style.display = 'block';
+            liquidityAddress.required = true;
+        }
+    }
+
+    // Enhanced add liquidity function with method selection
+    async function addLiquidityToPool() {
+        const tokenA = document.getElementById('tokenA').value;
+        const tokenB = document.getElementById('tokenB').value;
+        const amountA = parseFloat(document.getElementById('amountA').value);
+        const amountB = parseFloat(document.getElementById('amountB').value);
+        const method = document.querySelector('input[name="liquidityMethod"]:checked').value;
+        
+        if (!tokenA || !tokenB || !amountA || !amountB) {
+            showNotification('Please fill all fields', 'warning');
+            return;
+        }
+        
+        const button = document.getElementById('addLiquidityBtn');
+        const originalText = button.innerHTML;
+        button.disabled = true;
+        
+        try {
+            let result;
+            
+            if (method === 'metamask') {
+                if (!metaMask || !metaMask.isConnected()) {
+                    throw new Error('Please connect MetaMask first');
+                }
+                
+                button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Processing with MetaMask...';
+                result = await metaMask.addLiquidityWithMetaMask(tokenA, tokenB, amountA, amountB);
+            } else {
+                const address = document.getElementById('liquidityAddress').value;
+                if (!address) {
+                    throw new Error('Please enter wallet address');
+                }
+                
+                button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Processing...';
+                
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'create_liquidity_pool',
+                        address: address,
+                        tokenA: tokenA,
+                        tokenB: tokenB,
+                        amountA: amountA,
+                        amountB: amountB
+                    })
+                });
+                
+                result = await response.json();
+                if (!result.success) {
+                    throw new Error(result.error || 'Unknown error');
+                }
+            }
+            
+            showNotification(`Liquidity added successfully! LP Tokens: ${result.lp_tokens || 0}`, 'success');
+            
+            // Reset form
+            document.getElementById('liquidityForm').reset();
+            
+            // Close modal
+            bootstrap.Modal.getInstance(document.getElementById('liquidityModal')).hide();
+            
+        } catch (error) {
+            console.error('Error adding liquidity:', error);
+            showNotification('Error: ' + error.message, 'danger');
+        } finally {
+            button.disabled = false;
+            button.innerHTML = originalText;
+        }
+    }
+
+    // Make functions globally available
+    window.connectMetaMask = connectMetaMask;
+    window.toggleMethodFields = toggleMethodFields;
+    </script>
 </body>
 </html>

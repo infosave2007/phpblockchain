@@ -2373,6 +2373,86 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
         }
     }
     
+    /**
+     * Get supported tokens from database and network config
+     */
+    function getSupportedTokensFromDatabase($pdo, $networkConfig, $contracts) {
+        try {
+            // Get token info from network config
+            $tokenInfo = method_exists($networkConfig, 'getTokenInfo') ? $networkConfig->getTokenInfo() : [];
+            
+            // Start with native token from network config
+            $tokens = [
+                [
+                    'symbol' => $tokenInfo['symbol'] ?? 'VFLW',
+                    'name' => $tokenInfo['name'] ?? 'Universal Token',
+                    'address' => 'native_token',
+                    'decimals' => (int)($tokenInfo['decimals'] ?? 18)
+                ]
+            ];
+            
+            // Add WETH token
+            $tokens[] = [
+                'symbol' => 'WETH',
+                'name' => 'Wrapped Ether',
+                'address' => $contracts['weth']['address'] ?? 'weth_contract',
+                'decimals' => 18
+            ];
+            
+            // Get additional tokens from smart contracts (universal search)
+            $stmt = $pdo->query("
+                SELECT DISTINCT name, address, metadata 
+                FROM smart_contracts 
+                WHERE (
+                    metadata LIKE '%\"type\":\"token\"%' OR 
+                    metadata LIKE '%\"symbol\":%' OR 
+                    metadata LIKE '%\"decimals\":%' OR
+                    name LIKE '%Token%' OR 
+                    name LIKE '%token%' OR
+                    name LIKE '%ERC20%' OR
+                    name LIKE '%BEP20%'
+                ) 
+                AND status = 'active'
+                AND address NOT IN ('native_token', 'weth_contract')
+                ORDER BY name
+            ");
+            $additionalContracts = $stmt->fetchAll();
+            
+            foreach ($additionalContracts as $contract) {
+                $metadata = json_decode($contract['metadata'], true);
+                if ($metadata && isset($metadata['symbol'])) {
+                    $tokens[] = [
+                        'symbol' => $metadata['symbol'],
+                        'name' => $metadata['name'] ?? $contract['name'],
+                        'address' => $contract['address'],
+                        'decimals' => (int)($metadata['decimals'] ?? 18)
+                    ];
+                }
+            }
+            
+            return $tokens;
+            
+        } catch (Exception $e) {
+            // Fallback to basic tokens if database fails (use network config if available)
+            $tokenInfo = method_exists($networkConfig, 'getTokenInfo') ? $networkConfig->getTokenInfo() : [];
+            
+            return [
+                [
+                    'symbol' => $tokenInfo['symbol'] ?? 'VFLW',
+                    'name' => $tokenInfo['name'] ?? 'Universal Token',
+                    'address' => 'native_token',
+                    'decimals' => (int)($tokenInfo['decimals'] ?? 18)
+                ],
+                [
+                    'symbol' => 'WETH',
+                    'name' => 'Wrapped Ether',
+                    'address' => $contracts['weth']['address'] ?? 'weth_contract',
+                    'decimals' => 18
+                ]
+            ];
+        }
+    }
+    
     // ==============================================================
     // End of DEX Functions
     // ==============================================================
@@ -3176,27 +3256,27 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
                 $stmt = $pdo->query("
                     SELECT DISTINCT name, address, metadata 
                     FROM smart_contracts 
-                    WHERE (metadata LIKE '%token%' OR name LIKE '%Token%' OR name LIKE '%WETH%' OR name LIKE '%VFLW%') 
+                    WHERE (metadata LIKE '%token%' OR metadata LIKE '%Token%' OR metadata LIKE '%ERC20%' OR metadata LIKE '%BEP20%' OR 
+                           name LIKE '%Token%' OR name LIKE '%TOKEN%' OR name LIKE '%COIN%' OR name LIKE '%Coin%' OR
+                           metadata LIKE '%type\":\"token%' OR metadata LIKE '%type\":\"erc20%' OR metadata LIKE '%symbol%') 
                     AND status = 'active'
                     ORDER BY name
                 ");
                 $contracts = $stmt->fetchAll();
                 
-                $tokens = [
-                    ['symbol' => 'VFLW', 'name' => 'Universal Token', 'address' => 'native_token'],
-                    ['symbol' => 'WETH', 'name' => 'Wrapped Ether', 'address' => 'weth_contract']
-                ];
-                
+                // Build contracts array for consistency with getSupportedTokensFromDatabase
+                $contractsMap = [];
                 foreach ($contracts as $contract) {
                     $metadata = json_decode($contract['metadata'], true);
-                    if ($metadata && isset($metadata['symbol'])) {
-                        $tokens[] = [
-                            'symbol' => $metadata['symbol'],
-                            'name' => $metadata['name'] ?? $contract['name'],
-                            'address' => $contract['address']
-                        ];
-                    }
+                    $contractsMap[strtolower($contract['name'])] = [
+                        'address' => $contract['address'],
+                        'name' => $contract['name'],
+                        'metadata' => $metadata
+                    ];
                 }
+                
+                // Use universal function to get tokens from database and network config
+                $tokens = getSupportedTokensFromDatabase($pdo, $networkConfig, $contractsMap);
                 
                 $result = ['tokens' => $tokens];
             } catch (Exception $e) {
@@ -3301,6 +3381,46 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
                 }
                 
                 $result = ['positions' => $positions];
+                
+            } catch (Exception $e) {
+                $result = ['error' => $e->getMessage()];
+            }
+            break;
+
+        case 'get_metamask_config':
+            try {
+                // Get DEX contract addresses from database
+                $stmt = $pdo->query("
+                    SELECT address, name, metadata 
+                    FROM smart_contracts 
+                    WHERE name IN ('DEX_Factory', 'DEX_Router', 'WETH') 
+                    AND status = 'active'
+                    ORDER BY name
+                ");
+                
+                $contracts = [];
+                while ($row = $stmt->fetch()) {
+                    $metadata = json_decode($row['metadata'], true);
+                    $contracts[strtolower($row['name'])] = [
+                        'address' => $row['address'],
+                        'name' => $row['name'],
+                        'metadata' => $metadata
+                    ];
+                }
+                
+                // Create network configuration for MetaMask using database config
+                $dappNetworkConfig = getDappConfig($networkConfig);
+                
+                $result = [
+                    'network_config' => $dappNetworkConfig,
+                    'contracts' => [
+                        'factory_address' => $contracts['dex_factory']['address'] ?? null,
+                        'router_address' => $contracts['dex_router']['address'] ?? null,
+                        'weth_address' => $contracts['weth']['address'] ?? null,
+                        'main_token_address' => 'native_token'
+                    ],
+                    'supported_tokens' => getSupportedTokensFromDatabase($pdo, $networkConfig, $contracts)
+                ];
                 
             } catch (Exception $e) {
                 $result = ['error' => $e->getMessage()];
