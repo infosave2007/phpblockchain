@@ -798,23 +798,39 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
     // ==============================================================
     
     /**
+     * Get latest block hash from database
+     */
+    function getLatestBlockHash($pdo): ?string {
+        try {
+            $stmt = $pdo->query("SELECT hash FROM blocks ORDER BY height DESC LIMIT 1");
+            $result = $stmt->fetch();
+            return $result ? $result['hash'] : null;
+        } catch (Exception $e) {
+            writeLog("Failed to get latest block hash: " . $e->getMessage(), 'ERROR');
+            return null;
+        }
+    }
+
+    /**
      * Calculate square root using BCMath (for LP token supply calculation)
      */
-    function bcsqrt($number, $scale = 0) {
-        if (bccomp($number, '0', $scale) <= 0) {
-            return '0';
+    if (!function_exists('bcsqrt')) {
+        function bcsqrt($number, $scale = 0) {
+            if (bccomp($number, '0', $scale) <= 0) {
+                return '0';
+            }
+            
+            // Newton's method for square root
+            $x = $number;
+            $root = bcdiv(bcadd($x, '1', $scale), '2', $scale);
+            
+            while (bccomp($root, $x, $scale) < 0) {
+                $x = $root;
+                $root = bcdiv(bcadd(bcdiv($number, $x, $scale), $x, $scale), '2', $scale);
+            }
+            
+            return $x;
         }
-        
-        // Newton's method for square root
-        $x = $number;
-        $root = bcdiv(bcadd($x, '1', $scale), '2', $scale);
-        
-        while (bccomp($root, $x, $scale) < 0) {
-            $x = $root;
-            $root = bcdiv(bcadd(bcdiv($number, $x, $scale), $x, $scale), '2', $scale);
-        }
-        
-        return $x;
     }
     
     /**
@@ -836,12 +852,22 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             ];
             
             $stmt = $pdo->prepare("
-                INSERT INTO smart_contracts (address, name, metadata, status, created_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                INSERT INTO smart_contracts (
+                    address, creator, name, bytecode, abi, deployment_tx, 
+                    deployment_block, metadata, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
+            
+            $deploymentTx = 'deploy_factory_' . bin2hex(random_bytes(16));
+            
             $stmt->execute([
                 $factoryAddress,
+                'system',
                 'DEX_Factory',
+                'factory_bytecode',
+                json_encode([]),
+                $deploymentTx,
+                time(),
                 json_encode($factoryMetadata),
                 'active'
             ]);
@@ -857,9 +883,16 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
                 'created_at' => time()
             ];
             
+            $deploymentTxRouter = 'deploy_router_' . bin2hex(random_bytes(16));
+            
             $stmt->execute([
                 $routerAddress,
+                'system',
                 'DEX_Router',
+                'router_bytecode',
+                json_encode([]),
+                $deploymentTxRouter,
+                time(),
                 json_encode($routerMetadata),
                 'active'
             ]);
@@ -875,9 +908,16 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
                 'created_at' => time()
             ];
             
+            $deploymentTxWeth = 'deploy_weth_' . bin2hex(random_bytes(16));
+            
             $stmt->execute([
                 $wethAddress,
+                'system',
                 'WETH',
+                'weth_bytecode',
+                json_encode([]),
+                $deploymentTxWeth,
+                time(),
                 json_encode($wethMetadata),
                 'active'
             ]);
@@ -903,9 +943,14 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
             
+            // Get the latest block hash
+            $latestBlockStmt = $pdo->query("SELECT hash FROM blocks ORDER BY height DESC LIMIT 1");
+            $latestBlock = $latestBlockStmt->fetch();
+            $blockHash = $latestBlock ? $latestBlock['hash'] : null;
+            
             $stmt->execute([
                 $txHash,
-                'latest_block',
+                $blockHash,
                 time(),
                 'system',
                 'contracts',
@@ -978,7 +1023,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             }
             
             // Check user balances
-            $balanceA = $walletManager->getWalletBalance($address);
+            $balanceA = $walletManager->getBalance($address);
             if ($tokenA === 'native') {
                 if ($balanceA < $amountA) {
                     return ['error' => 'Insufficient balance for tokenA'];
@@ -1051,7 +1096,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             
             $stmt->execute([
                 $deploymentTx,
-                'latest_block',
+                getLatestBlockHash($pdo),
                 $currentBlock,
                 $address,
                 $pairAddress,
@@ -1173,7 +1218,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             
             $stmt->execute([
                 $txHash,
-                'latest_block',
+                getLatestBlockHash($pdo),
                 time(),
                 $from,
                 $to ?: $from, // Self-swap if no destination
@@ -1265,7 +1310,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             $stmt = $pdo->prepare("
                 SELECT SUM(amount) as total_liquidity 
                 FROM staking 
-                WHERE validator_address LIKE 'pair_%'
+                WHERE validator LIKE 'pair_%'
             ");
             $stmt->execute();
             $liquidity = $stmt->fetch(PDO::FETCH_ASSOC)['total_liquidity'] ?? 0;
@@ -1691,15 +1736,16 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             if (empty($contractPairs)) {
                 // Analyze transaction data to find potential trading pairs
                 $stmt = $pdo->prepare("
-                    SELECT DISTINCT
-                        from_address,
-                        to_address,
+                    SELECT 
+                        LEAST(from_address, to_address) as token0,
+                        GREATEST(from_address, to_address) as token1,
                         COUNT(*) as tx_count,
                         MAX(timestamp) as last_activity,
                         SUM(amount) as total_volume
                     FROM transactions 
                     WHERE status = 'confirmed'
                     AND amount > 0
+                    AND from_address != to_address
                     GROUP BY LEAST(from_address, to_address), GREATEST(from_address, to_address)
                     HAVING tx_count > 1
                     ORDER BY total_volume DESC
@@ -1709,8 +1755,8 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
                 $tradingPairs = $stmt->fetchAll();
                 
                 foreach ($tradingPairs as $pairData) {
-                    $token0 = $pairData['from_address'];
-                    $token1 = $pairData['to_address'];
+                    $token0 = $pairData['token0'];
+                    $token1 = $pairData['token1'];
                     
                     // Generate deterministic pair address
                     $pairAddress = 'pair_' . substr(hash('sha256', $token0 . '_' . $token1), 0, 16);
@@ -1863,12 +1909,15 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
             
+            // Get latest block hash for foreign key constraint
+            $latestBlockHash = getLatestBlockHash($pdo);
+            
             $stmt->execute([
                 $txHash,
-                'latest_block',
+                $latestBlockHash,
                 time(),
                 $owner,
-                $spender,
+                'dex_contract', // Use fixed DEX contract address
                 $amount,
                 0.0001, // Small approval fee
                 21000,
@@ -1882,7 +1931,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             ]);
             
             // Store allowance in smart contracts table for tracking
-            $allowanceAddress = 'allowance_' . hash('sha256', $owner . $spender . $token);
+            $allowanceAddress = '0x' . substr(hash('sha256', $owner . $spender . $token), 0, 40);
             
             $allowanceData = [
                 'owner' => $owner,
@@ -1894,15 +1943,20 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             ];
             
             $stmt = $pdo->prepare("
-                INSERT INTO smart_contracts (address, name, metadata, status, created_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                INSERT INTO smart_contracts (address, creator, name, bytecode, abi, deployment_tx, deployment_block, metadata, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON DUPLICATE KEY UPDATE
                 metadata = ?, updated_at = CURRENT_TIMESTAMP
             ");
             
             $stmt->execute([
                 $allowanceAddress,
+                $owner,  // Creator is the owner of the allowance
                 'token_allowance',
+                'allowance_bytecode',  // Placeholder bytecode
+                '[]',  // Empty ABI
+                $txHash,  // Deployment transaction
+                time(),  // Current block height
                 json_encode($allowanceData),
                 'active',
                 json_encode($allowanceData)
@@ -1938,7 +1992,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             
             // Handle native/main token
             if ($token === 'main_token' || $token === 'native' || $token === '') {
-                $balance = $walletManager->getWalletBalance($address);
+                $balance = $walletManager->getBalance($address);
                 
                 // Get token info from database
                 $pdo = $walletManager->getDatabase();
@@ -2274,8 +2328,8 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             // 6. Get top trading pairs by transaction volume
             $stmt = $pdo->prepare("
                 SELECT 
-                    from_address as token0,
-                    to_address as token1,
+                    LEAST(from_address, to_address) as token0,
+                    GREATEST(from_address, to_address) as token1,
                     COUNT(*) as tx_count,
                     COALESCE(SUM(CAST(amount AS DECIMAL(30,0))), 0) as volume_24h
                 FROM transactions 
@@ -4861,29 +4915,32 @@ function unstakeTokens($walletManager, $blockchainManager, string $address, floa
     try {
         writeLog("Starting token unstaking: address=$address, amount=$amount", 'INFO');
         
-        // 1. Get staking records
+        // 1. Get current block height
+        $currentBlock = $blockchainManager->getCurrentBlockHeight();
+        
+        // 2. Get staking records (unlocked = end_block IS NULL OR current_block >= end_block)
         $pdo = $walletManager->getDatabase();
         $stmt = $pdo->prepare("
             SELECT * 
             FROM staking 
             WHERE staker = ? AND status = 'active' 
-            AND (end_block IS NOT NULL OR status = 'pending_withdrawal')
+            AND (end_block IS NULL OR ? >= end_block OR status = 'pending_withdrawal')
             ORDER BY created_at ASC
         ");
-        $stmt->execute([$address]);
+        $stmt->execute([$address, $currentBlock]);
         $stakingRecords = $stmt->fetchAll();
         
         if (empty($stakingRecords)) {
             throw new Exception('No unlocked staking records found');
         }
         
-        // 2. Calculate available amount to unstake
+        // 3. Calculate available amount to unstake
         $availableToUnstake = array_sum(array_column($stakingRecords, 'amount'));
         if ($amount > $availableToUnstake) {
             throw new Exception("Insufficient staked amount. Available: $availableToUnstake, Requested: $amount");
         }
         
-        // 3. Calculate rewards
+        // 4. Calculate rewards
         $totalRewards = 0;
         $amountRemaining = $amount;
         $recordsToProcess = [];
@@ -5027,24 +5084,37 @@ function getStakingInfo($walletManager, string $address) {
         $stmt->execute([$address]);
         $completedStakes = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
-        // Calculate totals
+        // Calculate totals and update lock status
         $totalStaked = 0;
         $totalRewardsEarning = 0;
         $unlockedAmount = 0;
         
         if (is_array($activeStakes) && !empty($activeStakes)) {
-            foreach ($activeStakes as $stake) {
+            foreach ($activeStakes as $index => $stake) {
                 $stakeAmount = (float)($stake['amount'] ?? 0);
                 $stakeRewards = (float)($stake['rewards_earned'] ?? 0);
                 
                 $totalStaked += $stakeAmount;
                 $totalRewardsEarning += $stakeRewards;
                 
-                // Check if stake is unlocked (has end_block set or is pending withdrawal)
-                if ($stake['status'] === 'pending_withdrawal' || 
-                    (!empty($stake['end_block']) && $stake['end_block'] > 0)) {
+                // Check if stake is unlocked 
+                // Unlocked if: 1) pending withdrawal, 2) has end_block > current, 3) end_block is NULL (unlimited)
+                $currentBlock = time(); // Using timestamp as block approximation
+                $isUnlocked = false;
+                
+                if ($stake['status'] === 'pending_withdrawal') {
+                    $isUnlocked = true;
+                } elseif (empty($stake['end_block']) || $stake['end_block'] === null) {
+                    // NULL end_block means unlimited staking - always unlocked
+                    $isUnlocked = true;
+                } elseif (!empty($stake['end_block']) && $currentBlock >= $stake['end_block']) {
+                    $isUnlocked = true;
+                }
+                
+                if ($isUnlocked) {
                     $unlockedAmount += $stakeAmount + $stakeRewards;
-                    $stake['lock_status'] = 'unlocked';
+                    // Update the original array element
+                    $activeStakes[$index]['lock_status'] = 'unlocked';
                 }
             }
         }
