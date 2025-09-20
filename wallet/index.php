@@ -4796,7 +4796,7 @@ function getLanguageOptions($currentLang) {
                     <div class="mb-3">
                         <label class="form-label">Your Address:</label>
                         <input type="text" class="form-control" id="positionsAddress" 
-                               placeholder="Enter your wallet address..." value="0x74250ff08e6a4bcc09611f9576013a740f7beb0d">
+                               placeholder="Enter your wallet address..." value="">
                         <button class="btn btn-primary mt-2" onclick="loadUserPositions()">
                             <i class="fas fa-search me-2"></i>Load Positions
                         </button>
