@@ -4567,7 +4567,7 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
 
         // Use HTTP self-request for background processing (works on shared hosting)
         writeLog("HTTP self-request supported, sending immediate response", 'INFO');
-        echo json_encode($fastResponse);
+        echo json_encode(['success' => true, ...$fastResponse]);
 
         // Trigger background processing via HTTP self-request
         $thisUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://') .
