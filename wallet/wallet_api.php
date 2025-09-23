@@ -654,7 +654,10 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
     $isJsonRpcSingle = is_array($input) && isset($input['jsonrpc']) && isset($input['method']);
     $isJsonRpcBatch = is_array($input) && array_keys($input) === range(0, count($input) - 1) && isset($input[0]['jsonrpc']);
 
-    if ($isRpcAlias || $isJsonRpcSingle || $isJsonRpcBatch || ($_SERVER['REQUEST_METHOD'] === 'POST' && $rawBody !== '' && $jsonError !== JSON_ERROR_NONE)) {
+    // Skip JSON-RPC processing for internal background requests (they have 'action' field)
+    $isInternalRequest = is_array($input) && isset($input['action']);
+    
+    if (!$isInternalRequest && ($isRpcAlias || $isJsonRpcSingle || $isJsonRpcBatch || ($_SERVER['REQUEST_METHOD'] === 'POST' && $rawBody !== '' && $jsonError !== JSON_ERROR_NONE))) {
         // If JSON parse failed
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && $rawBody !== '' && $jsonError !== JSON_ERROR_NONE) {
             $parseErrorResponse = $jsonRpcErrorResponse(null, -32700, 'Parse error');
@@ -2468,44 +2471,27 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             // Send immediate response
             echo json_encode(['success' => true, ...$result]);
             
-            // Trigger background processing
+            // Flush output to client immediately
             if (function_exists('fastcgi_finish_request')) {
                 fastcgi_finish_request();
+            } else {
+                if (ob_get_level()) {
+                    ob_end_flush();
+                }
+                flush();
             }
 
-            // Use a more robust background trigger
-            $thisUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://') .
-                       ($_SERVER['HTTP_HOST'] ?? 'localhost') . ($_SERVER['SCRIPT_NAME'] ?? '');
+            // Process in background synchronously (minimal operations)
+            writeLog("BACKGROUND: Starting lightweight background processing for wallet creation: " . $result['wallet']['address'], 'INFO');
 
-            $backgroundData = [
-                'action' => 'process_create_wallet_background',
-                'wallet_data' => $result['wallet']
-            ];
+            try {
+                // Only record wallet creation in blockchain - skip heavy sync operations
+                $blockchainResult = $blockchainManager->createWalletWithBlockchain($result['wallet']);
+                writeLog("BACKGROUND: Blockchain recording result: " . json_encode($blockchainResult['blockchain_recorded']), 'INFO');
 
-            $ch = curl_init();
-            curl_setopt_array($ch, [
-                CURLOPT_URL => $thisUrl,
-                CURLOPT_POST => true,
-                CURLOPT_POSTFIELDS => json_encode($backgroundData),
-                CURLOPT_HTTPHEADER => [
-                    'Content-Type: application/json',
-                    'User-Agent: BackgroundProcessor/1.0'
-                ],
-                CURLOPT_TIMEOUT => 1,
-                CURLOPT_CONNECTTIMEOUT => 1,
-                CURLOPT_RETURNTRANSFER => false,
-                CURLOPT_NOSIGNAL => true,
-                CURLOPT_SSL_VERIFYPEER => false
-            ]);
-
-            curl_exec($ch);
-            $curl_error = curl_error($ch);
-            curl_close($ch);
-
-            if ($curl_error) {
-                writeLog("Background wallet creation trigger failed: " . $curl_error, 'ERROR');
-            } else {
-                writeLog("Background wallet creation triggered for " . $result['wallet']['address'], 'INFO');
+                writeLog("BACKGROUND: Lightweight background processing COMPLETED for wallet creation: " . $result['wallet']['address'], 'INFO');
+            } catch (Exception $e) {
+                writeLog("BACKGROUND: Wallet creation background processing FAILED: " . $e->getMessage(), 'ERROR');
             }
             
             return; // End request
@@ -2725,7 +2711,7 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             
             // FAST RESPONSE: Send response immediately to client, then continue with background sync
             if (function_exists('fastcgi_finish_request')) {
-                echo json_encode(['success' => true, ...$result]);
+                echo json_encode($result);
                 fastcgi_finish_request();
                 
                 // Now perform background sync after response is sent
@@ -4779,50 +4765,41 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
         // Release sender lock
         if (isset($lockFp) && $lockFp) { @flock($lockFp, LOCK_UN); @fclose($lockFp); }
 
-        // Use HTTP self-request for background processing (works on shared hosting)
-        writeLog("HTTP self-request supported, sending immediate response", 'INFO');
+        // Send immediate response then process in background
+        writeLog("Sending immediate response and processing in background", 'INFO');
         echo json_encode(['success' => true, ...$fastResponse]);
-
-        // Trigger background processing via HTTP self-request
-        $thisUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://') .
-                   $_SERVER['HTTP_HOST'] . $_SERVER['SCRIPT_NAME'];
-
-        $backgroundData = [
-            'action' => 'process_transfer_background',
-            'transaction' => $transferTx,
-            'from_address' => $fromAddress,
-            'to_address' => $toAddress
-        ];
-
-        // Use curl for background request
-        $ch = curl_init();
-        curl_setopt_array($ch, [
-            CURLOPT_URL => $thisUrl,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => json_encode($backgroundData),
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-                'User-Agent: BackgroundProcessor/1.0'
-            ],
-            CURLOPT_TIMEOUT => 1, // Very short timeout since this is fire-and-forget
-            CURLOPT_CONNECTTIMEOUT => 1,
-            CURLOPT_RETURNTRANSFER => false, // Don't wait for response
-            CURLOPT_NOSIGNAL => true, // Don't send signals on timeout
-            CURLOPT_SSL_VERIFYPEER => false
-        ]);
-
-        // Execute background request (non-blocking)
-        $backgroundRequest = curl_exec($ch);
-        $backgroundError = curl_error($ch);
-        curl_close($ch);
-
-        if ($backgroundError) {
-            writeLog("Background request warning (non-critical): " . $backgroundError, 'WARNING');
+        
+        // Flush output to client immediately
+        if (function_exists('fastcgi_finish_request')) {
+            fastcgi_finish_request();
         } else {
-            writeLog("Background processing triggered via HTTP self-request", 'INFO');
+            // Fallback flush methods
+            if (ob_get_level()) {
+                ob_end_flush();
+            }
+            flush();
         }
 
-        // Exit immediately after sending response
+        // Now process in background synchronously (minimal operations)
+        writeLog("BACKGROUND: Starting lightweight background processing for transfer: $fromAddress -> $toAddress", 'INFO');
+
+        try {
+            // Only record in blockchain - skip heavy network operations
+            writeLog("BACKGROUND: Recording transaction in blockchain", 'INFO');
+            $blockchainResult = $blockchainManager->recordTransactionInBlockchain($transferTx);
+            writeLog("BACKGROUND: Blockchain recording completed", 'INFO');
+
+            // Update transaction status
+            $transferTx['status'] = 'confirmed';
+            writeLog("BACKGROUND: Transaction status updated to confirmed", 'INFO');
+
+            writeLog("BACKGROUND: Lightweight background processing COMPLETED for transfer: $fromAddress -> $toAddress", 'INFO');
+
+        } catch (Exception $e) {
+            writeLog("BACKGROUND: Background processing FAILED: " . $e->getMessage(), 'ERROR');
+        }
+
+        // Exit after background processing
         exit;
 
         // Fallback for servers without fastcgi_finish_request - synchronous processing
