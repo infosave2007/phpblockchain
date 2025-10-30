@@ -166,6 +166,8 @@ function loadLanguage($lang) {
             'transfer_successful' => 'Transfer Successful!',
             'transfer_failed' => 'Transfer Failed',
             'staking_period' => 'Staking Period',
+            'staking_preview' => 'Staking Preview',
+            'days' => 'days',
             'start_staking' => 'Start Staking',
             'staking_successful' => 'Staking Successful!',
             'staking_failed' => 'Staking Failed',
@@ -386,6 +388,8 @@ function loadLanguage($lang) {
             'transfer_successful' => 'Перевод выполнен!',
             'transfer_failed' => 'Ошибка перевода',
             'staking_period' => 'Период стейкинга',
+            'staking_preview' => 'Предпросмотр стейкинга',
+            'days' => 'дней',
             'start_staking' => 'Начать стейкинг',
             'staking_successful' => 'Стейкинг успешен!',
             'staking_failed' => 'Ошибка стейкинга',
@@ -1583,12 +1587,12 @@ function getLanguageOptions($currentLang) {
                         </div>
                         
                         <div id="stakingPreview" class="alert alert-success alert-modern" style="display: none;">
-                            <h6>Staking Preview:</h6>
+                            <h6><?php echo $t['staking_preview'] ?? 'Staking Preview'; ?></h6>
                             <div class="row">
-                                <div class="col-6">Amount: <span id="previewAmount">0</span> COIN</div>
-                                <div class="col-6">Period: <span id="previewPeriod">0</span> days</div>
-                                <div class="col-6">APY: <span id="previewAPY">0</span>%</div>
-                                <div class="col-6">${t.expected_rewards}: <span id="previewRewards">0</span> COIN</div>
+                                <div class="col-6"><?php echo $t['amount'] ?? 'Amount'; ?>: <span id="previewAmount">0</span> <span class="crypto-symbol">COIN</span></div>
+                                <div class="col-6"><?php echo $t['staking_period'] ?? 'Period'; ?>: <span id="previewPeriod">0</span> <?php echo $t['days'] ?? 'days'; ?></div>
+                                <div class="col-6"><?php echo $t['estimated_apy'] ?? 'APY'; ?>: <span id="previewAPY">0</span>%</div>
+                                <div class="col-6"><?php echo $t['expected_rewards'] ?? 'Expected Rewards'; ?>: <span id="previewRewards">0</span> <span class="crypto-symbol">COIN</span></div>
                             </div>
                         </div>
                     </form>

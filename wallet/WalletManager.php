@@ -931,8 +931,8 @@ class WalletManager
             $baseDir = dirname(__DIR__);
             
             // Validate period
-            if (!in_array($period, [7, 30, 90, 180])) {
-                throw new Exception("Invalid staking period. Must be 7, 30, 90, or 180 days");
+            if (!in_array($period, [7, 30, 90, 180, 365])) {
+                throw new Exception("Invalid staking period. Must be 7, 30, 90, 180, or 365 days");
             }
             
             // Get wallet balance
@@ -1237,6 +1237,8 @@ class WalletManager
                 return 0.08; // 8% APY for 90 days
             case 180:
                 return 0.12; // 12% APY for 180 days
+            case 365:
+                return 0.12; // 12% APY for 365 days (1 year)
             default:
                 return 0.05; // Default 5% APY
         }

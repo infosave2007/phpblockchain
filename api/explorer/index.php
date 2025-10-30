@@ -1986,8 +1986,8 @@ function getAllBlocks(PDO $pdo, string $network, int $page = 0, int $limit = 100
         
         $offset = $page * $limit;
         
-        // Get blocks with pagination
-        $stmt = $pdo->prepare("SELECT hash, parent_hash, height, timestamp, validator, signature, merkle_root, transactions_count, metadata FROM blocks ORDER BY height ASC LIMIT ?, ?");
+        // Get blocks with pagination (newest first)
+        $stmt = $pdo->prepare("SELECT hash, parent_hash, height, timestamp, validator, signature, merkle_root, transactions_count, metadata FROM blocks ORDER BY height DESC LIMIT ?, ?");
         $stmt->bindValue(1, $offset, PDO::PARAM_INT);
         $stmt->bindValue(2, $limit, PDO::PARAM_INT);
         $stmt->execute();
