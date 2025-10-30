@@ -10,6 +10,8 @@ use Blockchain\Core\Transaction\Transaction;
 use PDO;
 use Exception;
 
+require_once __DIR__ . '/StakingRateHelper.php';
+
 /**
  * Function to write logs to WalletManager log file
  */
@@ -1227,21 +1229,8 @@ class WalletManager
      */
     private function getRewardRateForPeriod(int $periodDays): float
     {
-        // Different APY rates based on staking period
-        switch ($periodDays) {
-            case 7:
-                return 0.03; // 3% APY for 7 days
-            case 30:
-                return 0.05; // 5% APY for 30 days
-            case 90:
-                return 0.08; // 8% APY for 90 days
-            case 180:
-                return 0.12; // 12% APY for 180 days
-            case 365:
-                return 0.12; // 12% APY for 365 days (1 year)
-            default:
-                return 0.05; // Default 5% APY
-        }
+        // Delegate calculation to the unified helper
+        return StakingRateHelper::getRewardRateForPeriod($periodDays);
     }
 
     /**

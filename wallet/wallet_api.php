@@ -5090,17 +5090,15 @@ function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $a
     }
 }
 
+// Use unified helper for APY calculations
+require_once __DIR__ . '/StakingRateHelper.php';
+
 /**
- * Calculate staking APY based on period
+ * Calculate staking APY based on period (percent)
  */
 function calculateStakingAPY(int $periodDays): float {
-    // Longer periods get better rates
-    if ($periodDays >= 365) return 12.0; // 12% APY for 1+ year
-    if ($periodDays >= 180) return 10.0; // 10% APY for 6+ months
-    if ($periodDays >= 90) return 8.0;   // 8% APY for 3+ months
-    if ($periodDays >= 30) return 6.0;   // 6% APY for 1+ month
-    if ($periodDays == 7) return 4.0;    // 4% APY for 7 days
-    return 4.0; // 4% APY for less than 1 month
+    // Delegate to helper to ensure consistent logic across backend
+    return \Blockchain\Wallet\StakingRateHelper::getApyPercent($periodDays);
 }
 
 /**
