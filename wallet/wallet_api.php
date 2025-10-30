@@ -4999,8 +4999,10 @@ function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $a
             
             // Record staking details - use direct SQL since prepared statements cause truncation
             $escapedAddress = addslashes($address);
+            // Use calculated APY converted to fractional reward_rate (e.g., 12% -> 0.1200)
+            $rewardRate = number_format(($apy / 100), 4, '.', '');
             $sql = "INSERT INTO staking (staker, amount, status, start_block, created_at, validator, reward_rate, rewards_earned, last_reward_block)
-                    VALUES ('$escapedAddress', $amount, 'active', $currentBlockHeight, NOW(), '$escapedAddress', 0.0500, 0.00000000, 0)";
+                    VALUES ('$escapedAddress', $amount, 'active', $currentBlockHeight, NOW(), '$escapedAddress', $rewardRate, 0.00000000, 0)";
             
             error_log("DEBUG: Direct SQL query: " . $sql);
             error_log("DEBUG: Current block height: " . $currentBlockHeight . " (type: " . gettype($currentBlockHeight) . ")");
