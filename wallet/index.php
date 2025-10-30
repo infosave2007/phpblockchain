@@ -2357,6 +2357,8 @@ function getLanguageOptions($currentLang) {
                         <p class="text-muted">${t.no_wallets_found}</p>
                     </div>
                 `;
+                // Автоскролл к результатам, чтобы пользователь увидел контент
+                scrollToResults();
                 return;
             }
             
@@ -2411,6 +2413,21 @@ function getLanguageOptions($currentLang) {
             
             html += '</div></div>';
             resultsDiv.innerHTML = html;
+            // Автоскролл к результатам после рендера списка кошельков
+            scrollToResults();
+        }
+        
+        // Плавный автоскролл к блоку результатов
+        function scrollToResults() {
+            const resultsDiv = document.getElementById('results');
+            if (!resultsDiv) return;
+            try {
+                resultsDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } catch (e) {
+                // Фолбэк на случай старых браузеров
+                const top = resultsDiv.getBoundingClientRect().top + window.pageYOffset - 10;
+                window.scrollTo({ top, behavior: 'smooth' });
+            }
         }
         
         // Show dashboard
@@ -2446,6 +2463,8 @@ function getLanguageOptions($currentLang) {
                         </button>
                     </div>
                 `;
+                // Автоскролл к результатам, чтобы пользователь увидел сообщение
+                scrollToResults();
                 return;
             }
             
@@ -2503,6 +2522,8 @@ function getLanguageOptions($currentLang) {
             localStorage.setItem('myWallets', JSON.stringify(updatedWallets));
             
             displayWalletList(walletsWithBalances, t.my_wallets);
+            // После отображения списка «Мои кошельки» прокручиваем к результатам
+            scrollToResults();
         }
         
         // Add wallet to localStorage
@@ -3385,6 +3406,8 @@ function getLanguageOptions($currentLang) {
                     
                     if (data.success) {
                         displayTransactionHistory(data.transactions, address);
+                        // После загрузки истории транзакций прокручиваем к результатам
+                        scrollToResults();
                     } else {
                         showNotification('Failed to load transaction history: ' + data.error, 'danger');
                     }
@@ -3408,6 +3431,8 @@ function getLanguageOptions($currentLang) {
                         <p class="text-muted">${t.select_wallet_for_history}</p>
                     </div>
                 `;
+                // Автоскролл к результатам, чтобы пользователь увидел уведомление
+                scrollToResults();
                 return;
             }
             
@@ -3454,6 +3479,8 @@ function getLanguageOptions($currentLang) {
                     </div>
                 </div>
             `;
+            // Автоскролл к результатам сразу после показа интерфейса выбора кошелька
+            scrollToResults();
         }
         
         // Load wallet transaction history
@@ -3525,6 +3552,8 @@ function getLanguageOptions($currentLang) {
                         <p class="text-muted">${t.no_transaction_history}</p>
                     </div>
                 `;
+                // Автоскролл к результатам, чтобы пользователь увидел сообщение
+                scrollToResults();
                 return;
             }
             
@@ -3655,6 +3684,8 @@ function getLanguageOptions($currentLang) {
             
             html += '</div></div>';
             resultsDiv.innerHTML = html;
+            // Автоскролл к результатам после рендера истории транзакций
+            scrollToResults();
         }
         
         // Display transactions with enhanced features and pagination
