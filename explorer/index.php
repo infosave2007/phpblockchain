@@ -490,6 +490,9 @@ function getLanguageOptions($currentLang) {
         const CRYPTO_SYMBOL = '<?php echo addslashes($cryptoSymbol); ?>';
         const CRYPTO_NAME = '<?php echo addslashes($cryptoName); ?>';
         
+        // Disable auto-refresh/synchronization with API; updates only on manual actions
+        window.ENABLE_AUTO_REFRESH = false;
+        
         // Language and translation
         const translations = <?php echo json_encode(['current_lang' => $language, 'translations' => $t]); ?>;
         const t = translations.translations;

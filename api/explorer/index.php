@@ -22,6 +22,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit(0);
 }
 
+// Basic protection for shared hosting: block abusive User-Agent and apply simple rate limiting per IP
+try {
+    $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
+    if (stripos($ua, 'NetworkSyncManager') !== false) {
+        http_response_code(429);
+        header('Retry-After: 600'); // 10 minutes
+        echo json_encode(['success' => false, 'error' => 'Rate limited: NetworkSyncManager blocked on shared hosting']);
+        exit;
+    }
+
+    // Simple per-IP rate limiting (60 requests per minute)
+    $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+    $rateDir = __DIR__ . '/../../storage/tmp/rate';
+    if (!is_dir($rateDir)) {
+        @mkdir($rateDir, 0755, true);
+    }
+    $key = preg_replace('/[^0-9A-Fa-f:\.]/', '_', $ip);
+    $rateFile = $rateDir . '/explorer_' . $key . '.json';
+    $now = time();
+    $window = 60; // seconds
+    $limit = 60;  // requests per window
+    $data = ['start' => $now, 'count' => 0];
+    if (file_exists($rateFile)) {
+        $json = @file_get_contents($rateFile);
+        if ($json !== false) {
+            $parsed = json_decode($json, true);
+            if (is_array($parsed) && isset($parsed['start'], $parsed['count'])) {
+                $data = $parsed;
+            }
+        }
+    }
+    if (($now - (int)$data['start']) >= $window) {
+        $data['start'] = $now;
+        $data['count'] = 0;
+    }
+    $data['count']++;
+    @file_put_contents($rateFile, json_encode($data), LOCK_EX);
+    if ($data['count'] > $limit) {
+        http_response_code(429);
+        header('Retry-After: 60');
+        echo json_encode(['success' => false, 'error' => 'Too Many Requests', 'retry_after' => 60]);
+        exit;
+    }
+} catch (Throwable $t) {
+    // Fail-open: if rate limiter errors, proceed without blocking
+}
+
 // Get the request path
 $request_uri = $_SERVER['REQUEST_URI'];
 $path = parse_url($request_uri, PHP_URL_PATH);

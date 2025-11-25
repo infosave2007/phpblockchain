@@ -55,11 +55,15 @@ class BlockchainExplorer {
         
         console.log('Explorer initialization complete');
         
-        // Auto-refresh every 30 seconds
-        setInterval(() => {
-            console.log('Auto-refreshing data...');
-            this.refreshData();
-        }, 30000);
+        // Auto-refresh every 30 seconds (can be disabled via global flag)
+        if (window.ENABLE_AUTO_REFRESH === true) {
+            setInterval(() => {
+                console.log('Auto-refreshing data...');
+                this.refreshData();
+            }, 30000);
+        } else {
+            console.log('Auto-refresh is disabled. Data updates occur only on manual actions.');
+        }
     }
 
     async loadConfig() {
