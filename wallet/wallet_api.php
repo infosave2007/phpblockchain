@@ -2846,12 +2846,13 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             $amount = $input['amount'] ?? 0;
             $period = $input['period'] ?? 30;
             $privateKey = $input['private_key'] ?? '';
+            $idempotencyKey = $input['idempotency_key'] ?? ($_SERVER['HTTP_X_IDEMPOTENCY_KEY'] ?? '');
             
             if (!$address || !$amount || !$privateKey) {
                 throw new Exception('Address, amount and private key are required');
             }
             
-            $result = stakeTokensWithBlockchain($walletManager, $blockchainManager, $address, $amount, $period, $privateKey);
+            $result = stakeTokensWithBlockchain($walletManager, $blockchainManager, $address, $amount, $period, $privateKey, $idempotencyKey);
 
             // FAST RESPONSE + background sync after staking
             if (function_exists('fastcgi_finish_request')) {
@@ -2871,12 +2872,13 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             $address = $input['address'] ?? '';
             $amount = $input['amount'] ?? 0;
             $privateKey = $input['private_key'] ?? '';
+            $idempotencyKey = $input['idempotency_key'] ?? ($_SERVER['HTTP_X_IDEMPOTENCY_KEY'] ?? '');
             
             if (!$address || !$amount || !$privateKey) {
                 throw new Exception('Address, amount and private key are required');
             }
             
-            $result = unstakeTokens($walletManager, $blockchainManager, $address, $amount, $privateKey);
+            $result = unstakeTokens($walletManager, $blockchainManager, $address, $amount, $privateKey, $idempotencyKey);
 
             // FAST RESPONSE + background sync after unstaking
             if (function_exists('fastcgi_finish_request')) {
@@ -4899,9 +4901,16 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
 /**
  * Stake tokens with blockchain recording
  */
-function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $address, float $amount, int $period, string $privateKey) {
+function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $address, float $amount, int $period, string $privateKey, string $idempotencyKey = '') {
     try {
         writeLog("Starting token staking: address=$address, amount=$amount, period=$period", 'INFO');
+
+        $idempotencyKey = trim((string)$idempotencyKey);
+        $normalizedAmount = number_format((float)$amount, 8, '.', '');
+        $txTimestamp = time();
+        $txHash = ($idempotencyKey !== '')
+            ? ('0x' . hash('sha256', 'stake_tokens|' . strtolower($address) . '|' . $normalizedAmount . '|' . (int)$period . '|' . $idempotencyKey))
+            : ('0x' . hash('sha256', 'stake_' . $address . '_' . $amount . '_' . $txTimestamp));
         
         // 0. Check and cleanup any active transactions
         $pdo = $walletManager->getDatabase();
@@ -4945,14 +4954,14 @@ function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $a
 
         // 5. Create staking transaction
         $stakeTx = [
-            'hash' => '0x' . hash('sha256', 'stake_' . $address . '_' . $amount . '_' . time()),
+            'hash' => $txHash,
             'type' => 'stake',
             'from' => $address,
             // Use real staking contract address
             'to' => $stakingContract,
             'amount' => $amount,
             'fee' => 0, // No fee for staking
-            'timestamp' => time(),
+            'timestamp' => $txTimestamp,
             'data' => [
                 'action' => 'stake_tokens',
                 'period_days' => $period,
@@ -4964,6 +4973,10 @@ function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $a
             'signature' => hash_hmac('sha256', $address . 'stake' . $amount, $privateKey),
             'status' => 'pending'
         ];
+
+        if ($idempotencyKey !== '') {
+            $stakeTx['data']['idempotency_key'] = $idempotencyKey;
+        }
         
         // 6. Update balances in database
         $pdo = $walletManager->getDatabase();
@@ -4979,14 +4992,85 @@ function stakeTokensWithBlockchain($walletManager, $blockchainManager, string $a
             // Get current block height
             $currentBlockHeight = $blockchainManager->getCurrentBlockHeight();
             error_log("DEBUG: Current block height: " . $currentBlockHeight . " (type: " . gettype($currentBlockHeight) . ")");
-            
-            // Verify current balance before staking
-            $stmt = $pdo->prepare("SELECT balance FROM wallets WHERE address = ?");
+
+            // Lock wallet row to serialize stake updates (and enable idempotency reservation)
+            $stmt = $pdo->prepare("SELECT balance FROM wallets WHERE address = ? FOR UPDATE");
             $stmt->execute([$address]);
             $currentBalance = $stmt->fetchColumn();
             
             if ($currentBalance === false) {
                 throw new Exception("Wallet not found in database: $address");
+            }
+
+            // Idempotency: if this tx hash already exists, return it without changing balances again
+            if ($idempotencyKey !== '') {
+                $check = $pdo->prepare("SELECT id, hash, block_hash, block_height, from_address, to_address, amount, fee, data, status, timestamp FROM transactions WHERE hash = ? LIMIT 1");
+                $check->execute([$txHash]);
+                $existingTx = $check->fetch(PDO::FETCH_ASSOC);
+                if ($existingTx) {
+                    if ($needsTransaction && $pdo->inTransaction()) {
+                        $pdo->rollBack();
+                    }
+                    return [
+                        'success' => true,
+                        'idempotency' => [ 'key' => $idempotencyKey, 'replayed' => true ],
+                        'transaction' => $existingTx,
+                        'blockchain' => [
+                            'blockchain_recorded' => true,
+                            'block' => [
+                                'hash' => $existingTx['block_hash'] ?? null,
+                                'height' => isset($existingTx['block_height']) ? (int)$existingTx['block_height'] : null,
+                                'timestamp' => isset($existingTx['timestamp']) ? (int)$existingTx['timestamp'] : null
+                            ]
+                        ],
+                        'new_balance' => $walletManager->getBalance($address)
+                    ];
+                }
+
+                $checkMp = $pdo->prepare("SELECT id, tx_hash, from_address, to_address, amount, fee, data, status, created_at FROM mempool WHERE tx_hash = ? LIMIT 1");
+                $checkMp->execute([$txHash]);
+                $existingMp = $checkMp->fetch(PDO::FETCH_ASSOC);
+                if ($existingMp) {
+                    if ($needsTransaction && $pdo->inTransaction()) {
+                        $pdo->rollBack();
+                    }
+                    return [
+                        'success' => true,
+                        'idempotency' => [ 'key' => $idempotencyKey, 'replayed' => true ],
+                        'transaction' => [ 'hash' => $existingMp['tx_hash'], 'status' => $existingMp['status'] ?? 'pending' ],
+                        'blockchain' => [ 'blockchain_recorded' => false, 'status' => 'pending_mempool' ],
+                        'new_balance' => $walletManager->getBalance($address)
+                    ];
+                }
+
+                // Reserve the idempotency hash in mempool inside the same DB transaction
+                try {
+                    $insMp = $pdo->prepare("INSERT INTO mempool (tx_hash, from_address, to_address, amount, fee, data, signature, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())");
+                    $insMp->execute([
+                        $txHash,
+                        $stakeTx['from'],
+                        $stakeTx['to'],
+                        $stakeTx['amount'],
+                        $stakeTx['fee'],
+                        json_encode($stakeTx['data'], JSON_UNESCAPED_SLASHES),
+                        $stakeTx['signature']
+                    ]);
+                } catch (PDOException $e) {
+                    // Duplicate tx_hash => replay; return without mutating state
+                    if (($e->getCode() ?? '') === '23000') {
+                        if ($needsTransaction && $pdo->inTransaction()) {
+                            $pdo->rollBack();
+                        }
+                        return [
+                            'success' => true,
+                            'idempotency' => [ 'key' => $idempotencyKey, 'replayed' => true ],
+                            'transaction' => [ 'hash' => $txHash, 'status' => 'pending' ],
+                            'blockchain' => [ 'blockchain_recorded' => false, 'status' => 'pending_mempool' ],
+                            'new_balance' => $walletManager->getBalance($address)
+                        ];
+                    }
+                    throw $e;
+                }
             }
             
             if ($currentBalance < $amount) {
@@ -5104,129 +5188,211 @@ function calculateStakingAPY(int $periodDays): float {
 /**
  * Unstake tokens
  */
-function unstakeTokens($walletManager, $blockchainManager, string $address, float $amount, string $privateKey) {
+function unstakeTokens($walletManager, $blockchainManager, string $address, float $amount, string $privateKey, string $idempotencyKey = '') {
     try {
         writeLog("Starting token unstaking: address=$address, amount=$amount", 'INFO');
-        
-        // 1. Get current block height
-        $currentBlock = $blockchainManager->getCurrentBlockHeight();
-        
-        // 2. Get staking records (unlocked = current_block >= end_block OR pending_withdrawal OR NULL end_block for manual unstake)
-        $pdo = $walletManager->getDatabase();
-        $stmt = $pdo->prepare("
-            SELECT * 
-            FROM staking 
-            WHERE staker = ? AND status = 'active' 
-            AND (end_block IS NULL OR ? >= end_block OR status = 'pending_withdrawal')
-            ORDER BY created_at ASC
-        ");
-        $stmt->execute([$address, $currentBlock]);
-        $stakingRecords = $stmt->fetchAll();
-        
-        if (empty($stakingRecords)) {
-            throw new Exception('No unlocked staking records found');
-        }
-        
-        // 3. Calculate available amount to unstake
-        $availableToUnstake = array_sum(array_column($stakingRecords, 'amount'));
-        if ($amount > $availableToUnstake) {
-            throw new Exception("Insufficient staked amount. Available: $availableToUnstake, Requested: $amount");
-        }
-        
-        // 4. Calculate actual accumulated rewards (real-time calculation)
-        $totalRewards = 0;
-        $amountRemaining = $amount;
-        $recordsToProcess = [];
-        
-        foreach ($stakingRecords as $record) {
-            if ($amountRemaining <= 0) break;
-            
-            $recordAmount = min($record['amount'], $amountRemaining);
-            
-            // Calculate actual accumulated rewards based on time elapsed
-            $currentTime = time();
-            $stakingStartTime = strtotime($record['created_at']);
-            $stakingDurationDays = ($currentTime - $stakingStartTime) / (24 * 60 * 60);
-            
-            // Use the reward rate from the record
-            $rewardRate = (float)($record['reward_rate'] ?? 0.05); // Default 5%
-            
-            // Calculate accumulated rewards: (amount * rate * days) / 365
-            $accumulatedRewards = $record['amount'] * $rewardRate * ($stakingDurationDays / 365);
-            
-            // Calculate proportional rewards for the amount being unstaked
-            $recordRewards = $accumulatedRewards * ($recordAmount / $record['amount']);
-            
-            writeLog("Unstaking calculation: ID={$record['id']}, Days=$stakingDurationDays, Rate=$rewardRate, Accumulated=$accumulatedRewards, Proportional=$recordRewards", 'INFO');
-            
-            $recordsToProcess[] = [
-                'id' => $record['id'],
-                'amount' => $recordAmount,
-                'rewards' => $recordRewards
-            ];
-            
-            $totalRewards += $recordRewards;
-            $amountRemaining -= $recordAmount;
-        }
-        
-        // 4. Ensure staking smart contract exists (needed for from-address)
-        $pdo = $walletManager->getDatabase();
-        $stakingContract = getOrDeployStakingContract($pdo, $address);
 
-        // 5. Create unstaking transaction
-        $unstakeTx = [
-            'hash' => '0x' . hash('sha256', 'unstake_' . $address . '_' . $amount . '_' . time()),
-            'type' => 'unstake',
-            // Use real staking contract address
-            'from' => $stakingContract,
-            'to' => $address,
-            'amount' => $amount + $totalRewards,
-            'fee' => 0,
-            'timestamp' => time(),
-            'data' => [
-                'action' => 'unstake_tokens',
-                'principal' => $amount,
-                'rewards' => $totalRewards,
-                'records_processed' => count($recordsToProcess)
-            ],
-            'signature' => hash_hmac('sha256', $address . 'unstake' . $amount, $privateKey),
-            'status' => 'pending'
-        ];
-        
-        // 6. Update database
+        $idempotencyKey = trim((string)$idempotencyKey);
+        $normalizedAmount = number_format((float)$amount, 8, '.', '');
+        $txTimestamp = time();
+        $txHash = ($idempotencyKey !== '')
+            ? ('0x' . hash('sha256', 'unstake_tokens|' . strtolower($address) . '|' . $normalizedAmount . '|' . $idempotencyKey))
+            : null;
+
+        // NOTE: This endpoint can be hit concurrently (browser retries, multi-clicks, parallel requests).
+        // Without row-level locks, multiple requests can read the same active stakes and withdraw them twice.
+        // We serialize per-wallet by locking the wallet row and eligible staking rows inside one transaction.
+
+        $pdo = $walletManager->getDatabase();
         $pdo->beginTransaction();
-        
+
         try {
-            // Update wallet balances
+            // 1) Get current block height
+            $currentBlock = $blockchainManager->getCurrentBlockHeight();
+
+            // 2) Lock wallet row to serialize updates for this address
+            $stmt = $pdo->prepare("SELECT address FROM wallets WHERE address = ? FOR UPDATE");
+            $stmt->execute([$address]);
+            $walletRow = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$walletRow) {
+                throw new Exception('Wallet not found');
+            }
+
+            // Idempotency: if tx already exists, return it without changing balances again
+            if ($idempotencyKey !== '' && $txHash) {
+                $check = $pdo->prepare("SELECT id, hash, block_hash, block_height, from_address, to_address, amount, fee, data, status, timestamp FROM transactions WHERE hash = ? LIMIT 1");
+                $check->execute([$txHash]);
+                $existingTx = $check->fetch(PDO::FETCH_ASSOC);
+                if ($existingTx) {
+                    $pdo->rollBack();
+                    return [
+                        'idempotency' => [ 'key' => $idempotencyKey, 'replayed' => true ],
+                        'transaction' => $existingTx,
+                        'blockchain' => [
+                            'blockchain_recorded' => true,
+                            'block' => [
+                                'hash' => $existingTx['block_hash'] ?? null,
+                                'height' => isset($existingTx['block_height']) ? (int)$existingTx['block_height'] : null,
+                                'timestamp' => isset($existingTx['timestamp']) ? (int)$existingTx['timestamp'] : null
+                            ]
+                        ],
+                        'new_balance' => $walletManager->getBalance($address)
+                    ];
+                }
+
+                $checkMp = $pdo->prepare("SELECT id, tx_hash, from_address, to_address, amount, fee, data, status, created_at FROM mempool WHERE tx_hash = ? LIMIT 1");
+                $checkMp->execute([$txHash]);
+                $existingMp = $checkMp->fetch(PDO::FETCH_ASSOC);
+                if ($existingMp) {
+                    $pdo->rollBack();
+                    return [
+                        'idempotency' => [ 'key' => $idempotencyKey, 'replayed' => true ],
+                        'transaction' => [ 'hash' => $existingMp['tx_hash'], 'status' => $existingMp['status'] ?? 'pending' ],
+                        'blockchain' => [ 'blockchain_recorded' => false, 'status' => 'pending_mempool' ],
+                        'new_balance' => $walletManager->getBalance($address)
+                    ];
+                }
+            }
+
+            // 3) Lock eligible staking rows
+            $stmt = $pdo->prepare("
+                SELECT *
+                FROM staking
+                WHERE staker = ? AND status = 'active'
+                  AND (end_block IS NULL OR ? >= end_block)
+                ORDER BY created_at ASC
+                FOR UPDATE
+            ");
+            $stmt->execute([$address, $currentBlock]);
+            $stakingRecords = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            if (empty($stakingRecords)) {
+                throw new Exception('No unlocked staking records found');
+            }
+
+            // 4) Calculate available amount to unstake
+            $availableToUnstake = array_sum(array_map(static function ($row) {
+                return (float)($row['amount'] ?? 0);
+            }, $stakingRecords));
+            if ($amount > $availableToUnstake) {
+                throw new Exception("Insufficient staked amount. Available: $availableToUnstake, Requested: $amount");
+            }
+
+            // 5) Calculate rewards and which rows to update (based on locked snapshot)
+            $totalRewards = 0;
+            $amountRemaining = $amount;
+            $recordsToProcess = [];
+
+            $currentTime = time();
+            foreach ($stakingRecords as $record) {
+                if ($amountRemaining <= 0) {
+                    break;
+                }
+
+                $rowAmount = (float)($record['amount'] ?? 0);
+                if ($rowAmount <= 0) {
+                    continue;
+                }
+
+                $recordAmount = min($rowAmount, $amountRemaining);
+
+                $stakingStartTime = strtotime((string)$record['created_at']);
+                $stakingDurationDays = ($currentTime - $stakingStartTime) / (24 * 60 * 60);
+                $rewardRate = (float)($record['reward_rate'] ?? 0.05); // Default 5%
+
+                $accumulatedRewards = $rowAmount * $rewardRate * ($stakingDurationDays / 365);
+                $recordRewards = $accumulatedRewards * ($recordAmount / $rowAmount);
+
+                writeLog("Unstaking calculation: ID={$record['id']}, Days=$stakingDurationDays, Rate=$rewardRate, Accumulated=$accumulatedRewards, Proportional=$recordRewards", 'INFO');
+
+                $recordsToProcess[] = [
+                    'id' => $record['id'],
+                    'amount_before' => $rowAmount,
+                    'amount' => $recordAmount,
+                    'rewards' => $recordRewards
+                ];
+
+                $totalRewards += $recordRewards;
+                $amountRemaining -= $recordAmount;
+            }
+
+            // 6) Ensure staking smart contract exists (needed for from-address)
+            $stakingContract = getOrDeployStakingContract($pdo, $address);
+
+            // 7) Create unstaking transaction payload (recorded after commit)
+            $unstakeTx = [
+                'hash' => ($txHash ?: ('0x' . hash('sha256', 'unstake_' . $address . '_' . $amount . '_' . $txTimestamp))),
+                'type' => 'unstake',
+                'from' => $stakingContract,
+                'to' => $address,
+                'amount' => $amount + $totalRewards,
+                'fee' => 0,
+                'timestamp' => $txTimestamp,
+                'data' => [
+                    'action' => 'unstake_tokens',
+                    'principal' => $amount,
+                    'rewards' => $totalRewards,
+                    'records_processed' => count($recordsToProcess)
+                ],
+                'signature' => hash_hmac('sha256', $address . 'unstake' . $amount, $privateKey),
+                'status' => 'pending'
+            ];
+
+            if ($idempotencyKey !== '') {
+                $unstakeTx['data']['idempotency_key'] = $idempotencyKey;
+            }
+
+            // Reserve the idempotency hash in mempool inside this transaction (prevents retry double-withdraw)
+            if ($idempotencyKey !== '') {
+                try {
+                    $insMp = $pdo->prepare("INSERT INTO mempool (tx_hash, from_address, to_address, amount, fee, data, signature, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())");
+                    $insMp->execute([
+                        $unstakeTx['hash'],
+                        $unstakeTx['from'],
+                        $unstakeTx['to'],
+                        $unstakeTx['amount'],
+                        $unstakeTx['fee'],
+                        json_encode($unstakeTx['data'], JSON_UNESCAPED_SLASHES),
+                        $unstakeTx['signature']
+                    ]);
+                } catch (PDOException $e) {
+                    if (($e->getCode() ?? '') === '23000') {
+                        $pdo->rollBack();
+                        return [
+                            'idempotency' => [ 'key' => $idempotencyKey, 'replayed' => true ],
+                            'transaction' => [ 'hash' => $unstakeTx['hash'], 'status' => 'pending' ],
+                            'blockchain' => [ 'blockchain_recorded' => false, 'status' => 'pending_mempool' ],
+                            'new_balance' => $walletManager->getBalance($address)
+                        ];
+                    }
+                    throw $e;
+                }
+            }
+
+            // 8) Apply updates atomically under the same locks
             $stmt = $pdo->prepare("UPDATE wallets SET balance = balance + ?, staked_balance = GREATEST(staked_balance - ?, 0), updated_at = NOW() WHERE address = ?");
             $stmt->execute([$amount + $totalRewards, $amount, $address]);
-            
-            // Update staking records
+
             foreach ($recordsToProcess as $processRecord) {
-                // Get original record to check if it's partial or full unstaking
-                $stmt = $pdo->prepare("SELECT amount FROM staking WHERE id = ?");
-                $stmt->execute([$processRecord['id']]);
-                $originalRecord = $stmt->fetch();
-                
-                if ($originalRecord && $processRecord['amount'] >= $originalRecord['amount']) {
-                    // Full unstaking - mark as withdrawn
+                if ($processRecord['amount'] >= $processRecord['amount_before']) {
                     $stmt = $pdo->prepare("UPDATE staking SET status = 'withdrawn', updated_at = NOW() WHERE id = ?");
                     $stmt->execute([$processRecord['id']]);
                     writeLog("Full unstaking: Stake ID {$processRecord['id']} marked as withdrawn", 'INFO');
                 } else {
-                    // Partial unstaking - reduce the amount
-                    $remainingAmount = $originalRecord['amount'] - $processRecord['amount'];
+                    $remainingAmount = $processRecord['amount_before'] - $processRecord['amount'];
                     $stmt = $pdo->prepare("UPDATE staking SET amount = ?, updated_at = NOW() WHERE id = ?");
                     $stmt->execute([$remainingAmount, $processRecord['id']]);
-                    writeLog("Partial unstaking: Stake ID {$processRecord['id']} amount reduced from {$originalRecord['amount']} to {$remainingAmount}", 'INFO');
+                    writeLog("Partial unstaking: Stake ID {$processRecord['id']} amount reduced from {$processRecord['amount_before']} to {$remainingAmount}", 'INFO');
                 }
             }
-            
+
             $pdo->commit();
             writeLog("Unstaking completed successfully", 'INFO');
-            
+
         } catch (Exception $e) {
-            $pdo->rollback();
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             throw new Exception('Failed to process unstaking: ' . $e->getMessage());
         }
         
