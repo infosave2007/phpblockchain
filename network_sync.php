@@ -1362,7 +1362,7 @@ class NetworkSyncManager {
             foreach ($wallets as $wallet) {
                 // Only sync if wallet has some activity (balance > 0 or transactions)
                 $balance = $wallet['balance'] ?? 0;
-                $stakedBalance = $wallet['staked_balance'] ?? 0;
+                $stakedBalance = max(0, $wallet['staked_balance'] ?? 0);
                 $nonce = $wallet['nonce'] ?? 0;
                 
                 if ($balance > 0 || $stakedBalance > 0 || $nonce > 0) {

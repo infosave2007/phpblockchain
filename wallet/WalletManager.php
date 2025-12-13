@@ -1498,22 +1498,55 @@ class WalletManager
     {
         try {
             writeWalletLog("WalletManager::calculateStakedBalanceFromBlockchain - Calculating for address: $address", 'DEBUG');
+
+            // Resolve staking contract address from DB (prefer active 'Staking' contract)
+            $contractStmt = $this->database->prepare(
+                "SELECT address FROM smart_contracts WHERE status = 'active' AND name = 'Staking' ORDER BY deployment_block DESC, id DESC LIMIT 1"
+            );
+            $contractStmt->execute();
+            $stakingContract = $contractStmt->fetchColumn();
+
+            if (!$stakingContract) {
+                writeWalletLog("WalletManager::calculateStakedBalanceFromBlockchain - No active staking contract found", 'WARNING');
+                return 0.0;
+            }
             
             // Calculate staked balance from actual blockchain transactions
             $stmt = $this->database->prepare("
                 SELECT 
-                    SUM(CASE 
-                        WHEN to_address = 'staking_contract' THEN amount
-                        WHEN from_address = 'staking_contract' AND to_address = ? THEN -amount  
-                        ELSE 0 
-                    END) as staked_balance
-                FROM transactions 
-                WHERE ((from_address = ? AND to_address = 'staking_contract') 
-                       OR (from_address = 'staking_contract' AND to_address = ?))
-                AND status = 'confirmed'
+                    (
+                        COALESCE(SUM(CASE
+                            WHEN from_address = ?
+                                 AND to_address = ?
+                                 AND JSON_UNQUOTE(JSON_EXTRACT(data, '$.action')) = 'stake_tokens'
+                            THEN amount ELSE 0 END), 0)
+                        -
+                        COALESCE(SUM(CASE
+                            WHEN from_address = ?
+                                 AND to_address = ?
+                                 AND JSON_UNQUOTE(JSON_EXTRACT(data, '$.action')) = 'unstake_tokens'
+                            THEN CAST(JSON_UNQUOTE(JSON_EXTRACT(data, '$.principal')) AS DECIMAL(20,8))
+                            ELSE 0 END), 0)
+                    ) AS staked_balance
+                FROM transactions
+                WHERE status = 'confirmed'
+                  AND (
+                    (from_address = ? AND to_address = ?)
+                    OR
+                    (from_address = ? AND to_address = ?)
+                  )
             ");
             
-            $stmt->execute([$address, $address, $address]);
+            $stmt->execute([
+                $address,
+                $stakingContract,
+                $stakingContract,
+                $address,
+                $address,
+                $stakingContract,
+                $stakingContract,
+                $address
+            ]);
             $result = $stmt->fetch();
             $stakedBalance = max(0.0, (float)($result['staked_balance'] ?? 0));
             

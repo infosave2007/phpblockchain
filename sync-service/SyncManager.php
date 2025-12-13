@@ -779,7 +779,7 @@ class SyncManager {
                         ");
                         $stmt->execute([
                             $wallet['balance'] ?? '0.00000000',
-                            $wallet['staked_balance'] ?? '0.00000000',
+                            max(0, $wallet['staked_balance'] ?? '0.00000000'),
                             $wallet['nonce'] ?? 0,
                             $wallet['address']
                         ]);
@@ -799,7 +799,7 @@ class SyncManager {
                         $wallet['address'],
                         $wallet['public_key'] ?? '',
                         $wallet['balance'] ?? '0.00000000',
-                        $wallet['staked_balance'] ?? '0.00000000',
+                        max(0, $wallet['staked_balance'] ?? '0.00000000'),
                         $wallet['nonce'] ?? 0
                     ]);
                     

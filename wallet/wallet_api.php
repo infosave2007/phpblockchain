@@ -5198,7 +5198,7 @@ function unstakeTokens($walletManager, $blockchainManager, string $address, floa
         
         try {
             // Update wallet balances
-            $stmt = $pdo->prepare("UPDATE wallets SET balance = balance + ?, staked_balance = staked_balance - ?, updated_at = NOW() WHERE address = ?");
+            $stmt = $pdo->prepare("UPDATE wallets SET balance = balance + ?, staked_balance = GREATEST(staked_balance - ?, 0), updated_at = NOW() WHERE address = ?");
             $stmt->execute([$amount + $totalRewards, $amount, $address]);
             
             // Update staking records
