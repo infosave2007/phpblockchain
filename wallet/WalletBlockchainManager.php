@@ -642,20 +642,22 @@ class WalletBlockchainManager
     /**
      * Get wallet transaction history from blockchain
      */
-    public function getWalletTransactionHistory(string $address): array
+    public function getWalletTransactionHistory(string $address, int $limit = 100, int $offset = 0): array
     {
         if (!$this->database) {
             return [];
         }
         
         try {
+            $limit = max(1, min(1000, (int)$limit));
+            $offset = max(0, (int)$offset);
             $stmt = $this->database->prepare("
                 SELECT t.*, b.height as block_height, b.timestamp as block_timestamp
                 FROM transactions t
                 JOIN blocks b ON t.block_hash = b.hash
                 WHERE t.from_address = ? OR t.to_address = ?
                 ORDER BY b.height DESC, t.id DESC
-                LIMIT 100
+                LIMIT $offset, $limit
             ");
             
             $stmt->execute([$address, $address]);
@@ -664,6 +666,30 @@ class WalletBlockchainManager
         } catch (Exception $e) {
             WalletLogger::error("Failed to get wallet history: " . $e->getMessage());
             return [];
+        }
+    }
+
+    /**
+     * Count wallet transactions available in blockchain DB (confirmed ones with block record).
+     */
+    public function countWalletTransactionHistory(string $address): int
+    {
+        if (!$this->database) {
+            return 0;
+        }
+
+        try {
+            $stmt = $this->database->prepare("
+                SELECT COUNT(*)
+                FROM transactions t
+                JOIN blocks b ON t.block_hash = b.hash
+                WHERE t.from_address = ? OR t.to_address = ?
+            ");
+            $stmt->execute([$address, $address]);
+            return (int)$stmt->fetchColumn();
+        } catch (Exception $e) {
+            WalletLogger::error("Failed to count wallet history: " . $e->getMessage());
+            return 0;
         }
     }
     

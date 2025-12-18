@@ -2667,7 +2667,8 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             if (!$address) {
                 throw new Exception('Wallet address is required');
             }
-            $result = getWalletTransactionHistory($blockchainManager, $address);
+            $pg = parsePaginationParams($input, 50, 1000);
+            $result = getWalletTransactionHistory($blockchainManager, $address, (int)$pg['page'], (int)$pg['per_page']);
             break;
             
         case 'verify_wallet_in_blockchain':
@@ -2809,7 +2810,8 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             if (!$address) {
                 throw new Exception('Address is required');
             }
-            $result = getTransactionHistory($walletManager, $address);
+            $pg = parsePaginationParams($input, 50, 1000);
+            $result = getTransactionHistory($walletManager, $address, (int)$pg['page'], (int)$pg['per_page']);
             break;
             
         case 'decrypt_transaction_message':
@@ -4354,20 +4356,81 @@ function formatBytes(int $bytes): string {
 }
 
 /**
+ * Parse pagination parameters from request input.
+ * Supports: page/per_page, and legacy limit/offset.
+ */
+function parsePaginationParams(array $input, int $defaultPerPage = 50, int $maxPerPage = 1000): array
+{
+    $pageRaw = $input['page'] ?? null;
+    $perPageRaw = $input['per_page'] ?? ($input['perPage'] ?? ($input['limit'] ?? null));
+    $offsetRaw = $input['offset'] ?? null;
+
+    $perPage = is_numeric($perPageRaw) ? (int)$perPageRaw : $defaultPerPage;
+    if ($perPage <= 0) {
+        $perPage = $defaultPerPage;
+    }
+    $perPage = max(1, min($maxPerPage, $perPage));
+
+    $page = is_numeric($pageRaw) ? (int)$pageRaw : 0;
+    if ($page <= 0) {
+        if (is_numeric($offsetRaw) && (int)$offsetRaw >= 0) {
+            $offset = (int)$offsetRaw;
+            $page = intdiv($offset, $perPage) + 1;
+        } else {
+            $page = 1;
+        }
+    }
+
+    $offset = ($page - 1) * $perPage;
+    if ($offset < 0) {
+        $offset = 0;
+    }
+
+    return [
+        'page' => $page,
+        'per_page' => $perPage,
+        'offset' => $offset,
+    ];
+}
+
+/**
  * Get wallet transaction history from blockchain
  */
-function getWalletTransactionHistory($blockchainManager, string $address) {
+function getWalletTransactionHistory($blockchainManager, string $address, int $page = 1, int $perPage = 50) {
     try {
-        writeLog("Getting transaction history for wallet: " . $address, 'INFO');
-        
-        $transactions = $blockchainManager->getWalletTransactionHistory($address);
-        
-        writeLog("Found " . count($transactions) . " transactions for wallet: " . $address, 'INFO');
-        
+        $address = strtolower($address);
+        $page = max(1, $page);
+        $perPage = max(1, min(1000, $perPage));
+        $offset = ($page - 1) * $perPage;
+
+        writeLog("Getting transaction history for wallet: " . $address . ", page={$page}, per_page={$perPage}", 'INFO');
+
+        $total = null;
+        if (is_object($blockchainManager) && method_exists($blockchainManager, 'countWalletTransactionHistory')) {
+            $total = (int)$blockchainManager->countWalletTransactionHistory($address);
+        }
+
+        // Prefer manager-side pagination when supported (keeps DB load bounded)
+        if (is_object($blockchainManager) && method_exists($blockchainManager, 'getWalletTransactionHistory')) {
+            $transactions = $blockchainManager->getWalletTransactionHistory($address, $perPage, $offset);
+        } else {
+            $transactions = [];
+        }
+
+        $totalPages = ($total === null)
+            ? null
+            : (($total > 0) ? (int)ceil($total / $perPage) : 0);
+
+        writeLog("Wallet tx history page_count=" . count($transactions) . ", total=" . ($total ?? 'n/a') . " for wallet: " . $address, 'INFO');
+
         return [
             'address' => $address,
             'transactions' => $transactions,
-            'transaction_count' => count($transactions)
+            'transaction_count' => count($transactions),
+            'page' => $page,
+            'per_page' => $perPage,
+            'total' => $total ?? count($transactions),
+            'total_pages' => $totalPages ?? 1
         ];
     } catch (Exception $e) {
         writeLog("Error getting wallet transaction history: " . $e->getMessage(), 'ERROR');
@@ -5596,14 +5659,29 @@ function decryptMessage(string $encryptedMessage, string $privateKey, string $se
 /**
  * Get transaction history for a wallet
  */
-function getTransactionHistory($walletManager, string $address) {
+function getTransactionHistory($walletManager, string $address, int $page = 1, int $perPage = 50) {
     try {
-        $transactions = $walletManager->getTransactionHistory($address);
-        
+        $address = strtolower($address);
+        $page = max(1, $page);
+        $perPage = max(1, min(1000, $perPage));
+        $offset = ($page - 1) * $perPage;
+
+        $pdo = $walletManager->getDatabase();
+        $countStmt = $pdo->prepare("SELECT COUNT(*) FROM transactions WHERE from_address = ? OR to_address = ?");
+        $countStmt->execute([$address, $address]);
+        $total = (int)$countStmt->fetchColumn();
+
+        $transactions = $walletManager->getTransactionHistory($address, $perPage, $offset);
+        $totalPages = ($total > 0) ? (int)ceil($total / $perPage) : 0;
+
         return [
             'success' => true,
             'transactions' => $transactions,
-            'count' => count($transactions)
+            'count' => count($transactions),
+            'page' => $page,
+            'per_page' => $perPage,
+            'total' => $total,
+            'total_pages' => $totalPages
         ];
         
     } catch (Exception $e) {

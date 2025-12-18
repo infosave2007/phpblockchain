@@ -682,7 +682,7 @@ class WalletManager
             FROM transactions 
             WHERE from_address = ? OR to_address = ?
             ORDER BY timestamp DESC 
-            LIMIT $limit OFFSET $offset
+            LIMIT $offset, $limit
         ");
         
         $stmt->execute([$address, $address]);
