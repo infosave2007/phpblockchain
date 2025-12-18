@@ -329,7 +329,13 @@ class BlockStorage
                     $this->writeLog("BlockStorage::processTransaction - Processing stake transaction", 'DEBUG');
                     // For staking: deduct from sender, process staking record
                     $this->updateWalletBalance($transaction['from'], -$transaction['amount']);
+                    $this->updateWalletStakedBalance($transaction['from'], (float)$transaction['amount']);
                     $this->processStakeTransaction($transaction, $block);
+                    break;
+
+                case 'unstake':
+                    $this->writeLog("BlockStorage::processTransaction - Processing unstake transaction", 'DEBUG');
+                    $this->processUnstakeTransaction($transaction, $block);
                     break;
                     
                 case 'register_validator':
@@ -398,6 +404,94 @@ class BlockStorage
             ");
             
             $stmt->execute([$validator, $staker, $amount, $blockHeight]);
+        }
+    }
+
+    /**
+     * Process unstaking transaction
+     *
+     * NOTE: Staking state in DB must be updated when an on-chain unstake tx is processed.
+     * Previously, "unstake" fell through to transfer logic, which never adjusted `staking` rows
+     * nor `wallets.staked_balance`, causing "unstaked but still shown as active stake" issues.
+     */
+    private function processUnstakeTransaction(array $transaction, BlockInterface $block): void
+    {
+        $staker = (string)($transaction['to'] ?? '');
+        if ($staker === '' || $staker === 'unknown') {
+            $this->writeLog('BlockStorage::processUnstakeTransaction - Missing staker(to) address, skipping', 'WARNING');
+            return;
+        }
+
+        $data = $transaction['data'] ?? null;
+        if (is_string($data)) {
+            $decoded = json_decode($data, true);
+            if (is_array($decoded)) {
+                $data = $decoded;
+            }
+        }
+
+        $principal = null;
+        if (is_array($data)) {
+            if (isset($data['principal']) && is_numeric($data['principal'])) {
+                $principal = (float)$data['principal'];
+            } elseif (isset($data['params']['principal']) && is_numeric($data['params']['principal'])) {
+                $principal = (float)$data['params']['principal'];
+            } elseif (isset($data['params']['amount']) && is_numeric($data['params']['amount'])) {
+                $principal = (float)$data['params']['amount'];
+            }
+        }
+
+        // Fallback: if principal is not present, treat full amount as principal
+        if ($principal === null) {
+            $principal = (float)($transaction['amount'] ?? 0);
+        }
+        if ($principal <= 0) {
+            $this->writeLog('BlockStorage::processUnstakeTransaction - Non-positive principal, skipping', 'WARNING');
+            return;
+        }
+
+        // Credit available balance with total payout (principal + rewards)
+        $this->updateWalletBalance($staker, (float)($transaction['amount'] ?? 0));
+        // Reduce staked_balance by principal only
+        $this->updateWalletStakedBalance($staker, -$principal);
+
+        // Reduce/close active staking rows to match the unstaked principal
+        $remaining = $principal;
+        $stmt = $this->database->prepare(
+            "SELECT id, amount FROM staking WHERE staker = ? AND status = 'active' ORDER BY created_at ASC FOR UPDATE"
+        );
+        $stmt->execute([$staker]);
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+        foreach ($rows as $row) {
+            if ($remaining <= 0) {
+                break;
+            }
+
+            $rowAmount = (float)($row['amount'] ?? 0);
+            if ($rowAmount <= 0) {
+                continue;
+            }
+
+            $consume = min($rowAmount, $remaining);
+            $newAmount = $rowAmount - $consume;
+
+            if ($newAmount <= 0.00000001) {
+                $upd = $this->database->prepare("UPDATE staking SET status='withdrawn', amount=0, updated_at=NOW() WHERE id=?");
+                $upd->execute([(int)$row['id']]);
+            } else {
+                $upd = $this->database->prepare("UPDATE staking SET amount=?, updated_at=NOW() WHERE id=?");
+                $upd->execute([number_format($newAmount, 8, '.', ''), (int)$row['id']]);
+            }
+
+            $remaining -= $consume;
+        }
+
+        if ($remaining > 0.00000001) {
+            $this->writeLog(
+                'BlockStorage::processUnstakeTransaction - Principal exceeds active staking sum for ' . $staker . ' (remaining=' . $remaining . ')',
+                'WARNING'
+            );
         }
     }
     
@@ -522,6 +616,28 @@ class BlockStorage
             $this->writeLog("BlockStorage::updateWalletBalance - ERROR: " . $e->getMessage(), 'ERROR');
             throw $e;
         }
+    }
+
+    /**
+     * Update wallet staked balance (can be positive or negative delta)
+     */
+    private function updateWalletStakedBalance(string $address, float $delta): void
+    {
+        if ($address === 'unknown' || $address === 'genesis_address' || $address === 'staking_contract') {
+            $this->writeLog("BlockStorage::updateWalletStakedBalance - Skipping system address: $address", 'DEBUG');
+            return;
+        }
+
+        $this->writeLog("BlockStorage::updateWalletStakedBalance - Updating staked_balance for $address by $delta", 'DEBUG');
+
+        $stmt = $this->database->prepare(
+            "INSERT INTO wallets (address, public_key, staked_balance, created_at, updated_at)
+             VALUES (?, 'placeholder_public_key', ?, NOW(), NOW())
+             ON DUPLICATE KEY UPDATE
+                 staked_balance = GREATEST(staked_balance + VALUES(staked_balance), 0),
+                 updated_at = NOW()"
+        );
+        $stmt->execute([$address, $delta]);
     }
     
     public function getBlock(int $index): ?BlockInterface
