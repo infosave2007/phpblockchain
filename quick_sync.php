@@ -1077,23 +1077,56 @@ function syncLaggingNodes($syncManager, $quiet = false, $verbose = false) {
         
         $heights = [];
         $transactions = [];
+
+        $syncToken = (string)(getenv('SYNC_API_TOKEN') ?: '');
+        $ua = 'Mozilla/5.0 (compatible; BlockMinerNodeSync/1.1)';
+        $headers = "User-Agent: {$ua}\r\nAccept: application/json\r\nX-Node-Sync: 1\r\n";
+        if ($syncToken !== '') {
+            $headers .= "X-Sync-Token: {$syncToken}\r\n";
+        }
+        $context = stream_context_create([
+            'http' => [
+                'timeout' => 6,
+                'method' => 'GET',
+                'header' => $headers,
+                'ignore_errors' => true
+            ]
+        ]);
         
         // Get current heights and transaction counts
         foreach ($nodes as $name => $url) {
             try {
-                $blocksResponse = @file_get_contents("$url/api/explorer/index.php?action=get_blocks&limit=1");
-                $txResponse = @file_get_contents("$url/api/?action=get_blockchain_stats");
-                
-                if ($blocksResponse && $txResponse) {
-                    $blocks = json_decode($blocksResponse, true);
-                    $txData = json_decode($txResponse, true);
-                    
-                    $heights[$name] = $blocks['blocks'][0]['height'] ?? ($blocks['data'][0]['height'] ?? 0);
-                    $transactions[$name] = $txData['stats']['transactions'] ?? ($txData['total'] ?? 0);
-                } else {
-                    $heights[$name] = 0;
-                    $transactions[$name] = 0;
+                $tipUrl = rtrim($url, '/') . '/api/explorer/index.php?action=get_tip_hashes&offset=0&count=1';
+                $statsUrl = rtrim($url, '/') . '/api/explorer/index.php?action=get_network_stats';
+                if ($syncToken !== '') {
+                    $tipUrl .= '&sync_token=' . rawurlencode($syncToken);
+                    $statsUrl .= '&sync_token=' . rawurlencode($syncToken);
                 }
+
+                $tipResp = @file_get_contents($tipUrl, false, $context);
+                $statsResp = @file_get_contents($statsUrl, false, $context);
+
+                $h = 0;
+                if ($tipResp) {
+                    $tipData = json_decode($tipResp, true);
+                    if (is_array($tipData) && isset($tipData['success']) && $tipData['success'] === true && isset($tipData['data']['tip']) && is_numeric($tipData['data']['tip'])) {
+                        $h = (int)$tipData['data']['tip'];
+                    }
+                }
+                $heights[$name] = $h;
+
+                $tx = 0;
+                if ($statsResp) {
+                    $statsData = json_decode($statsResp, true);
+                    if (is_array($statsData)) {
+                        if (isset($statsData['total_transactions']) && is_numeric($statsData['total_transactions'])) {
+                            $tx = (int)$statsData['total_transactions'];
+                        } elseif (isset($statsData['success']) && $statsData['success'] === true && isset($statsData['data']['total_transactions']) && is_numeric($statsData['data']['total_transactions'])) {
+                            $tx = (int)$statsData['data']['total_transactions'];
+                        }
+                    }
+                }
+                $transactions[$name] = $tx;
             } catch (Exception $e) {
                 if ($verbose) echo "  Warning: Failed to check $name - {$e->getMessage()}\n";
                 $heights[$name] = 0;
@@ -1300,15 +1333,10 @@ function processWalletBackgroundTasks($syncManager, $quiet = false, $verbose = f
                 $updateStmt->execute([$taskId]);
                 
                 // Process based on event type
-                $walletManager = null;
                 $config = $eventData['config'] ?? [];
                 
                 switch ($eventType) {
                     case 'auto_sync':
-                        // Load required classes
-                        require_once __DIR__ . '/wallet/wallet_api.php';
-                        $walletManager = new \Blockchain\Wallet\WalletManager($pdo);
-                        
                         // Call the auto-sync function (simplified version for quick sync)
                         if (isset($config['auto_sync']) && $config['auto_sync']['enabled'] === '1') {
                             // Simple height check instead of full auto sync
@@ -1326,10 +1354,6 @@ function processWalletBackgroundTasks($syncManager, $quiet = false, $verbose = f
                         break;
                         
                     case 'height_monitoring':
-                        // Load required classes
-                        require_once __DIR__ . '/wallet/wallet_api.php';
-                        $walletManager = new \Blockchain\Wallet\WalletManager($pdo);
-                        
                         // Simplified height monitoring
                         $monitorResult = checkBlockHeightSync($syncManager, $pdo, $verbose);
                         if ($monitorResult['status'] !== 'healthy') {
@@ -1338,10 +1362,6 @@ function processWalletBackgroundTasks($syncManager, $quiet = false, $verbose = f
                         break;
                         
                     case 'topology_update':
-                        // Load required classes
-                        require_once __DIR__ . '/wallet/wallet_api.php';
-                        $walletManager = new \Blockchain\Wallet\WalletManager($pdo);
-                        
                         // Update network topology
                         $topologyResult = updateNetworkTopologyQuick($syncManager, $pdo, $verbose);
                         if ($verbose) echo "  Topology update result: " . json_encode($topologyResult) . "\n";
@@ -1401,7 +1421,21 @@ function processWalletBackgroundTasks($syncManager, $quiet = false, $verbose = f
     }
 }
 
-// Function getCurrentBlockHeight is already defined in wallet_api.php
+/**
+ * Get current local block height from DB.
+ *
+ * quick_sync.php should not include wallet_api.php because wallet_api.php is an HTTP endpoint
+ * and may output JSON errors when included without a request action.
+ */
+function getCurrentBlockHeight(PDO $pdo): int {
+    try {
+        $stmt = $pdo->query("SELECT MAX(height) as max_height FROM blocks");
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        return (int)($result['max_height'] ?? 0);
+    } catch (Exception $e) {
+        return 0;
+    }
+}
 
 /**
  * Get maximum block height from network
@@ -1413,19 +1447,38 @@ function getNetworkMaxHeight($syncManager, $pdo): int {
         // Get active nodes from database
         $stmt = $pdo->query("SELECT node_id, ip_address, port, metadata FROM nodes WHERE status = 'active' LIMIT 5");
         $nodes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $syncToken = (string)(getenv('SYNC_API_TOKEN') ?: '');
+        $ua = 'Mozilla/5.0 (compatible; BlockMinerNodeSync/1.1)';
+        $headers = "User-Agent: {$ua}\r\nAccept: application/json\r\nX-Node-Sync: 1\r\n";
+        if ($syncToken !== '') {
+            $headers .= "X-Sync-Token: {$syncToken}\r\n";
+        }
+        $context = stream_context_create([
+            'http' => [
+                'timeout' => 6,
+                'method' => 'GET',
+                'header' => $headers,
+                'ignore_errors' => true
+            ]
+        ]);
         
         foreach ($nodes as $node) {
             try {
                 $metadata = json_decode($node['metadata'], true);
                 $domain = $metadata['domain'] ?? $node['ip_address'];
                 $protocol = $metadata['protocol'] ?? 'https';
-                $url = "$protocol://$domain/api/explorer/blocks?limit=1";
+                $baseUrl = rtrim("$protocol://$domain", '/');
+                $url = $baseUrl . '/api/explorer/index.php?action=get_tip_hashes&offset=0&count=1';
+                if ($syncToken !== '') {
+                    $url .= '&sync_token=' . rawurlencode($syncToken);
+                }
                 
-                $response = @file_get_contents($url);
+                $response = @file_get_contents($url, false, $context);
                 if ($response) {
                     $data = json_decode($response, true);
-                    if (isset($data['blocks'][0]['index'])) {
-                        $height = $data['blocks'][0]['index'];
+                    if (is_array($data) && isset($data['success']) && $data['success'] === true && isset($data['data']['tip']) && is_numeric($data['data']['tip'])) {
+                        $height = (int)$data['data']['tip'];
                         if ($height > $maxHeight) {
                             $maxHeight = $height;
                         }

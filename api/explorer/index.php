@@ -22,27 +22,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit(0);
 }
 
-// Basic protection for shared hosting: block abusive User-Agent and apply simple rate limiting per IP
+// Basic protection for shared hosting: simple per-IP rate limiting + optional auth for sync traffic
+// Notes:
+// - Do NOT rely on User-Agent for sync detection (some hostings block certain UAs like NetworkSyncManager).
+// - If you want to protect sync traffic against abuse, set SYNC_API_TOKEN in environment.
 try {
-    $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
-    if (stripos($ua, 'NetworkSyncManager') !== false) {
-        http_response_code(429);
-        header('Retry-After: 600'); // 10 minutes
-        echo json_encode(['success' => false, 'error' => 'Rate limited: NetworkSyncManager blocked on shared hosting']);
-        exit;
-    }
-
-    // Simple per-IP rate limiting (60 requests per minute)
     $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+    $syncToken = (string)(getenv('SYNC_API_TOKEN') ?: '');
+    $providedQuery = $_GET['sync_token'] ?? '';
+    $providedHeader = $_SERVER['HTTP_X_SYNC_TOKEN'] ?? '';
+    $isSync = (
+        (isset($_SERVER['HTTP_X_NODE_SYNC']) && $_SERVER['HTTP_X_NODE_SYNC'] === '1')
+        || (is_string($providedHeader) && $providedHeader !== '')
+        || (is_string($providedQuery) && $providedQuery !== '')
+    );
+
+    // Optional shared secret for sync traffic (prevents attackers from spoofing headers)
+    if ($isSync && $syncToken !== '') {
+        $candidate = '';
+        if (is_string($providedHeader) && $providedHeader !== '') {
+            $candidate = $providedHeader;
+        } elseif (is_string($providedQuery) && $providedQuery !== '') {
+            $candidate = $providedQuery;
+        }
+
+        if ($candidate === '' || !hash_equals($syncToken, $candidate)) {
+            http_response_code(403);
+            echo json_encode(['success' => false, 'error' => 'Forbidden']);
+            exit;
+        }
+    }
     $rateDir = __DIR__ . '/../../storage/tmp/rate';
     if (!is_dir($rateDir)) {
         @mkdir($rateDir, 0755, true);
     }
     $key = preg_replace('/[^0-9A-Fa-f:\.]/', '_', $ip);
-    $rateFile = $rateDir . '/explorer_' . $key . '.json';
+    // Different buckets for sync vs public traffic
+    $rateFile = $rateDir . '/explorer_' . ($isSync ? 'sync_' : 'pub_') . $key . '.json';
     $now = time();
     $window = 60; // seconds
-    $limit = 60;  // requests per window
+    $limit = $isSync ? 600 : 60;  // requests per window
     $data = ['start' => $now, 'count' => 0];
     if (file_exists($rateFile)) {
         $json = @file_get_contents($rateFile);

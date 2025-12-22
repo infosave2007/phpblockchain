@@ -139,3 +139,4 @@ a380300_1 (2).sql.gz
 check_staking_security.php
 .gitignore
 fix_staking_duplicates.php
+scripts/run_staking_security_fix.php

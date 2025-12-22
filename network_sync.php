@@ -185,7 +185,7 @@ class NetworkSyncManager {
     
     public function syncAll() {
         $this->log("=== Starting Full Blockchain Synchronization ===");
-        $totalSteps = 10; // + wallets sync step
+        $totalSteps = 11;
         $currentStep = 0;
         
         try {
@@ -382,13 +382,19 @@ class NetworkSyncManager {
 
         // Always prioritize longest chain to prevent forks
         if ($strategy === 'longest_chain' || $strategy === 'fastest_response' || $strategy === 'consensus_majority') {
-            // Sort by block height first (descending), then by response time (ascending)
+            // Sort by block height first (descending), then by total tx (descending), then by response time (ascending)
             usort($accessibleNodes, function($a, $b) {
                 $heightA = $a['block_height'] ?? 0;
                 $heightB = $b['block_height'] ?? 0;
                 
                 if ($heightA !== $heightB) {
                     return $heightB <=> $heightA; // Higher height wins (longest chain rule)
+                }
+
+                $txA = $a['total_transactions'] ?? 0;
+                $txB = $b['total_transactions'] ?? 0;
+                if ($txA !== $txB) {
+                    return $txB <=> $txA; // Prefer node with more tx data when heights are equal
                 }
                 
                 // If heights are equal, use faster response
@@ -398,7 +404,8 @@ class NetworkSyncManager {
             // Debug: log sorting results
             $this->log("Nodes after sorting by height (descending):");
             foreach ($accessibleNodes as $i => $node) {
-                $this->log("  $i: {$node['url']} - height: {$node['block_height']}, time: {$node['response_time']}ms");
+                $tx = $node['total_transactions'] ?? 0;
+                $this->log("  $i: {$node['url']} - height: {$node['block_height']}, tx: {$tx}, time: {$node['response_time']}ms");
             }
         }
 
@@ -409,10 +416,20 @@ class NetworkSyncManager {
     }
     
     private function testNode($nodeUrl) {
-        // Test with network stats endpoint which includes block height
+        $syncToken = (string)(getenv('SYNC_API_TOKEN') ?: '');
+        $tokenParam = $syncToken !== '' ? '&sync_token=' . rawurlencode($syncToken) : '';
+
+        $ua = 'Mozilla/5.0 (compatible; BlockMinerNodeSync/1.1)';
+        $headers = "User-Agent: {$ua}\r\nAccept: application/json\r\nX-Node-Sync: 1\r\n";
+        if ($syncToken !== '') {
+            $headers .= "X-Sync-Token: {$syncToken}\r\n";
+        }
+
+        // Prefer get_tip_hashes (derived from MAX(height)) over get_network_stats (can be stale)
         $endpoints = [
-            '/api/explorer/index.php?action=get_network_stats',
-            '/api/explorer/index.php?action=get_network_config',
+            '/api/explorer/index.php?action=get_tip_hashes&offset=0&count=1' . $tokenParam,
+            '/api/explorer/index.php?action=get_network_stats' . $tokenParam,
+            '/api/explorer/index.php?action=get_network_config' . $tokenParam,
         ];
         $errors = [];
         $best = null;
@@ -424,7 +441,8 @@ class NetworkSyncManager {
                 'http' => [
                     'timeout' => 10,
                     'method' => 'GET',
-                    'header' => "User-Agent: NetworkSyncManager/1.1\r\nAccept: application/json\r\n"
+                    'header' => $headers,
+                    'ignore_errors' => true
                 ]
             ]);
             $result = @file_get_contents($testUrl, false, $context);
@@ -443,8 +461,12 @@ class NetworkSyncManager {
 
             // Check for different response formats
             $blockHeight = null;
-            
-            if (isset($data['current_height'])) {
+
+            if (isset($data['success']) && $data['success'] === true && isset($data['data']['tip']) && is_numeric($data['data']['tip'])) {
+                // get_tip_hashes format
+                $blockHeight = (int)$data['data']['tip'];
+                $ok = true;
+            } elseif (isset($data['current_height'])) {
                 // Direct network stats format
                 $blockHeight = (int)$data['current_height'];
                 $ok = true;
@@ -470,8 +492,36 @@ class NetworkSyncManager {
                     'accessible' => true,
                     'response_time' => $responseTime,
                     'block_height' => $blockHeight,
+                    'total_transactions' => 0,
                     'error' => null
                 ];
+
+                // Opportunistically fetch total tx for tie-breaking (best-effort)
+                try {
+                    $statsUrl = rtrim($nodeUrl, '/') . '/api/explorer/index.php?action=get_network_stats' . $tokenParam;
+                    $ctx2 = stream_context_create([
+                        'http' => [
+                            'timeout' => 5,
+                            'method' => 'GET',
+                            'header' => $headers,
+                            'ignore_errors' => true
+                        ]
+                    ]);
+                    $statsRaw = @file_get_contents($statsUrl, false, $ctx2);
+                    if ($statsRaw !== false) {
+                        $stats = json_decode($statsRaw, true);
+                        if (is_array($stats)) {
+                            if (isset($stats['total_transactions']) && is_numeric($stats['total_transactions'])) {
+                                $best['total_transactions'] = (int)$stats['total_transactions'];
+                            } elseif (isset($stats['success']) && $stats['success'] === true && isset($stats['data']['total_transactions']) && is_numeric($stats['data']['total_transactions'])) {
+                                $best['total_transactions'] = (int)$stats['data']['total_transactions'];
+                            }
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    // ignore
+                }
+
                 break;
             }
         }
@@ -718,10 +768,8 @@ class NetworkSyncManager {
         
         $this->log("Local blockchain height: $localHeight");
         
-        // Get remote height to check for fork resolution
-        $remoteStatsUrl = rtrim($node, '/') . '/api/explorer/index.php?action=get_network_stats';
-        $remoteStats = $this->makeApiCall($remoteStatsUrl);
-        $remoteHeight = $remoteStats['current_height'] ?? 0;
+        // Get reliable remote tip height (prefer get_tip_hashes; get_network_stats can be stale)
+        $remoteHeight = (int)($this->getRemoteTipHeight($node, 6) ?? 0);
         
         $this->log("Remote blockchain height: $remoteHeight");
         
@@ -904,15 +952,23 @@ class NetworkSyncManager {
             $limit = 100;
             
             do {
-                $url = rtrim($node, '/') . "/api/explorer/index.php?action=get_blocks&page=$page&limit=$limit";
+                $url = rtrim($node, '/') . "/api/explorer/index.php?action=get_all_blocks&page=$page&limit=$limit";
                 $response = $this->makeApiCall($url);
                 
                 if (!$response || !isset($response['success']) || !$response['success']) {
                     $this->log("No more blocks to sync (page $page)");
                     break;
                 }
-                
-                $blocks = $response['data']['blocks'] ?? [];
+
+                // Explorer returns blocks list in data; older callers may return data.blocks
+                $blocks = [];
+                if (isset($response['data']['blocks']) && is_array($response['data']['blocks'])) {
+                    $blocks = $response['data']['blocks'];
+                } elseif (isset($response['data']) && is_array($response['data'])) {
+                    $blocks = $response['data'];
+                } elseif (isset($response['blocks']) && is_array($response['blocks'])) {
+                    $blocks = $response['blocks'];
+                }
                 if (empty($blocks)) {
                     $this->log("No blocks found on page $page");
                     break;
@@ -952,8 +1008,12 @@ class NetworkSyncManager {
                 }
                 
                 $page++;
-                
-            } while (count($blocks) == $limit);
+
+                $hasMore = (bool)($response['pagination']['has_more'] ?? $response['data']['pagination']['has_more'] ?? (count($blocks) === $limit));
+                if (!$hasMore) {
+                    break;
+                }
+            } while (true);
         }
         
         $this->log("Total blocks synced: $totalSynced");
@@ -967,138 +1027,239 @@ class NetworkSyncManager {
     }
     
     private function syncTransactions($node) {
-        $this->log("Starting optimized transaction sync from paginated API...");
+        $this->log("Starting optimized transaction sync from source node...");
         $totalSynced = 0;
-        
-        // Use optimized pagination with early exit
-        $page = 0;
-        $limit = 100;
-        $maxPages = 50; // Safety limit
-        $consecutiveEmptyPages = 0;
-        $maxConsecutiveEmpty = 3; // Stop after 3 consecutive empty pages
-        
-        // First, probe to find a page with transactions
-        $foundPage = -1;
-        for ($probePage = 0; $probePage < min(5, $maxPages); $probePage++) {
-            $url = rtrim($node, '/') . "/api/explorer/transactions?page=$probePage&limit=$limit";
-            $response = $this->makeApiCall($url); // OPTIMIZED: No timeout - work by response time
-            
-            if ($response && isset($response['transactions']) && !empty($response['transactions'])) {
-                $foundPage = $probePage;
-                $this->log("Found transactions on page $probePage, starting sync from there");
-                break;
+
+        $pageLimit = (int)(getenv('SYNC_TX_PAGE_LIMIT') ?: 1000);
+        if ($pageLimit < 10) { $pageLimit = 10; }
+        if ($pageLimit > 1000) { $pageLimit = 1000; }
+
+        $maxPerRun = (int)(getenv('SYNC_MAX_TRANSACTIONS_PER_RUN') ?: 10000);
+        if ($maxPerRun < 0) { $maxPerRun = 0; }
+        if ($maxPerRun > 200000) { $maxPerRun = 200000; }
+
+        $nodeBase = rtrim($node, '/');
+
+        // If we are already ahead of the source by tx count, syncing from it is pointless.
+        // This commonly happens on the most up-to-date node where self-exclusion forces a behind peer as source.
+        try {
+            $localTxCount = 0;
+            try {
+                $c = $this->pdo->query("SELECT COUNT(*) FROM transactions");
+                $localTxCount = (int)$c->fetchColumn();
+            } catch (\Throwable $e) {
+                $localTxCount = 0;
             }
-        }
-        
-        if ($foundPage === -1) {
-            $this->log("No transactions found on any probed page");
-            return 0;
-        }
-        
-        // Start from the found page
-        $page = $foundPage;
-        
-        do {
-            $url = rtrim($node, '/') . "/api/explorer/transactions?page=$page&limit=$limit";
-            $response = $this->makeApiCall($url); // OPTIMIZED: No timeout - work by response time
-            
-            if (!$response || !isset($response['transactions'])) {
-                $this->log("No transaction data available from node (page $page)");
-                $consecutiveEmptyPages++;
-                $page++;
-                continue;
-            }
-            
-            $transactions = $response['transactions'] ?? [];
-            if (empty($transactions)) {
-                $consecutiveEmptyPages++;
-                $page++;
-                continue;
-            }
-            
-            $newTransactions = 0;
-            $pageHasNewTx = false;
-            
-            foreach ($transactions as $tx) {
-                $txHash = $tx['hash'] ?? '';
-                $fromAddr = $tx['from'] ?? '';
-                $toAddr = $tx['to'] ?? '';
-                $amount = $tx['amount'] ?? 0;
-                $timestamp = $tx['timestamp'] ?? time();
-                $blockHash = $tx['block_hash'] ?? '';
-                $blockHeight = $tx['block_index'] ?? 0;
-                $status = $tx['status'] ?? 'confirmed';
-                $type = $tx['type'] ?? '';
-                
-                if (!empty($txHash)) {
-                    // Insert transaction with all available data
-                    $stmt = $this->pdo->prepare("
-                        INSERT IGNORE INTO transactions 
-                        (hash, from_address, to_address, amount, fee, timestamp, block_hash, block_height, status, nonce, gas_limit, gas_used, gas_price, data, signature)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ");
-                    
-                    $result = $stmt->execute([
-                        $txHash,
-                        $fromAddr,
-                        $toAddr,
-                        $amount,
-                        0, // fee - will be 0 for now
-                        $timestamp,
-                        $blockHash,
-                        $blockHeight,
-                        $status,
-                        0, // nonce
-                        21000, // gas_limit
-                        0, // gas_used
-                        0, // gas_price
-                        json_encode(['type' => $type]), // data
-                        '' // signature
-                    ]);
-                    
-                    if ($result && $stmt->rowCount() > 0) {
-                        $newTransactions++;
-                        $pageHasNewTx = true;
-                    }
+
+            $remoteTxCount = null;
+            $statsUrl = $nodeBase . '/api/explorer/index.php?action=get_network_stats';
+            $stats = $this->makeApiCall($statsUrl, 6);
+            if (is_array($stats)) {
+                if (isset($stats['total_transactions']) && is_numeric($stats['total_transactions'])) {
+                    $remoteTxCount = (int)$stats['total_transactions'];
+                } elseif (isset($stats['success']) && $stats['success'] === true && isset($stats['data']['total_transactions']) && is_numeric($stats['data']['total_transactions'])) {
+                    $remoteTxCount = (int)$stats['data']['total_transactions'];
                 }
             }
-            
-            $totalSynced += $newTransactions;
-            
-            if ($pageHasNewTx) {
-                $consecutiveEmptyPages = 0; // Reset counter
-                $this->log("Page $page: synced $newTransactions new transactions");
-            } else {
-                $consecutiveEmptyPages++;
-                $this->log("Page $page: no new transactions (empty pages: $consecutiveEmptyPages)");
+
+            if ($remoteTxCount !== null) {
+                $this->log("Transaction sync: local tx=$localTxCount, source tx=$remoteTxCount");
+                if ($remoteTxCount <= $localTxCount) {
+                    $this->log("Transaction sync skipped: local node already has >= source transactions");
+                    return 0;
+                }
             }
-            
+        } catch (\Throwable $e) {
+            // best-effort; continue
+        }
+
+        // Prefer action-based endpoint (no rewrite required). Fallback to /transactions path if rewrites exist.
+        $endpointTemplates = [
+            $nodeBase . '/api/explorer/index.php?action=get_all_transactions&page=%d&limit=%d',
+            $nodeBase . '/api/explorer/transactions?page=%d&limit=%d',
+        ];
+
+        $selectedTemplate = null;
+        $probePages = [0, 1];
+        foreach ($endpointTemplates as $tpl) {
+            foreach ($probePages as $p) {
+                $probeUrl = sprintf($tpl, $p, $pageLimit);
+                $probeResp = $this->makeApiCall($probeUrl, 6);
+                if (!is_array($probeResp)) {
+                    continue;
+                }
+
+                // Detect a valid response shape even if empty
+                if (isset($probeResp['success'])) {
+                    if ($probeResp['success'] === true && array_key_exists('data', $probeResp)) {
+                        $selectedTemplate = $tpl;
+                        break 2;
+                    }
+                    continue;
+                }
+
+                if (array_key_exists('transactions', $probeResp) && is_array($probeResp['transactions'])) {
+                    $selectedTemplate = $tpl;
+                    break 2;
+                }
+            }
+        }
+
+        if ($selectedTemplate === null) {
+            $this->log("Transaction sync: no compatible endpoint found on source node");
+            return 0;
+        }
+
+        $this->log("Transaction sync: using endpoint template: " . $selectedTemplate);
+
+        $page = 0;
+        $consecutiveNoNew = 0;
+        $maxConsecutiveNoNew = 5;
+        $maxPages = 500;
+
+        $stmt = $this->pdo->prepare("
+            INSERT IGNORE INTO transactions
+            (hash, from_address, to_address, amount, fee, timestamp, block_hash, block_height, status, nonce, gas_limit, gas_used, gas_price, data, signature)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ");
+
+        while (true) {
+            if ($maxPerRun > 0 && $totalSynced >= $maxPerRun) {
+                $this->log("Transaction sync: reached per-run cap ($maxPerRun)");
+                break;
+            }
+            if ($page >= $maxPages) {
+                $this->log("Transaction sync: reached max page limit ($maxPages)");
+                break;
+            }
+
+            $url = sprintf($selectedTemplate, $page, $pageLimit);
+            $response = $this->makeApiCall($url, 10);
+            if (!$response || !is_array($response)) {
+                $this->log("Transaction sync: empty/invalid response (page $page)");
+                $consecutiveNoNew++;
+                if ($consecutiveNoNew >= $maxConsecutiveNoNew) {
+                    $this->log("Transaction sync: stopping after $consecutiveNoNew consecutive empty/invalid pages");
+                    break;
+                }
+                $page++;
+                continue;
+            }
+
+            // Normalize list + pagination
+            $transactions = [];
+            $hasMore = null;
+
+            if (isset($response['success'])) {
+                if ($response['success'] !== true) {
+                    $this->log("Transaction sync: remote error (page $page): " . ($response['error'] ?? 'unknown'));
+                    break;
+                }
+
+                if (isset($response['data']) && is_array($response['data'])) {
+                    $transactions = $response['data'];
+                }
+                if (isset($response['pagination']['has_more'])) {
+                    $hasMore = (bool)$response['pagination']['has_more'];
+                }
+            } elseif (isset($response['transactions']) && is_array($response['transactions'])) {
+                $transactions = $response['transactions'];
+                if (isset($response['total']) && is_numeric($response['total'])) {
+                    $total = (int)$response['total'];
+                    $hasMore = (($page + 1) * $pageLimit) < $total;
+                }
+            }
+
+            if (empty($transactions)) {
+                $this->log("Transaction sync: no transactions on page $page");
+                break;
+            }
+
+            $newTransactions = 0;
+            foreach ($transactions as $tx) {
+                if (!is_array($tx)) { continue; }
+
+                $txHash = (string)($tx['hash'] ?? '');
+                if ($txHash === '') { continue; }
+
+                $fromAddr = (string)($tx['from_address'] ?? $tx['from'] ?? '');
+                $toAddr = (string)($tx['to_address'] ?? $tx['to'] ?? '');
+                $amount = (float)($tx['amount'] ?? 0);
+                $fee = (float)($tx['fee'] ?? 0);
+                $timestamp = (int)($tx['timestamp'] ?? time());
+                $blockHash = (string)($tx['block_hash'] ?? '');
+                $blockHeight = (int)($tx['block_height'] ?? $tx['block_index'] ?? 0);
+                $status = (string)($tx['status'] ?? 'confirmed');
+                $nonce = (int)($tx['nonce'] ?? 0);
+                $gasLimit = (int)($tx['gas_limit'] ?? 21000);
+                $gasUsed = (int)($tx['gas_used'] ?? 0);
+                $gasPrice = (float)($tx['gas_price'] ?? 0);
+                $data = $tx['data'] ?? null;
+                if (is_array($data)) {
+                    $data = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                } elseif ($data === null) {
+                    // Keep type hint if present
+                    $type = $tx['type'] ?? null;
+                    $data = $type !== null ? json_encode(['type' => $type], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : '{}';
+                } else {
+                    $data = (string)$data;
+                }
+                $signature = (string)($tx['signature'] ?? '');
+
+                $ok = $stmt->execute([
+                    $txHash,
+                    $fromAddr,
+                    $toAddr,
+                    $amount,
+                    $fee,
+                    $timestamp,
+                    $blockHash,
+                    $blockHeight,
+                    $status,
+                    $nonce,
+                    $gasLimit,
+                    $gasUsed,
+                    $gasPrice,
+                    $data,
+                    $signature
+                ]);
+
+                if ($ok && $stmt->rowCount() > 0) {
+                    $newTransactions++;
+                }
+
+                if ($maxPerRun > 0 && ($totalSynced + $newTransactions) >= $maxPerRun) {
+                    break;
+                }
+            }
+
+            $totalSynced += $newTransactions;
+            if ($newTransactions > 0) {
+                $consecutiveNoNew = 0;
+                $this->log("Transactions sync: page $page, new $newTransactions, total $totalSynced");
+            } else {
+                $consecutiveNoNew++;
+                $this->log("Transactions sync: page $page, no new rows (streak $consecutiveNoNew)");
+                // Only stop early on no-new streak if we *don't* have reliable pagination.
+                // If has_more is provided and true, keep scanning to avoid missing older holes.
+                if (($hasMore === null) && $consecutiveNoNew >= $maxConsecutiveNoNew) {
+                    $this->log("Transaction sync: stopping after $consecutiveNoNew consecutive no-new pages (no pagination info)");
+                    break;
+                }
+            }
+
             if ($this->isWebMode) {
-                echo json_encode(['status' => 'progress', 'message' => "Page $page: synced $newTransactions transactions"]) . "\n";
+                echo json_encode(['status' => 'progress', 'message' => "Tx page $page: +$newTransactions (total $totalSynced)"]) . "\n";
                 flush();
             }
-            
+
             $page++;
-            
-            // Early exit conditions
-            if ($consecutiveEmptyPages >= $maxConsecutiveEmpty) {
-                $this->log("Stopping after $consecutiveEmptyPages consecutive empty pages");
+            if ($hasMore === false) {
                 break;
             }
-            
-            if ($page >= $maxPages) {
-                $this->log("Reached maximum page limit ($maxPages)");
-                break;
-            }
-            
-            if ($totalSynced >= 1000) {
-                $this->log("Reached sync limit of 1000 transactions");
-                break;
-            }
-            
-        } while (count($transactions) == $limit);
-        
-        $this->log("Total transactions synced: $totalSynced (stopped at page $page)");
+        }
+
+        $this->log("Total transactions synced: $totalSynced");
         return $totalSynced;
     }
     
@@ -1351,8 +1512,16 @@ class NetworkSyncManager {
                 $this->log("No wallet data available from node (page $page)");
                 break;
             }
-            
-            $wallets = $response['data']['wallets'] ?? [];
+
+            // Explorer returns wallets list in data. Older callers may return data.wallets or wallets.
+            $wallets = [];
+            if (isset($response['data']['wallets']) && is_array($response['data']['wallets'])) {
+                $wallets = $response['data']['wallets'];
+            } elseif (isset($response['data']) && is_array($response['data'])) {
+                $wallets = $response['data'];
+            } elseif (isset($response['wallets']) && is_array($response['wallets'])) {
+                $wallets = $response['wallets'];
+            }
             if (empty($wallets)) {
                 $this->log("No wallets found on page $page");
                 break;
@@ -1398,8 +1567,13 @@ class NetworkSyncManager {
             }
             
             $page++;
-            
-        } while (count($wallets) == $limit);
+
+            $hasMore = (bool)($response['has_more'] ?? $response['data']['has_more'] ?? (count($wallets) === $limit));
+            if (!$hasMore) {
+                break;
+            }
+
+        } while (true);
         
         $this->log("Total wallets synced: $totalSynced");
         return $totalSynced;
@@ -1600,12 +1774,23 @@ class NetworkSyncManager {
             $timeout = 30;
         }
 
-        $headers = "User-Agent: NetworkSyncManager/1.1\r\nAccept: application/json\r\n";
+        // Optional shared token for protected sync endpoints
+        $syncToken = (string)(getenv('SYNC_API_TOKEN') ?: '');
+        if ($syncToken !== '' && is_string($url) && strpos($url, '/api/explorer/index.php') !== false && strpos($url, 'sync_token=') === false) {
+            $url .= (strpos($url, '?') !== false ? '&' : '?') . 'sync_token=' . rawurlencode($syncToken);
+        }
+
+        $ua = 'Mozilla/5.0 (compatible; BlockMinerNodeSync/1.1)';
+        $headers = "User-Agent: {$ua}\r\nAccept: application/json\r\nX-Node-Sync: 1\r\n";
+        if ($syncToken !== '') {
+            $headers .= "X-Sync-Token: {$syncToken}\r\n";
+        }
         $opts = [
             'http' => [
                 'timeout' => is_int($timeout) ? $timeout : 30,
                 'method' => $postData ? 'POST' : 'GET',
-                'header' => $headers
+                'header' => $headers,
+                'ignore_errors' => true
             ]
         ];
         if ($postData) {
@@ -1628,6 +1813,48 @@ class NetworkSyncManager {
             return ['raw' => $result];
         }
         return $data;
+    }
+
+    /**
+     * Get a reliable remote tip height from explorer.
+     *
+     * IMPORTANT: get_network_stats can be stale (e.g. state file ahead of DB).
+     * For sync/quorum decisions we prefer get_tip_hashes which is derived from MAX(height).
+     */
+    private function getRemoteTipHeight(string $nodeUrl, int $timeout = 5): ?int {
+        $nodeUrl = rtrim($nodeUrl, '/');
+
+        // Preferred: get_tip_hashes
+        try {
+            $tipUrl = $nodeUrl . '/api/explorer/index.php?action=get_tip_hashes&offset=0&count=1';
+            $resp = $this->makeApiCall($tipUrl, $timeout);
+            if (is_array($resp) && isset($resp['success']) && $resp['success'] === true) {
+                $tip = $resp['data']['tip'] ?? null;
+                if ($tip !== null && is_numeric($tip)) {
+                    return (int)$tip;
+                }
+            }
+        } catch (\Throwable $e) {
+            // fall through
+        }
+
+        // Fallback: get_network_stats
+        try {
+            $statsUrl = $nodeUrl . '/api/explorer/index.php?action=get_network_stats';
+            $stats = $this->makeApiCall($statsUrl, $timeout);
+            if (is_array($stats)) {
+                if (isset($stats['current_height']) && is_numeric($stats['current_height'])) {
+                    return (int)$stats['current_height'];
+                }
+                if (isset($stats['success']) && $stats['success'] === true && isset($stats['data']['current_height']) && is_numeric($stats['data']['current_height'])) {
+                    return (int)$stats['data']['current_height'];
+                }
+            }
+        } catch (\Throwable $e) {
+            // ignore
+        }
+
+        return null;
     }
     
     private function updateProgress($current, $total, $message) {
@@ -1681,14 +1908,22 @@ class NetworkSyncManager {
                 $this->log("Quorum check skipped: no local blocks");
                 return;
             }
-            
-            // Start from H backwards up to depth (but not below 0)
-            $start = max(0, $H - $depth + 1);
-            $this->log("Quorum check: validating blocks from height $start to $H");
 
-            // 2) Get local hashes for the window [start..H]
+            // 1b) Determine source node height (reliable tip); compare only the shared range.
+            $sourceH = $this->getRemoteTipHeight($sourceNodeUrl, 6);
+
+            if ($sourceH === null || $sourceH <= 0) {
+                $this->log('Quorum check skipped: could not determine source node height');
+                return;
+            }
+
+            $tip = min($H, $sourceH);
+            $start = max(0, $tip - $depth + 1);
+            $this->log("Quorum check: validating shared blocks from height $start to $tip (local tip=$H, source tip=$sourceH)");
+
+            // 2) Get local hashes for the shared window [start..tip]
             $stmt = $this->pdo->prepare("SELECT height, hash FROM blocks WHERE height BETWEEN ? AND ? ORDER BY height DESC");
-            $stmt->execute([$start, $H]);
+            $stmt->execute([$start, $tip]);
             $local = [];
             while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 $local[(int)$row['height']] = $row['hash'];
@@ -1733,54 +1968,60 @@ class NetworkSyncManager {
             $peers = array_slice($peers, 0, $peerSample);
             $this->log("Quorum check: querying " . count($peers) . " peer nodes");
 
-            // 4) For each peer, fetch hash at heights and compute agreement score (OPTIMIZED)
+            // 4) For each peer, fetch hash window near shared tip and compute agreement score.
+            // IMPORTANT: use peer's reliable tip as well to avoid false negatives when get_network_stats is stale.
             $agreement = 0;
             $asked = 0;
-            $detailedResults = [];
-            
+
             foreach ($peers as $peer) {
+                $peerH = $this->getRemoteTipHeight($peer, 6);
+                if ($peerH === null || $peerH <= 0) {
+                    $this->log("Peer $peer: SKIP (cannot determine peer tip)");
+                    continue;
+                }
+
+                $peerTip = min($tip, $peerH);
+                $h1 = $peerTip;
+                $h0 = max(0, $peerTip - 1);
+
+                // Skip if we don't have these locally (should not happen, but be safe)
+                if (!isset($local[$h1]) && !isset($local[$h0])) {
+                    $this->log("Peer $peer: SKIP (no local hashes for peerTip window)");
+                    continue;
+                }
+
                 $asked++;
-                // OPTIMIZATION: Check only 2 strategic heights instead of 5 for faster validation
-                $heightsToCheck = [$H, max(0, $H-1)];
+
+                $url = rtrim($peer, '/') . "/api/explorer/index.php?action=get_block_hashes_range&start={$h0}&end={$h1}";
+                $resp = $this->makeApiCall($url, 6);
+
                 $peerAgrees = false;
-                $peerDetails = ['peer' => $peer, 'checks' => []];
-                
-                foreach ($heightsToCheck as $h) {
-                    if (!isset($local[$h])) continue; // Skip if we don't have this block locally
-                    
-                    $url = rtrim($peer, '/') . "/api/explorer/index.php?action=get_block&block_id=" . $h;
-                    $resp = $this->makeApiCall($url); // OPTIMIZED: No timeout - work by response time
-                    
-                    if ($resp && isset($resp['success']) && $resp['success'] && isset($resp['data']['hash'])) {
-                        $peerHash = $resp['data']['hash'];
-                        $localHash = $local[$h];
-                        $matches = hash_equals($localHash, $peerHash);
-                        
-                        $peerDetails['checks'][] = [
-                            'height' => $h,
-                            'local_hash' => substr($localHash, 0, 16) . '...',
-                            'peer_hash' => substr($peerHash, 0, 16) . '...',
-                            'matches' => $matches
-                        ];
-                        
-                        if ($matches) {
-                            $peerAgrees = true;
-                            break; // One match is enough to trust this peer
+                if (is_array($resp) && isset($resp['success']) && $resp['success'] === true && isset($resp['data']['hashes']) && is_array($resp['data']['hashes'])) {
+                    $range = $resp['data']['range'] ?? ['start' => $h0, 'end' => $h1];
+                    $rangeStart = (int)($range['start'] ?? $h0);
+                    $hashes = $resp['data']['hashes'];
+
+                    $peerHashesByH = [];
+                    foreach ($hashes as $i => $hash) {
+                        $peerHashesByH[$rangeStart + (int)$i] = (string)$hash;
+                    }
+
+                    foreach ([$h1, $h0] as $h) {
+                        if (!isset($local[$h]) || !isset($peerHashesByH[$h])) {
+                            continue;
                         }
-                    } else {
-                        $peerDetails['checks'][] = [
-                            'height' => $h,
-                            'error' => 'Failed to fetch or invalid response'
-                        ];
+                        if (hash_equals($local[$h], $peerHashesByH[$h])) {
+                            $peerAgrees = true;
+                            break;
+                        }
                     }
                 }
-                
-                $detailedResults[] = $peerDetails;
+
                 if ($peerAgrees) {
                     $agreement++;
-                    $this->log("Peer $peer: AGREES (found matching hash)");
+                    $this->log("Peer $peer: AGREES (matching hash near tip)");
                 } else {
-                    $this->log("Peer $peer: DISAGREES (no matching hashes found)");
+                    $this->log("Peer $peer: DISAGREES (no matching hashes near tip)");
                 }
             }
 
@@ -1813,6 +2054,8 @@ class NetworkSyncManager {
                 } else {
                     $this->log("Quorum check: source node appears trustworthy");
                 }
+            } else {
+                $this->log("Quorum check skipped: no usable peers (could not fetch hashes)");
             }
         } catch (\Throwable $e) {
             $this->log("Quorum check failed: " . $e->getMessage());
@@ -2647,11 +2890,9 @@ class NetworkSyncManager {
             $networkHeights = [];
             
             foreach ($networkNodes as $nodeUrl) {
-                $url = rtrim($nodeUrl, '/') . '/api/explorer/index.php?action=get_network_stats';
-                $response = $this->makeApiCall($url); // OPTIMIZED: No timeout - work by response time
-                
-                if ($response && isset($response['current_height'])) {
-                    $networkHeights[] = (int)$response['current_height'];
+                $h = $this->getRemoteTipHeight($nodeUrl, 6);
+                if ($h !== null) {
+                    $networkHeights[] = (int)$h;
                 }
             }
             
@@ -2694,17 +2935,17 @@ class NetworkSyncManager {
         
         foreach ($networkNodes as $nodeUrl) {
             try {
-                $url = rtrim($nodeUrl, '/') . '/api/explorer/index.php?action=get_network_stats';
-                $response = $this->makeApiCall($url); // OPTIMIZED: No timeout - work by response time
-                
-                if ($response && isset($response['current_height'])) {
-                    $nodeHeight = (int)$response['current_height'];
-                    if ($nodeHeight >= $blockResult['block_height']) {
-                        $successCount++;
-                        $this->log("✅ Node {$nodeUrl} confirmed block reception (height: {$nodeHeight})");
-                    } else {
-                        $this->log("⚠️  Node {$nodeUrl} not yet synced (height: {$nodeHeight})");
-                    }
+                $nodeHeight = $this->getRemoteTipHeight($nodeUrl, 6);
+                if ($nodeHeight === null) {
+                    $this->log("❌ Failed to verify broadcast on {$nodeUrl}: could not determine height");
+                    continue;
+                }
+                $nodeHeight = (int)$nodeHeight;
+                if ($nodeHeight >= $blockResult['block_height']) {
+                    $successCount++;
+                    $this->log("✅ Node {$nodeUrl} confirmed block reception (height: {$nodeHeight})");
+                } else {
+                    $this->log("⚠️  Node {$nodeUrl} not yet synced (height: {$nodeHeight})");
                 }
                 
             } catch (Exception $e) {
