@@ -635,6 +635,11 @@ class SyncManager {
                 if (empty($stakingRecords)) break;
                 
                 foreach ($stakingRecords as $record) {
+                    // CRITICAL: Skip withdrawn/completed records to prevent double-withdrawal vulnerability
+                    if (isset($record['status']) && in_array($record['status'], ['withdrawn', 'completed'], true)) {
+                        continue;
+                    }
+                    
                     // Check if record already exists
                     $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM staking WHERE validator = ? AND staker = ? AND start_block = ?");
                     $stmt->execute([$record['validator'], $record['staker'], $record['start_block']]);

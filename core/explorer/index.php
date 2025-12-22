@@ -2041,16 +2041,16 @@ function getStakingRecords(PDO $pdo, string $network, int $page = 0, int $limit 
             ];
         }
         
-        // Get total count
-        $stmt = $pdo->prepare("SELECT COUNT(*) as total FROM staking");
+        // Get total count - ONLY active/pending stakes (exclude withdrawn/completed to prevent double-withdrawal)
+        $stmt = $pdo->prepare("SELECT COUNT(*) as total FROM staking WHERE status NOT IN ('withdrawn', 'completed')");
         $stmt->execute();
         $totalCount = (int)$stmt->fetchColumn();
         
         // Calculate offset
         $offset = $page * $limit;
         
-        // Get staking records with pagination
-        $stmt = $pdo->prepare("SELECT validator, staker, amount, reward_rate, start_block, end_block, status, rewards_earned, last_reward_block FROM staking ORDER BY start_block ASC LIMIT ?, ?");
+        // Get staking records with pagination - CRITICAL: exclude withdrawn/completed to prevent sync from restoring them
+        $stmt = $pdo->prepare("SELECT validator, staker, amount, reward_rate, start_block, end_block, status, rewards_earned, last_reward_block FROM staking WHERE status NOT IN ('withdrawn', 'completed') ORDER BY start_block ASC LIMIT ?, ?");
         $stmt->bindValue(1, $offset, PDO::PARAM_INT);
         $stmt->bindValue(2, $limit, PDO::PARAM_INT);
         $stmt->execute();

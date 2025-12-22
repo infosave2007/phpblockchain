@@ -1081,15 +1081,15 @@ function syncLaggingNodes($syncManager, $quiet = false, $verbose = false) {
         // Get current heights and transaction counts
         foreach ($nodes as $name => $url) {
             try {
-                $blocksResponse = file_get_contents("$url/api/explorer/blocks?limit=1");
-                $txResponse = file_get_contents("$url/api/explorer/transactions?limit=1");
+                $blocksResponse = @file_get_contents("$url/api/explorer/index.php?action=get_blocks&limit=1");
+                $txResponse = @file_get_contents("$url/api/?action=get_blockchain_stats");
                 
                 if ($blocksResponse && $txResponse) {
                     $blocks = json_decode($blocksResponse, true);
                     $txData = json_decode($txResponse, true);
                     
-                    $heights[$name] = $blocks['blocks'][0]['index'] ?? 0;
-                    $transactions[$name] = $txData['total'] ?? 0;
+                    $heights[$name] = $blocks['blocks'][0]['height'] ?? ($blocks['data'][0]['height'] ?? 0);
+                    $transactions[$name] = $txData['stats']['transactions'] ?? ($txData['total'] ?? 0);
                 } else {
                     $heights[$name] = 0;
                     $transactions[$name] = 0;

@@ -136,3 +136,6 @@ tools/fix_staked_balance.php
 .gitignore
 wallet/fix_staked_wallets.php
 a380300_1 (2).sql.gz
+check_staking_security.php
+.gitignore
+fix_staking_duplicates.php

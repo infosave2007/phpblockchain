@@ -1517,15 +1517,19 @@ class NetworkSyncManager {
                 break;
             }
             
-            // Add unique constraint if not exists to prevent duplicates
+            // Add unique constraint if not exists to prevent duplicates (check first to avoid log spam)
             try {
-                $this->pdo->exec("ALTER TABLE staking ADD UNIQUE KEY `uk_validator_staker_start` (`validator`, `staker`, `start_block`)");
-            } catch (Exception $e) {
-                if (strpos($e->getMessage(), '1060') === false) {
-                    // Not a duplicate key error - log it
-                    $this->log("Add unique constraint warning: " . $e->getMessage());
+                $checkKey = $this->pdo->query("SHOW KEYS FROM staking WHERE Key_name = 'uk_validator_staker_start'");
+                if ($checkKey->rowCount() === 0) {
+                    $this->pdo->exec("ALTER TABLE staking ADD UNIQUE KEY `uk_validator_staker_start` (`validator`, `staker`, `start_block`)");
+                    $this->log("Unique constraint 'uk_validator_staker_start' created successfully");
                 }
-                // The key likely already exists or migration was run
+                // Key already exists - silent success
+            } catch (Exception $e) {
+                // Only log if it's not a "duplicate key name" error
+                if (strpos($e->getMessage(), '1061') === false && strpos($e->getMessage(), '1060') === false) {
+                    $this->log("Unique constraint check warning: " . $e->getMessage());
+                }
             }
             
             $newStakes = 0;
@@ -1543,18 +1547,21 @@ class NetworkSyncManager {
                 $contractAddress = $stake['contract_address'] ?? null;
                 
                 // Use AUTO_INCREMENT for ID - don't specify it in INSERT
+                // CRITICAL FIX: Never overwrite withdrawn/completed stakes to prevent double-withdrawal vulnerability
+                // Only update if: 1) new record (INSERT) OR 2) existing status is NOT terminal (withdrawn/completed)
+                // AND only increase amounts/rewards (never decrease) to prevent loss of local withdrawal state
                 $stmt = $this->pdo->prepare("
                     INSERT INTO staking (validator, staker, amount, reward_rate, start_block, end_block, status, rewards_earned, last_reward_block, contract_address, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON DUPLICATE KEY UPDATE
-                        amount = VALUES(amount),
-                        reward_rate = VALUES(reward_rate),
-                        end_block = VALUES(end_block),
-                        status = VALUES(status),
-                        rewards_earned = VALUES(rewards_earned),
-                        last_reward_block = VALUES(last_reward_block),
-                        contract_address = VALUES(contract_address),
-                        updated_at = NOW()
+                        amount = IF(status IN ('withdrawn', 'completed'), amount, GREATEST(amount, VALUES(amount))),
+                        reward_rate = IF(status IN ('withdrawn', 'completed'), reward_rate, VALUES(reward_rate)),
+                        end_block = IF(status IN ('withdrawn', 'completed'), end_block, VALUES(end_block)),
+                        status = IF(status IN ('withdrawn', 'completed'), status, VALUES(status)),
+                        rewards_earned = IF(status IN ('withdrawn', 'completed'), rewards_earned, GREATEST(rewards_earned, VALUES(rewards_earned))),
+                        last_reward_block = IF(status IN ('withdrawn', 'completed'), last_reward_block, GREATEST(last_reward_block, VALUES(last_reward_block))),
+                        contract_address = IF(status IN ('withdrawn', 'completed'), contract_address, VALUES(contract_address)),
+                        updated_at = IF(status IN ('withdrawn', 'completed'), updated_at, NOW())
                 ");
                 
                 $result = $stmt->execute([
