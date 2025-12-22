@@ -1042,6 +1042,8 @@ class NetworkSyncManager {
 
         // If we are already ahead of the source by tx count, syncing from it is pointless.
         // This commonly happens on the most up-to-date node where self-exclusion forces a behind peer as source.
+        $localTxCount = null;
+        $remoteTxCount = null;
         try {
             $localTxCount = 0;
             try {
@@ -1116,6 +1118,27 @@ class NetworkSyncManager {
         $consecutiveNoNew = 0;
         $maxConsecutiveNoNew = 5;
         $maxPages = 500;
+
+        // Heuristic: when the remote claims only a small tx advantage but we can't insert anything for many pages,
+        // the remaining tx are likely invalid/orphan on the source (FK violations suppressed by INSERT IGNORE on older code)
+        // or a hash normalization mismatch. Don't burn time scanning the entire history.
+        // SYNC_TX_EARLY_STOP_PAGES=0 disables early-stop (full scan).
+        $earlyStopPagesRaw = getenv('SYNC_TX_EARLY_STOP_PAGES');
+        $earlyStopPages = $earlyStopPagesRaw === false ? 20 : (int)$earlyStopPagesRaw;
+        if ($earlyStopPages === 0) {
+            $earlyStopPages = PHP_INT_MAX;
+        } else {
+            if ($earlyStopPages < 5) { $earlyStopPages = 5; }
+            if ($earlyStopPages > 200) { $earlyStopPages = 200; }
+        }
+        $gap = null;
+        if (is_int($localTxCount) && is_int($remoteTxCount)) {
+            $gap = max(0, $remoteTxCount - $localTxCount);
+        }
+
+        $failedInserts = 0;
+        $failedInsertSamples = 0;
+        $maxFailedInsertSamples = 5;
 
         $stmt = $this->pdo->prepare("
             INSERT IGNORE INTO transactions
@@ -1206,26 +1229,46 @@ class NetworkSyncManager {
                 }
                 $signature = (string)($tx['signature'] ?? '');
 
-                $ok = $stmt->execute([
-                    $txHash,
-                    $fromAddr,
-                    $toAddr,
-                    $amount,
-                    $fee,
-                    $timestamp,
-                    $blockHash,
-                    $blockHeight,
-                    $status,
-                    $nonce,
-                    $gasLimit,
-                    $gasUsed,
-                    $gasPrice,
-                    $data,
-                    $signature
-                ]);
+                $ok = false;
+                try {
+                    $ok = $stmt->execute([
+                        $txHash,
+                        $fromAddr,
+                        $toAddr,
+                        $amount,
+                        $fee,
+                        $timestamp,
+                        $blockHash,
+                        $blockHeight,
+                        $status,
+                        $nonce,
+                        $gasLimit,
+                        $gasUsed,
+                        $gasPrice,
+                        $data,
+                        $signature
+                    ]);
+                } catch (\Throwable $e) {
+                    $ok = false;
+                }
 
                 if ($ok && $stmt->rowCount() > 0) {
                     $newTransactions++;
+                } else {
+                    // If there is a small reported gap, sample a few failures to understand why inserts don't happen.
+                    if ($gap !== null && $gap > 0 && $gap <= 2000) {
+                        $failedInserts++;
+                        if ($failedInsertSamples < $maxFailedInsertSamples) {
+                            $info = $stmt->errorInfo();
+                            $code = $info[0] ?? '';
+                            $driverCode = $info[1] ?? '';
+                            $msg = $info[2] ?? '';
+                            if ($code !== '' || $msg !== '') {
+                                $this->log("Tx insert failed sample: hash={$txHash}, block_hash={$blockHash}, block_height={$blockHeight}, sqlstate={$code}, driver={$driverCode}, msg={$msg}");
+                                $failedInsertSamples++;
+                            }
+                        }
+                    }
                 }
 
                 if ($maxPerRun > 0 && ($totalSynced + $newTransactions) >= $maxPerRun) {
@@ -1254,9 +1297,19 @@ class NetworkSyncManager {
             }
 
             $page++;
+
+            if ($totalSynced === 0 && $gap !== null && $gap > 0 && $gap <= 2000 && $page >= $earlyStopPages) {
+                $this->log("Transaction sync warning: remote reports +$gap tx but none could be inserted after $page pages. Likely: (1) remote total_transactions comes from chain/state not DB, or (2) inserts fail due to FK/constraints/hash format. Try: /api/explorer/index.php?action=get_network_stats&debug=1 on both nodes and compare db_transactions_count.");
+                break;
+            }
+
             if ($hasMore === false) {
                 break;
             }
+        }
+
+        if ($failedInserts > 0 && $totalSynced === 0 && $gap !== null && $gap > 0) {
+            $this->log("Transaction sync summary: 0 inserted; sampled failures={$failedInsertSamples}; total failed insert attempts={$failedInserts}; reported gap={$gap}");
         }
 
         $this->log("Total transactions synced: $totalSynced");
