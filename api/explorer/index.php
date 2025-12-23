@@ -119,6 +119,15 @@ try {
                 }
                 echo json_encode(getWalletBalance($pdo, $network, $address));
                 exit;
+
+            case 'get_wallet_staking_flows':
+            case 'staking_flows':
+                $address = $params['address'] ?? '';
+                if (empty($address)) {
+                    throw new Exception('Wallet address required');
+                }
+                echo json_encode(getWalletStakingFlows($pdo, $network, $address, $params));
+                exit;
                 
             case 'get_wallet_node_info':
                 $address = $params['address'] ?? '';
@@ -326,6 +335,14 @@ try {
             $page = (int)($params['page'] ?? 0);
             $limit = min((int)($params['limit'] ?? 10), 100); // Max 100 transactions
             echo json_encode(getTransactions($pdo, $network, $page, $limit));
+            break;
+
+        case 'staking-flows':
+            $address = $params['address'] ?? '';
+            if (empty($address)) {
+                throw new Exception('Wallet address required');
+            }
+            echo json_encode(getWalletStakingFlows($pdo, $network, $address, $params));
             break;
             
         case 'block':
@@ -1131,6 +1148,171 @@ function getWalletBalance(PDO $pdo, string $network, string $address): array {
             'error' => $e->getMessage(),
             'data' => $walletInfo
         ];
+    }
+}
+
+/**
+ * Wallet flows breakdown: non-staking in/out and amount deposited to staking.
+ *
+ * GET params:
+ * - address (required)
+ * - status: confirmed|pending|all (default: confirmed)
+ * - from_ts: unix timestamp (optional)
+ * - to_ts: unix timestamp (optional)
+ */
+function getWalletStakingFlows(PDO $pdo, string $network, string $address, array $params): array {
+    $address = strtolower(trim((string)$address));
+    if ($address === '') {
+        return ['success' => false, 'error' => 'Wallet address required'];
+    }
+
+    // Validate status filter
+    $status = strtolower(trim((string)($params['status'] ?? 'confirmed')));
+    $allowedStatus = ['confirmed', 'pending', 'all'];
+    if (!in_array($status, $allowedStatus, true)) {
+        return ['success' => false, 'error' => 'Invalid status. Use confirmed|pending|all'];
+    }
+
+    $fromTs = isset($params['from_ts']) && $params['from_ts'] !== '' ? (int)$params['from_ts'] : null;
+    $toTs = isset($params['to_ts']) && $params['to_ts'] !== '' ? (int)$params['to_ts'] : null;
+    if ($fromTs !== null && $fromTs < 0) { $fromTs = null; }
+    if ($toTs !== null && $toTs < 0) { $toTs = null; }
+
+    try {
+        // Ensure required tables exist
+        $stmt = $pdo->query("SHOW TABLES LIKE 'transactions'");
+        if ($stmt->rowCount() === 0) {
+            return ['success' => false, 'error' => 'Transactions table not found'];
+        }
+
+        // Build list of known staking target addresses.
+        // System-style placeholders are used in some flows; real contract addresses may be present in staking.contract_address.
+        $stakingTargets = ['staking_contract', 'staking_pool'];
+
+        $stmt = $pdo->query("SHOW TABLES LIKE 'staking'");
+        if ($stmt->rowCount() > 0) {
+            // Pull distinct contract addresses (global) to catch contract-address-to_address transfers.
+            $q = $pdo->query("SELECT DISTINCT LOWER(contract_address) AS addr FROM staking WHERE contract_address IS NOT NULL AND contract_address <> ''");
+            foreach ($q->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $a = strtolower(trim((string)($row['addr'] ?? '')));
+                if ($a !== '' && $a !== 'null') {
+                    $stakingTargets[] = $a;
+                }
+            }
+        }
+
+        // Normalize + de-duplicate
+        $stakingTargets = array_values(array_unique(array_map(static fn($v) => strtolower(trim((string)$v)), $stakingTargets)));
+
+        // Build IN clause placeholders
+        $inPlaceholders = [];
+        $bind = [':addr' => $address];
+        foreach ($stakingTargets as $i => $target) {
+            $ph = ':st' . $i;
+            $inPlaceholders[] = $ph;
+            $bind[$ph] = $target;
+        }
+        // Always have at least one placeholder to keep SQL valid
+        if (empty($inPlaceholders)) {
+            $inPlaceholders[] = ':st0';
+            $bind[':st0'] = 'staking_contract';
+        }
+        $inSql = implode(', ', $inPlaceholders);
+
+        // Status filter
+        $statusSql = '';
+        if ($status === 'confirmed' || $status === 'pending') {
+            $statusSql = ' AND t.status = :status ';
+            $bind[':status'] = $status;
+        }
+
+        // Time filter
+        $timeSql = '';
+        if ($fromTs !== null) {
+            $timeSql .= ' AND t.timestamp >= :from_ts ';
+            $bind[':from_ts'] = $fromTs;
+        }
+        if ($toTs !== null) {
+            $timeSql .= ' AND t.timestamp <= :to_ts ';
+            $bind[':to_ts'] = $toTs;
+        }
+
+        // MySQL expressions to detect staking-related txs using on-chain placeholders + JSON action hints.
+        // Note: `data` column is TEXT, so we guard JSON_EXTRACT with JSON_VALID.
+        $actionExpr = "(CASE WHEN t.data IS NOT NULL AND JSON_VALID(t.data) THEN JSON_UNQUOTE(JSON_EXTRACT(t.data, '$.action')) ELSE NULL END)";
+        $stakingTypeExpr = "(CASE WHEN t.data IS NOT NULL AND JSON_VALID(t.data) THEN JSON_UNQUOTE(JSON_EXTRACT(t.data, '$.staking_type')) ELSE NULL END)";
+
+        $isToStakingExpr = "(
+            LOWER(t.to_address) IN ($inSql)
+            OR $actionExpr IN ('stake_tokens','stake')
+            OR $stakingTypeExpr = 'stake'
+        )";
+        $isFromStakingExpr = "(
+            LOWER(t.from_address) IN ($inSql)
+            OR $actionExpr IN ('unstake_tokens','unstake','reward_claim','claim_rewards','claim_staking_rewards')
+            OR $stakingTypeExpr IN ('unstake','reward_claim')
+        )";
+
+        $sql = "
+            SELECT
+                COALESCE(SUM(CASE WHEN t.to_address = :addr AND NOT $isFromStakingExpr THEN t.amount ELSE 0 END), 0) AS incoming_non_staking_amount,
+                COALESCE(SUM(CASE WHEN t.from_address = :addr AND NOT $isToStakingExpr THEN t.amount ELSE 0 END), 0) AS outgoing_non_staking_amount,
+                COALESCE(SUM(CASE WHEN t.from_address = :addr AND $isToStakingExpr THEN t.amount ELSE 0 END), 0) AS deposited_to_staking_amount,
+                COALESCE(SUM(CASE WHEN t.to_address = :addr AND $isFromStakingExpr THEN t.amount ELSE 0 END), 0) AS incoming_from_staking_amount,
+
+                COALESCE(SUM(CASE WHEN t.from_address = :addr THEN t.fee ELSE 0 END), 0) AS fees_paid_total,
+                COALESCE(SUM(CASE WHEN t.from_address = :addr AND $isToStakingExpr THEN t.fee ELSE 0 END), 0) AS fees_paid_to_staking,
+                COALESCE(SUM(CASE WHEN t.from_address = :addr AND NOT $isToStakingExpr THEN t.fee ELSE 0 END), 0) AS fees_paid_non_staking,
+
+                COALESCE(SUM(CASE WHEN t.to_address = :addr AND NOT $isFromStakingExpr THEN 1 ELSE 0 END), 0) AS incoming_non_staking_count,
+                COALESCE(SUM(CASE WHEN t.from_address = :addr AND NOT $isToStakingExpr THEN 1 ELSE 0 END), 0) AS outgoing_non_staking_count,
+                COALESCE(SUM(CASE WHEN t.from_address = :addr AND $isToStakingExpr THEN 1 ELSE 0 END), 0) AS deposited_to_staking_count,
+                COALESCE(SUM(CASE WHEN t.to_address = :addr AND $isFromStakingExpr THEN 1 ELSE 0 END), 0) AS incoming_from_staking_count
+            FROM transactions t
+            WHERE (t.from_address = :addr OR t.to_address = :addr)
+            $statusSql
+            $timeSql
+        ";
+
+        $stmt = $pdo->prepare($sql);
+        foreach ($bind as $k => $v) {
+            $stmt->bindValue($k, $v);
+        }
+        $stmt->execute();
+        $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+        // Cast decimals to string-safe numbers
+        $data = [
+            'address' => $address,
+            'filters' => [
+                'status' => $status,
+                'from_ts' => $fromTs,
+                'to_ts' => $toTs
+            ],
+            'totals' => [
+                'incoming_non_staking' => (float)($row['incoming_non_staking_amount'] ?? 0),
+                'outgoing_non_staking' => (float)($row['outgoing_non_staking_amount'] ?? 0),
+                'deposited_to_staking' => (float)($row['deposited_to_staking_amount'] ?? 0),
+                // Extra (useful for sanity / reconciliation)
+                'incoming_from_staking' => (float)($row['incoming_from_staking_amount'] ?? 0)
+            ],
+            'fees' => [
+                'paid_total' => (float)($row['fees_paid_total'] ?? 0),
+                'paid_to_staking' => (float)($row['fees_paid_to_staking'] ?? 0),
+                'paid_non_staking' => (float)($row['fees_paid_non_staking'] ?? 0)
+            ],
+            'counts' => [
+                'incoming_non_staking' => (int)($row['incoming_non_staking_count'] ?? 0),
+                'outgoing_non_staking' => (int)($row['outgoing_non_staking_count'] ?? 0),
+                'deposited_to_staking' => (int)($row['deposited_to_staking_count'] ?? 0),
+                'incoming_from_staking' => (int)($row['incoming_from_staking_count'] ?? 0)
+            ],
+            'staking_targets_used' => $stakingTargets
+        ];
+
+        return ['success' => true, 'data' => $data];
+    } catch (Exception $e) {
+        return ['success' => false, 'error' => $e->getMessage()];
     }
 }
 

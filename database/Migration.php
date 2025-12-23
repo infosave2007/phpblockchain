@@ -190,7 +190,7 @@ class Migration
                 nonce BIGINT NOT NULL DEFAULT 0,
                 data TEXT,
                 signature TEXT NOT NULL,
-                status ENUM('pending', 'confirmed', 'failed') NOT NULL DEFAULT 'pending',
+                status ENUM('pending', 'confirmed', 'failed', 'invalid') NOT NULL DEFAULT 'pending',
                 timestamp BIGINT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_hash (hash),

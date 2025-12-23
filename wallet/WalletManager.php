@@ -292,7 +292,7 @@ class WalletManager
     }
     
     /**
-     * Get wallet balance
+     * Get wallet balance (total = available + staked)
      */
     public function getBalance(string $address): float
     {
@@ -316,6 +316,8 @@ class WalletManager
             writeWalletLog("WalletManager::getAvailableBalance - Using existing transaction", 'DEBUG');
         }
 
+        // IMPORTANT: Get ONLY balance field, never subtract staked_balance here!
+        // Staked balance is managed separately via getStakedBalance()
         $stmt = $this->database->prepare("
             SELECT balance FROM wallets WHERE address = ?
         ");
@@ -330,7 +332,28 @@ class WalletManager
             return 0.0;
         }
         
-        return (float)$result['balance'];
+        $balance = (float)$result['balance'];
+        
+        // Safety check: if balance is negative, log critical error
+        if ($balance < 0) {
+            writeWalletLog("CRITICAL: Negative cached balance for $address: $balance. Recalculating from blockchain.", 'ERROR');
+
+            $recalculated = $this->calculateBalanceFromBlockchain($address);
+            writeWalletLog("WalletManager::getAvailableBalance - Recalculated balance for $address: $recalculated", 'WARNING');
+
+            // Best-effort self-heal: repair cached wallets.balance so API calls using raw SQL don't break.
+            try {
+                $upd = $this->database->prepare("UPDATE wallets SET balance = ?, updated_at = NOW() WHERE address = ?");
+                $upd->execute([$recalculated, $address]);
+                writeWalletLog("WalletManager::getAvailableBalance - Repaired cached balance for $address to $recalculated", 'INFO');
+            } catch (Exception $e) {
+                writeWalletLog("WalletManager::getAvailableBalance - Failed to repair cached balance for $address: " . $e->getMessage(), 'ERROR');
+            }
+
+            return (float)$recalculated;
+        }
+        
+        return $balance;
     }
     
     /**

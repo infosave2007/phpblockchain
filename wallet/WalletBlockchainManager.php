@@ -841,10 +841,14 @@ class WalletBlockchainManager
                     block_height = VALUES(block_height),
                     data = VALUES(data),
                     signature = VALUES(signature),
-                    status = CASE 
-                        WHEN VALUES(block_height) IS NOT NULL AND VALUES(block_height) >= 0 THEN 'confirmed'
-                        ELSE 'pending'
-                    END
+                    status = IF(
+                        status = 'invalid',
+                        status,
+                        CASE 
+                            WHEN VALUES(block_height) IS NOT NULL AND VALUES(block_height) >= 0 THEN 'confirmed'
+                            ELSE 'pending'
+                        END
+                    )
                 ");
                 
                 $stmt->execute([

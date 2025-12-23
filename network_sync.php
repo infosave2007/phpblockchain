@@ -2557,6 +2557,18 @@ class NetworkSyncManager {
             if (!$sourceNode) {
                 $sourceNode = $this->selectBestNode();
             }
+
+            // Preserve locally quarantined transactions (status='invalid') across sync.
+            // Exact replication will otherwise erase local marks when we wipe the table.
+            $invalidHashes = [];
+            try {
+                $stmt = $this->pdo->prepare("SELECT hash FROM transactions WHERE status = 'invalid'");
+                $stmt->execute();
+                $invalidHashes = $stmt->fetchAll(PDO::FETCH_COLUMN, 0) ?: [];
+            } catch (\Throwable $e) {
+                $this->log("Warning: could not snapshot invalid tx hashes: " . $e->getMessage());
+                $invalidHashes = [];
+            }
             
             // First, clear existing transactions to ensure clean sync
             $stmt = $this->pdo->prepare("DELETE FROM transactions");
@@ -2596,6 +2608,14 @@ class NetworkSyncManager {
                 }
                 
                 $this->log("Synced $totalSynced exact transactions from source");
+
+                if (!empty($invalidHashes)) {
+                    $placeholders = implode(',', array_fill(0, count($invalidHashes), '?'));
+                    $stmt = $this->pdo->prepare("UPDATE transactions SET status = 'invalid' WHERE hash IN ($placeholders)");
+                    $stmt->execute($invalidHashes);
+                    $reapplied = $stmt->rowCount();
+                    $this->log("Re-applied local invalid quarantine for $reapplied transactions");
+                }
                 
                 // Update block transaction counts
                 $this->recalculateStats();
@@ -3238,7 +3258,7 @@ class NetworkSyncManager {
                     ON DUPLICATE KEY UPDATE 
                     block_hash = VALUES(block_hash),
                     block_height = VALUES(block_height),
-                    status = 'confirmed'
+                    status = IF(status = 'invalid', status, 'confirmed')
                 ");
                 
                 $stmt->execute([

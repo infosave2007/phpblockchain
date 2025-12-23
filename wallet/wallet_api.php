@@ -4778,6 +4778,20 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
                 throw new Exception("Sender wallet not found in database: $fromAddress");
             }
 
+            // If cached balance is negative (corrupted cache), repair it from blockchain ledger before rejecting.
+            if ((float)$currentBalance < 0) {
+                try {
+                    $recalculated = $walletManager->calculateBalanceFromBlockchain($fromAddress);
+                    writeLog("Negative cached sender balance detected for $fromAddress ($currentBalance). Recalculated from blockchain: $recalculated", 'WARNING');
+                    $upd = $pdo->prepare("UPDATE wallets SET balance = ?, updated_at = NOW() WHERE address = ?");
+                    $upd->execute([$recalculated, $fromAddress]);
+                    $currentBalance = $recalculated;
+                } catch (Throwable $e2) {
+                    writeLog("Failed to repair negative cached sender balance for $fromAddress: " . $e2->getMessage(), 'ERROR');
+                    // Continue with existing $currentBalance to avoid masking other issues.
+                }
+            }
+
             $totalDeduction = $amount + $transferTx['fee'];
             if ($currentBalance < $totalDeduction) {
                 throw new Exception("Insufficient balance. Current: $currentBalance, Required: $totalDeduction");
@@ -6171,6 +6185,17 @@ function handleRpcRequest(PDO $pdo, $walletManager, $networkConfig, string $meth
                     $row = $stmt->fetch(PDO::FETCH_ASSOC);
                     if ($row && isset($row['balance'])) {
                         $balDec = (float)$row['balance'];
+
+                        // Self-heal negative cached balance (corrupted cache)
+                        if ($balDec < 0) {
+                            try {
+                                $balDec = $walletManager->calculateBalanceFromBlockchain($address);
+                                $upd = $pdo->prepare("UPDATE wallets SET balance = ?, updated_at = NOW() WHERE address = ?");
+                                $upd->execute([$balDec, $address]);
+                            } catch (\Throwable $e2) {
+                                // ignore and return 0 below if conversion fails
+                            }
+                        }
                     } else {
                         // 2) Auto-create wallet for MetaMask/external addresses  
                         if (!$walletManager->walletExists($address)) {
@@ -7186,7 +7211,8 @@ function getTransactionReceipt($walletManager, string $hash): ?array
                             $started = true;
                         }
                         try {
-                            $ins = $pdo->prepare("INSERT INTO transactions (hash, from_address, to_address, amount, fee, nonce, gas_limit, gas_price, data, signature, timestamp, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed') ON DUPLICATE KEY UPDATE status='confirmed'");
+                            // Do not overwrite locally quarantined transactions (status='invalid')
+                            $ins = $pdo->prepare("INSERT INTO transactions (hash, from_address, to_address, amount, fee, nonce, gas_limit, gas_price, data, signature, timestamp, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed') ON DUPLICATE KEY UPDATE status = IF(status = 'invalid', status, 'confirmed')");
                             $ins->execute([$hash, $from, $to, $amount, (float)($mp['fee'] ?? 0), (int)($mp['nonce'] ?? 0), (int)($mp['gas_limit'] ?? 21000), (int)($mp['gas_price'] ?? 0), (string)($mp['data'] ?? ''), (string)($mp['signature'] ?? ''), (int)($mp['timestamp'] ?? time())]);
                             // Remove from mempool by tx_hash (handle 0x and non-0x)
                             $dh = strtolower(trim((string)$hash));

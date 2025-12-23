@@ -140,3 +140,8 @@ check_staking_security.php
 .gitignore
 fix_staking_duplicates.php
 scripts/run_staking_security_fix.php
+tools/fix_phantom_staking_withdrawals.php
+tools/calculate_real_balance.php
+tools/audit_suspicious_balances.php
+storage/tmp/rate/explorer_pub_192.168.65.1.json
+scripts/audit_suspicious_balances.php
