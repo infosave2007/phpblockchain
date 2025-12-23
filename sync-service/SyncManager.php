@@ -772,39 +772,17 @@ class SyncManager {
                 if (empty($wallets)) break;
                 
                 foreach ($wallets as $wallet) {
-                    // Check if wallet already exists
-                    $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM wallets WHERE address = ?");
-                    $stmt->execute([$wallet['address']]);
-                    if ($stmt->fetchColumn() > 0) {
-                        // Update existing wallet
-                        $stmt = $this->pdo->prepare("
-                            UPDATE wallets 
-                            SET balance = ?, staked_balance = ?, nonce = ?, updated_at = NOW()
-                            WHERE address = ?
-                        ");
-                        $stmt->execute([
-                            $wallet['balance'] ?? '0.00000000',
-                            max(0, $wallet['staked_balance'] ?? '0.00000000'),
-                            $wallet['nonce'] ?? 0,
-                            $wallet['address']
-                        ]);
-                        continue;
-                    }
-                    
                     $stmt = $this->pdo->prepare("
-                        INSERT INTO wallets (address, public_key, balance, staked_balance, nonce)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO wallets (address, public_key, nonce)
+                        VALUES (?, ?, ?)
                         ON DUPLICATE KEY UPDATE
-                        balance = VALUES(balance),
-                        staked_balance = VALUES(staked_balance), 
                         nonce = VALUES(nonce),
+                        public_key = VALUES(public_key),
                         updated_at = NOW()
                     ");
                     $stmt->execute([
                         $wallet['address'],
                         $wallet['public_key'] ?? '',
-                        $wallet['balance'] ?? '0.00000000',
-                        max(0, $wallet['staked_balance'] ?? '0.00000000'),
                         $wallet['nonce'] ?? 0
                     ]);
                     

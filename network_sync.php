@@ -80,6 +80,164 @@ class NetworkSyncManager {
         if ($v === '') return $default;
         return in_array($v, ['1','true','yes','on','y','enabled'], true);
     }
+
+    private function normalizeWalletAddress(string $address): string {
+        $a = strtolower(trim($address));
+        // Only standard 0x + 40 hex characters
+        if ($a === '' || strncmp($a, '0x', 2) !== 0 || strlen($a) !== 42) {
+            return '';
+        }
+        if (!preg_match('/^0x[0-9a-f]{40}$/', $a)) {
+            return '';
+        }
+        return $a;
+    }
+
+    /**
+     * Rebuild wallets cache (balance + staked_balance) for a specific set of addresses
+     * based on transactions ledger (confirmed only) and staking table (active only).
+     */
+    private function rebuildWalletCacheForAddresses(array $addresses): array {
+        $t0 = microtime(true);
+
+        $addrSet = [];
+        foreach ($addresses as $a) {
+            $na = $this->normalizeWalletAddress((string)$a);
+            if ($na !== '') {
+                $addrSet[$na] = true;
+            }
+        }
+        $addrs = array_keys($addrSet);
+        if (empty($addrs)) {
+            return ['rows_affected' => 0, 'addresses' => 0, 'duration_ms' => (int)round((microtime(true) - $t0) * 1000)];
+        }
+
+        $hasStaking = false;
+        try {
+            $stmt = $this->pdo->query("SHOW TABLES LIKE 'staking'");
+            $hasStaking = ($stmt && $stmt->rowCount() > 0);
+        } catch (\Throwable $e) {
+            $hasStaking = false;
+        }
+
+        $totalAffected = 0;
+        $chunkSize = 200;
+        for ($i = 0; $i < count($addrs); $i += $chunkSize) {
+            $chunk = array_slice($addrs, $i, $chunkSize);
+            $ph = implode(',', array_fill(0, count($chunk), '?'));
+
+            $stakeJoinSql = '';
+            $stakeSelectSql = '0';
+            $stakeParams = [];
+            if ($hasStaking) {
+                $stakeJoinSql = "\n                LEFT JOIN (\n                    SELECT LOWER(staker) AS addr, COALESCE(SUM(amount),0) AS total_active\n                    FROM staking\n                    WHERE status='active' AND LOWER(staker) IN ($ph)\n                    GROUP BY LOWER(staker)\n                ) s ON s.addr = b.addr";
+                $stakeSelectSql = 'COALESCE(s.total_active, 0)';
+                $stakeParams = $chunk;
+            }
+
+            $sql = "
+                INSERT INTO wallets (address, balance, staked_balance, public_key, nonce, created_at, updated_at)
+                SELECT b.addr, b.balance, $stakeSelectSql, '', 0, NOW(), NOW()
+                FROM (
+                    SELECT addr, GREATEST(SUM(delta), 0) AS balance
+                    FROM (
+                        SELECT LOWER(to_address) AS addr, COALESCE(SUM(amount),0) AS delta
+                        FROM transactions
+                        WHERE status='confirmed' AND LOWER(to_address) IN ($ph)
+                        GROUP BY LOWER(to_address)
+                        UNION ALL
+                        SELECT LOWER(from_address) AS addr, -COALESCE(SUM(amount),0) AS delta
+                        FROM transactions
+                        WHERE status='confirmed' AND LOWER(from_address) IN ($ph)
+                        GROUP BY LOWER(from_address)
+                        UNION ALL
+                        SELECT LOWER(from_address) AS addr, -COALESCE(SUM(fee),0) AS delta
+                        FROM transactions
+                        WHERE status='confirmed' AND LOWER(from_address) IN ($ph)
+                        GROUP BY LOWER(from_address)
+                    ) d
+                    GROUP BY addr
+                ) b$stakeJoinSql
+                ON DUPLICATE KEY UPDATE
+                    balance = VALUES(balance),
+                    staked_balance = " . ($hasStaking ? 'VALUES(staked_balance)' : 'staked_balance') . ",
+                    updated_at = VALUES(updated_at)
+            ";
+
+            $params = array_merge($chunk, $chunk, $chunk, $stakeParams);
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute($params);
+            $totalAffected += (int)$stmt->rowCount();
+        }
+
+        return [
+            'rows_affected' => $totalAffected,
+            'addresses' => count($addrs),
+            'duration_ms' => (int)round((microtime(true) - $t0) * 1000)
+        ];
+    }
+
+    /**
+     * Fast full rebuild of wallets cache for all addresses appearing in transactions.
+     * This is intended for "exact replication" transaction wipes/reimports.
+     */
+    private function rebuildWalletCacheFromAllConfirmedTransactions(): array {
+        $t0 = microtime(true);
+
+        $hasStaking = false;
+        try {
+            $stmt = $this->pdo->query("SHOW TABLES LIKE 'staking'");
+            $hasStaking = ($stmt && $stmt->rowCount() > 0);
+        } catch (\Throwable $e) {
+            $hasStaking = false;
+        }
+
+        $stakeJoinSql = '';
+        $stakeSelectSql = '0';
+        if ($hasStaking) {
+            $stakeJoinSql = "\n            LEFT JOIN (\n                SELECT LOWER(staker) AS addr, COALESCE(SUM(amount),0) AS total_active\n                FROM staking\n                WHERE status='active' AND staker IS NOT NULL AND staker <> ''\n                GROUP BY LOWER(staker)\n            ) s ON s.addr = b.addr";
+            $stakeSelectSql = 'COALESCE(s.total_active, 0)';
+        }
+
+        // Note: intentionally avoids LOWER() in WHERE to keep index usage; we normalize addresses on output.
+        $sql = "
+            INSERT INTO wallets (address, balance, staked_balance, public_key, nonce, created_at, updated_at)
+            SELECT b.addr, b.balance, $stakeSelectSql, '', 0, NOW(), NOW()
+            FROM (
+                SELECT addr, GREATEST(SUM(delta), 0) AS balance
+                FROM (
+                    SELECT LOWER(to_address) AS addr, COALESCE(SUM(amount),0) AS delta
+                    FROM transactions
+                    WHERE status='confirmed' AND to_address IS NOT NULL AND to_address <> ''
+                    GROUP BY LOWER(to_address)
+                    UNION ALL
+                    SELECT LOWER(from_address) AS addr, -COALESCE(SUM(amount),0) AS delta
+                    FROM transactions
+                    WHERE status='confirmed' AND from_address IS NOT NULL AND from_address <> ''
+                    GROUP BY LOWER(from_address)
+                    UNION ALL
+                    SELECT LOWER(from_address) AS addr, -COALESCE(SUM(fee),0) AS delta
+                    FROM transactions
+                    WHERE status='confirmed' AND from_address IS NOT NULL AND from_address <> ''
+                    GROUP BY LOWER(from_address)
+                ) d
+                WHERE addr LIKE '0x%' AND CHAR_LENGTH(addr) = 42
+                GROUP BY addr
+            ) b$stakeJoinSql
+            ON DUPLICATE KEY UPDATE
+                balance = VALUES(balance),
+                staked_balance = " . ($hasStaking ? 'VALUES(staked_balance)' : 'staked_balance') . ",
+                updated_at = VALUES(updated_at)
+        ";
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute();
+
+        return [
+            'rows_affected' => (int)$stmt->rowCount(),
+            'duration_ms' => (int)round((microtime(true) - $t0) * 1000)
+        ];
+    }
     
     private function initializeDatabase() {
         try {
@@ -1145,6 +1303,7 @@ class NetworkSyncManager {
             (hash, from_address, to_address, amount, fee, timestamp, block_hash, block_height, status, nonce, gas_limit, gas_used, gas_price, data, signature)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ");
+        $touchedAddresses = [];
 
         while (true) {
             if ($maxPerRun > 0 && $totalSynced >= $maxPerRun) {
@@ -1254,6 +1413,11 @@ class NetworkSyncManager {
 
                 if ($ok && $stmt->rowCount() > 0) {
                     $newTransactions++;
+
+                    $nf = $this->normalizeWalletAddress($fromAddr);
+                    if ($nf !== '') { $touchedAddresses[$nf] = true; }
+                    $nt = $this->normalizeWalletAddress($toAddr);
+                    if ($nt !== '') { $touchedAddresses[$nt] = true; }
                 } else {
                     // If there is a small reported gap, sample a few failures to understand why inserts don't happen.
                     if ($gap !== null && $gap > 0 && $gap <= 2000) {
@@ -1306,6 +1470,16 @@ class NetworkSyncManager {
             if ($hasMore === false) {
                 break;
             }
+        }
+        // Keep wallets cache consistent with newly imported confirmed transactions.
+        // This avoids recurring "suspicious" rows caused by tx replication updating the ledger but not wallets.
+        try {
+            if (!empty($touchedAddresses)) {
+                $rebuilt = $this->rebuildWalletCacheForAddresses(array_keys($touchedAddresses));
+                $this->log("Transaction sync: rebuilt wallets cache for {$rebuilt['addresses']} addresses (rows affected={$rebuilt['rows_affected']}, {$rebuilt['duration_ms']}ms)");
+            }
+        } catch (\Throwable $e) {
+            $this->log("Transaction sync: wallet cache rebuild failed: " . $e->getMessage());
         }
 
         if ($failedInserts > 0 && $totalSynced === 0 && $gap !== null && $gap > 0) {
@@ -1589,19 +1763,16 @@ class NetworkSyncManager {
                 
                 if ($balance > 0 || $stakedBalance > 0 || $nonce > 0) {
                     $stmt = $this->pdo->prepare("
-                        INSERT INTO wallets (address, public_key, balance, staked_balance, nonce)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO wallets (address, public_key, nonce)
+                        VALUES (?, ?, ?)
                         ON DUPLICATE KEY UPDATE
-                            balance = VALUES(balance),
-                            staked_balance = VALUES(staked_balance),
                             nonce = VALUES(nonce),
+                            public_key = VALUES(public_key),
                             updated_at = CURRENT_TIMESTAMP
                     ");
                     $result = $stmt->execute([
                         $wallet['address'],
                         $wallet['public_key'] ?? '',
-                        $balance,
-                        $stakedBalance,
                         $nonce
                     ]);
                     
@@ -2616,6 +2787,16 @@ class NetworkSyncManager {
                     $reapplied = $stmt->rowCount();
                     $this->log("Re-applied local invalid quarantine for $reapplied transactions");
                 }
+
+                // IMPORTANT: exact replication wipes/reimports the ledger; refresh wallets cache to match.
+                // Otherwise wallets.balance/staked_balance will drift and repeatedly show up as "suspicious".
+                $walletRebuild = null;
+                try {
+                    $walletRebuild = $this->rebuildWalletCacheFromAllConfirmedTransactions();
+                    $this->log("Exact tx sync: rebuilt wallets cache (rows affected={$walletRebuild['rows_affected']}, {$walletRebuild['duration_ms']}ms)");
+                } catch (\Throwable $e) {
+                    $this->log("Exact tx sync: wallet cache rebuild failed: " . $e->getMessage());
+                }
                 
                 // Update block transaction counts
                 $this->recalculateStats();
@@ -2624,6 +2805,7 @@ class NetworkSyncManager {
                     'status' => 'success',
                     'source_node' => $sourceNode,
                     'transactions_synced' => $totalSynced,
+                    'wallet_cache_rebuild' => $walletRebuild,
                     'completion_time' => date('Y-m-d H:i:s')
                 ];
                 // Reward source node for successful exact transactions sync
