@@ -1,18 +1,5 @@
-console.log('Explorer.js loaded successfully');
-
-// Simple test to ensure JavaScript is working
-document.addEventListener('DOMContentLoaded', function() {
-    console.log('DOM loaded - JavaScript is working!');
-    
-    // Test if we can find elements
-    const testElement = document.getElementById('blockHeight');
-    if (testElement) {
-        console.log('Found blockHeight element:', testElement);
-        testElement.textContent = 'TEST - JavaScript is working!';
-    } else {
-        console.error('blockHeight element not found!');
-    }
-});
+// Note: debug logging should be done via DevTools console.
+// This file intentionally does not write debug text into the UI.
 
 class BlockchainExplorer {
     constructor() {
@@ -299,21 +286,18 @@ class BlockchainExplorer {
         
         try {
             console.log('Searching for:', query);
-            const url = `${this.apiEndpoint}/search?query=${encodeURIComponent(query)}&network=${this.currentNetwork}`;
+            // Use action-based endpoint to avoid dependency on rewrite rules
+            const url = `${this.apiEndpoint}/index.php?action=search&query=${encodeURIComponent(query)}&network=${this.currentNetwork}`;
             console.log('Search URL:', url);
             
             const response = await fetch(url);
             console.log('Response status:', response.status);
-            
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
 
             const data = await response.json();
             console.log('Search response:', data);
-            
-            if (data.error) {
-                this.showError(data.error);
+
+            if (!data || data.success === false || data.error) {
+                this.showError((data && data.error) ? data.error : 'Search failed');
                 return;
             }
             
@@ -805,6 +789,24 @@ class BlockchainExplorer {
         }
         
         resultsContainer.classList.remove('d-none');
+
+        // UX: make it obvious that results were produced
+        try {
+            // Move viewport to results
+            resultsContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+            // Brief highlight
+            const previousOutline = resultsContainer.style.outline;
+            const previousOutlineOffset = resultsContainer.style.outlineOffset;
+            resultsContainer.style.outline = '3px solid rgba(13, 110, 253, 0.35)';
+            resultsContainer.style.outlineOffset = '6px';
+            setTimeout(() => {
+                resultsContainer.style.outline = previousOutline;
+                resultsContainer.style.outlineOffset = previousOutlineOffset;
+            }, 900);
+        } catch (e) {
+            // ignore scroll/highlight failures
+        }
     }
 
     createAddressCard(address) {
@@ -853,7 +855,15 @@ class BlockchainExplorer {
     async viewBlock(hash) {
         this.showLoading(true);
         try {
-            const response = await fetch(`${this.apiEndpoint}/block?id=${hash}&network=${this.currentNetwork}`);
+            const primaryUrl = `${this.apiEndpoint}/index.php?action=get_block&block_id=${encodeURIComponent(hash)}&network=${this.currentNetwork}`;
+            let response = await fetch(primaryUrl);
+
+            // Fallback if /api/explorer/index.php is not available for some reason
+            if (!response.ok) {
+                const fallbackUrl = `${this.apiEndpoint}/block?id=${encodeURIComponent(hash)}&network=${this.currentNetwork}`;
+                response = await fetch(fallbackUrl);
+            }
+
             if (!response.ok) throw new Error('Block not found');
             const data = await response.json();
             const block = data.data || data.block || null;
@@ -871,7 +881,15 @@ class BlockchainExplorer {
         this.showLoading(true);
         
         try {
-            const response = await fetch(`${this.apiEndpoint}/transaction?id=${hash}&network=${this.currentNetwork}`);
+            const primaryUrl = `${this.apiEndpoint}/index.php?action=get_transaction&id=${encodeURIComponent(hash)}&network=${this.currentNetwork}`;
+            let response = await fetch(primaryUrl);
+
+            // Fallback to path-based endpoint (requires server rewrite)
+            if (!response.ok) {
+                const fallbackUrl = `${this.apiEndpoint}/transaction?id=${encodeURIComponent(hash)}&network=${this.currentNetwork}`;
+                response = await fetch(fallbackUrl);
+            }
+
             const data = await response.json();
             
             if (data.success && data.data) {
@@ -1118,7 +1136,15 @@ class BlockchainExplorer {
     // Show transaction details in modal
     async viewTransaction(txHash) {
         try {
-            const response = await fetch(`${this.apiEndpoint}/transaction?id=${txHash}&network=${this.currentNetwork}`);
+            const primaryUrl = `${this.apiEndpoint}/index.php?action=get_transaction&id=${encodeURIComponent(txHash)}&network=${this.currentNetwork}`;
+            let response = await fetch(primaryUrl);
+
+            // Fallback to path-based endpoint (requires server rewrite)
+            if (!response.ok) {
+                const fallbackUrl = `${this.apiEndpoint}/transaction?id=${encodeURIComponent(txHash)}&network=${this.currentNetwork}`;
+                response = await fetch(fallbackUrl);
+            }
+
             if (!response.ok) throw new Error('Transaction not found');
             
             const data = await response.json();
@@ -1135,8 +1161,14 @@ class BlockchainExplorer {
             // Get status from transaction data, fallback to confirmations
             const confirmations = data.confirmations || 0;
             const status = tx.status || (confirmations > 0 ? 'confirmed' : 'pending');
-            const blockIndex = data.block_index !== undefined ? data.block_index : null;
-            const blockHash = data.block_hash || null;
+
+            // API returns block fields inside tx.data (not top-level)
+            const blockIndex =
+                (tx.block_height !== undefined && tx.block_height !== null) ? tx.block_height :
+                (tx.block_index !== undefined && tx.block_index !== null) ? tx.block_index :
+                (data.block_index !== undefined ? data.block_index : null);
+
+            const blockHash = tx.block_hash || data.block_hash || null;
 
             const modalTitle = document.getElementById('modalTitle');
             const modalBody = document.getElementById('modalBody');
@@ -1211,8 +1243,8 @@ class BlockchainExplorer {
                     <div class="col-md-6">
                         <label class="form-label fw-bold">${this.getTranslation('from_address', 'From Address')}:</label>
                         <div class="input-group">
-                            <input type="text" class="form-control font-monospace" value="${tx.from_address}" readonly>
-                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${tx.from_address}')">
+                            <input type="text" class="form-control font-monospace" value="${tx.from_address || tx.from || ''}" readonly>
+                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${tx.from_address || tx.from || ''}')">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
@@ -1220,8 +1252,8 @@ class BlockchainExplorer {
                     <div class="col-md-6">
                         <label class="form-label fw-bold">${this.getTranslation('to_address', 'To Address')}:</label>
                         <div class="input-group">
-                            <input type="text" class="form-control font-monospace" value="${tx.to_address}" readonly>
-                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${tx.to_address}')">
+                            <input type="text" class="form-control font-monospace" value="${tx.to_address || tx.to || ''}" readonly>
+                            <button class="btn btn-outline-secondary" onclick="copyToClipboard('${tx.to_address || tx.to || ''}')">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
@@ -1261,9 +1293,26 @@ class BlockchainExplorer {
     // Show block details in modal
     async viewBlock(blockHash) {
         try {
-            const response = await fetch(`${this.apiEndpoint}/block?id=${blockHash}&network=${this.currentNetwork}`);
+            const encoded = encodeURIComponent(blockHash);
+
+            // Prefer action-based API (works without rewrite rules)
+            const primaryUrl = `${this.apiEndpoint}/index.php?action=block&id=${encoded}&network=${this.currentNetwork}`;
+            let response = await fetch(primaryUrl);
+
+            // Fallback for older nodes/clients
+            if (!response.ok) {
+                const fallbackActionUrl = `${this.apiEndpoint}/index.php?action=get_block&block_id=${encoded}&network=${this.currentNetwork}`;
+                response = await fetch(fallbackActionUrl);
+            }
+
+            // Fallback to path-based endpoint (requires server rewrite)
+            if (!response.ok) {
+                const fallbackPathUrl = `${this.apiEndpoint}/block?id=${encoded}&network=${this.currentNetwork}`;
+                response = await fetch(fallbackPathUrl);
+            }
+
             if (!response.ok) throw new Error('Block not found');
-            
+
             const data = await response.json();
             console.log('Block API response:', data); // Debug log
             if (!data || data.error) {
@@ -1394,14 +1443,20 @@ class BlockchainExplorer {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${block.transactions.map(tx => `
+                                    ${block.transactions.map(tx => {
+                                        const fromAddr = tx.from_address || tx.from || '';
+                                        const toAddr = tx.to_address || tx.to || '';
+                                        return `
                                         <tr>
-                                            <td class="font-monospace">${this.truncateHash(tx.hash, 12)}</td>
-                                            <td class="font-monospace">${this.truncateHash(tx.from_address, 12)}</td>
-                                            <td class="font-monospace">${this.truncateHash(tx.to_address, 12)}</td>
+                                            <td class="font-monospace">
+                                                <a href="#" onclick="explorer.viewTransaction('${tx.hash}'); return false;">${this.truncateHash(tx.hash, 12)}</a>
+                                            </td>
+                                            <td class="font-monospace">${this.truncateHash(fromAddr, 12)}</td>
+                                            <td class="font-monospace">${this.truncateHash(toAddr, 12)}</td>
                                             <td>${this.formatAmount(parseFloat(tx.amount || 0))}</td>
                                         </tr>
-                                    `).join('')}
+                                        `;
+                                    }).join('')}
                                 </tbody>
                             </table>
                         </div>

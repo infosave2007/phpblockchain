@@ -222,7 +222,7 @@ function getLanguageOptions($currentLang) {
     <nav class="navbar navbar-expand-lg navbar-dark navbar-custom fixed-top">
         <div class="container">
             <a class="navbar-brand d-flex align-items-center" href="/explorer/">
-                <img src="/assets/network-icon.svg" alt="Logo" style="height:28px" class="me-2"> <?php echo htmlspecialchars($t['title']); ?>
+                <img src="/assets/network-icon.svg" onerror="this.onerror=null; this.src='/public/assets/network-icon.svg';" alt="Logo" style="height:28px" class="me-2"> <?php echo htmlspecialchars($t['title']); ?>
             </a>
             <div class="navbar-nav ms-auto d-flex align-items-center">
                 <div class="language-selector me-3">

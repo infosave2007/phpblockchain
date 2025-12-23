@@ -135,6 +135,24 @@ try {
                 }
                 echo json_encode(getBlockById($pdo, $network, $blockId));
                 exit;
+
+            // Compatibility aliases (some clients call index.php?action=block/transaction)
+            case 'block':
+                $blockId = $params['id'] ?? ($params['block_id'] ?? '');
+                if ($blockId === '') {
+                    throw new Exception('Block ID required');
+                }
+                echo json_encode(getBlock($pdo, $network, $blockId));
+                exit;
+
+            case 'get_transaction':
+            case 'transaction':
+                $txId = $params['id'] ?? ($params['tx_id'] ?? ($params['hash'] ?? ''));
+                if ($txId === '') {
+                    throw new Exception('Transaction ID required');
+                }
+                echo json_encode(getTransaction($pdo, $network, $txId));
+                exit;
                 
             case 'get_network_stats':
                 echo json_encode(getNetworkStats($pdo, $network));
@@ -207,6 +225,21 @@ try {
                 
             case 'get_nodes_list':
                 echo json_encode(getNodesListAPI($pdo, $network));
+                exit;
+
+            case 'search':
+                $query = $params['query'] ?? $params['q'] ?? '';
+                if (empty($query)) {
+                    throw new Exception('Search query required');
+                }
+
+                try {
+                    $result = search($pdo, $network, $query);
+                    echo json_encode(['success' => true] + $result);
+                } catch (Exception $e) {
+                    // Keep 200 for frontend UX (avoid fetch() hard-fail on non-2xx)
+                    echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+                }
                 exit;
                 
             case 'get_validators_list':
@@ -318,10 +351,15 @@ try {
             }
             
             error_log("Search request: query='$query', network='$network'");
-            $result = search($pdo, $network, $query);
-            error_log("Search result: " . json_encode($result));
-            
-            echo json_encode($result);
+            try {
+                $result = search($pdo, $network, $query);
+                error_log("Search result: " . json_encode($result));
+                echo json_encode(['success' => true] + $result);
+            } catch (Exception $e) {
+                error_log("Search failed: " . $e->getMessage());
+                // Keep 200 for frontend UX
+                echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+            }
             break;
             
         case 'nodes':
@@ -1551,15 +1589,19 @@ function getAddressInfo(PDO $pdo, string $network, string $address): array {
             SELECT 
                 SUM(CASE WHEN to_address = ? AND status = 'confirmed' THEN amount ELSE 0 END) as received,
                 SUM(CASE WHEN from_address = ? AND status = 'confirmed' THEN amount + fee ELSE 0 END) as sent,
-                COUNT(*) as tx_count
+                COUNT(*) as tx_count,
+                SUM(CASE WHEN from_address = ? AND status = 'confirmed' THEN 1 ELSE 0 END) as sent_count,
+                SUM(CASE WHEN to_address = ? AND status = 'confirmed' THEN 1 ELSE 0 END) as received_count
             FROM transactions 
             WHERE (from_address = ? OR to_address = ?) AND status = 'confirmed'
         ");
-        $stmt->execute([$address, $address, $address, $address]);
+        $stmt->execute([$address, $address, $address, $address, $address, $address]);
         $stats = $stmt->fetch(PDO::FETCH_ASSOC);
         
         $balance = ($stats['received'] ?? 0) - ($stats['sent'] ?? 0);
         $txCount = $stats['tx_count'] ?? 0;
+        $sentCount = (int)($stats['sent_count'] ?? 0);
+        $receivedCount = (int)($stats['received_count'] ?? 0);
         
         // Get recent transactions for this address
         $stmt = $pdo->prepare("
@@ -1577,8 +1619,8 @@ function getAddressInfo(PDO $pdo, string $network, string $address): array {
                 'address' => $address,
                 'balance' => $balance,
                 'transaction_count' => $txCount,
-                'sent_count' => count(array_filter($transactions, fn($tx) => $tx['from_address'] === $address)),
-                'received_count' => count(array_filter($transactions, fn($tx) => $tx['to_address'] === $address)),
+                'sent_count' => $sentCount,
+                'received_count' => $receivedCount,
                 'transactions' => $transactions
             ]
         ];

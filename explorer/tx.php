@@ -23,6 +23,9 @@ if (count($pathParts) >= 3 && $pathParts[1] === 'tx') {
     $hash = $pathParts[2];
 } elseif (isset($_GET['hash'])) {
     $hash = $_GET['hash'];
+} elseif (isset($_GET['tx'])) {
+    // Compatibility with explorer/.htaccess rewrite rule (tx.php?tx=...)
+    $hash = $_GET['tx'];
 }
 
 if (!$hash) {
