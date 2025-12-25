@@ -2549,6 +2549,21 @@ require_once $baseDir . '/core/Transaction/MempoolManager.php';
             }
             $result = getWalletInfo($walletManager, $address);
             break;
+        
+        case 'recover_public_keys':
+            // Recover public key from wallet creation transaction
+            $address = $input['address'] ?? '';
+            if (!$address) {
+                throw new Exception('Address is required');
+            }
+            
+            $publicKey = recoverPublicKeyFromCreationTx($walletManager, $address);
+            $result = [
+                'address' => $address,
+                'recovered' => $publicKey !== null,
+                'public_key' => $publicKey
+            ];
+            break;
             
         case 'stake_tokens':
             $address = $input['address'] ?? '';
@@ -4626,6 +4641,78 @@ function activateRestoredWallet($walletManager, $blockchainManager, string $addr
 }
 
 /**
+ * Try to recover public key from wallet creation transaction
+ */
+function recoverPublicKeyFromCreationTx($walletManager, string $address): ?string {
+    try {
+        writeLog("Attempting to recover public key from creation transaction for: $address", 'INFO');
+        
+        $pdo = $walletManager->getDatabase();
+        
+        // Find wallet creation transaction for this address
+        $stmt = $pdo->prepare("
+            SELECT data FROM transactions 
+            WHERE to_address = ? 
+            AND data LIKE '%create_wallet%'
+            AND status = 'confirmed'
+            ORDER BY timestamp ASC
+            LIMIT 1
+        ");
+        $stmt->execute([strtolower($address)]);
+        $tx = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$tx || empty($tx['data'])) {
+            writeLog("No creation transaction found for address: $address", 'WARNING');
+            return null;
+        }
+        
+        // Parse JSON data
+        $data = json_decode($tx['data'], true);
+        if (!$data || !isset($data['public_key'])) {
+            writeLog("No public_key in creation transaction data for: $address", 'WARNING');
+            return null;
+        }
+        
+        $publicKey = $data['public_key'];
+        writeLog("Found public key in creation transaction: $publicKey", 'INFO');
+        
+        // Verify the public key corresponds to this address
+        try {
+            $kp = \Blockchain\Core\Cryptography\KeyPair::fromPublicKey($publicKey);
+            $derivedAddress = strtolower($kp->getAddress());
+            
+            if ($derivedAddress === strtolower($address)) {
+                writeLog("Public key verified for $address", 'INFO');
+                
+                // Update wallet with recovered public key
+                $updateStmt = $pdo->prepare("
+                    UPDATE wallets 
+                    SET public_key = ?, updated_at = NOW() 
+                    WHERE address = ? AND (public_key = 'placeholder_public_key' OR public_key = '' OR public_key IS NULL)
+                ");
+                $updateStmt->execute([$publicKey, strtolower($address)]);
+                
+                if ($updateStmt->rowCount() > 0) {
+                    writeLog("Updated wallet with recovered public key for $address", 'INFO');
+                }
+                
+                return $publicKey;
+            } else {
+                writeLog("Public key verification failed: derived address $derivedAddress != $address", 'WARNING');
+            }
+        } catch (Exception $e) {
+            writeLog("Public key verification error: " . $e->getMessage(), 'WARNING');
+        }
+        
+        return null;
+        
+    } catch (Exception $e) {
+        writeLog("Error recovering public key from creation tx for $address: " . $e->getMessage(), 'ERROR');
+        return null;
+    }
+}
+
+/**
  * Transfer tokens between wallets with blockchain recording
  */
 function transferTokens($walletManager, $blockchainManager, string $fromAddress, string $toAddress, float $amount, string $privateKey, string $memo = '') {
@@ -4698,7 +4785,30 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
                 
                 // Check if recipient has a valid public key
                 if (!$recipientWallet || empty($recipientWallet['public_key']) || $recipientWallet['public_key'] === 'placeholder_public_key') {
-                    throw new Exception("Recipient public key not found. Cannot encrypt message for address: $toAddress. All messages must be encrypted.");
+                    // Try to recover public key from wallet creation transaction
+                    writeLog("Attempting to recover public key for recipient: $toAddress", 'INFO');
+                    $recoveredPublicKey = recoverPublicKeyFromCreationTx($walletManager, $toAddress);
+                    
+                    if ($recoveredPublicKey) {
+                        // Reload wallet info with recovered key
+                        $recipientWallet = $walletManager->getWalletByAddress(strtolower($toAddress));
+                        writeLog("Public key recovered successfully from creation transaction", 'INFO');
+                    } else {
+                        // Could not recover - send without encryption
+                        writeLog("Warning: Could not recover public key for $toAddress. Sending memo as plain text.", 'WARNING');
+                        $finalMemo = $memo;
+                        $encryptedData = null;
+                        // Skip encryption and continue
+                        goto skip_encryption;
+                    }
+                }
+                
+                // Check again after recovery attempt
+                if (!$recipientWallet || empty($recipientWallet['public_key']) || $recipientWallet['public_key'] === 'placeholder_public_key') {
+                    writeLog("Warning: Recipient $toAddress still has no public key. Sending memo as plain text.", 'WARNING');
+                    $finalMemo = $memo;
+                    $encryptedData = null;
+                    goto skip_encryption;
                 }
                 
                 // Encrypt message using MessageEncryption with secp256k1 keys
@@ -4707,9 +4817,15 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
                     $recipientWallet['public_key'], 
                     $privateKey
                 );
+                
+                skip_encryption: // Label for goto when encryption is not possible
+                
             } catch (Exception $e) {
                 writeLog("Encryption failed: " . $e->getMessage(), 'ERROR');
-                throw $e; // Re-throw to maintain security
+                // For system transactions (bot, rewards), allow sending without memo
+                writeLog("Continuing transfer without encrypted memo due to error", 'WARNING');
+                $finalMemo = $memo; // Send as plain text
+                $encryptedData = null;
             }
         }
         
