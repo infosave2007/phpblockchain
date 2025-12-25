@@ -4693,27 +4693,20 @@ function transferTokens($walletManager, $blockchainManager, string $fromAddress,
                     throw new Exception('Message is too long. Maximum 1000 characters allowed.');
                 }
                 
-                // Get recipient public key for encryption
-                $recipientWallet = $walletManager->getWalletByAddress($toAddress);
-                writeLog("Looking for recipient wallet: $toAddress", 'INFO');
-                writeLog("Recipient wallet found: " . ($recipientWallet ? 'YES' : 'NO'), 'INFO');
-                writeLog("Recipient wallet data: " . json_encode($recipientWallet), 'DEBUG');
+                // Get recipient public key for encryption (normalize address)
+                $recipientWallet = $walletManager->getWalletByAddress(strtolower($toAddress));
                 
-                if ($recipientWallet && !empty($recipientWallet['public_key'])) {
-                    writeLog("Recipient has public key, proceeding with encryption", 'INFO');
-                    writeLog("Recipient public key: " . $recipientWallet['public_key'], 'DEBUG');
-                    
-                    // Encrypt messages using MessageEncryption with secp256k1 keys
-                    $encryptedData = \Blockchain\Core\Cryptography\MessageEncryption::createSecureMessage(
-                        $memo, 
-                        $recipientWallet['public_key'], 
-                        $privateKey
-                    );
-                    writeLog("Message encrypted and signed for recipient using ECIES", 'INFO');
-                } else {
-                    // Recipient wallet not found or no public key - this is a security issue
+                // Check if recipient has a valid public key
+                if (!$recipientWallet || empty($recipientWallet['public_key']) || $recipientWallet['public_key'] === 'placeholder_public_key') {
                     throw new Exception("Recipient public key not found. Cannot encrypt message for address: $toAddress. All messages must be encrypted.");
                 }
+                
+                // Encrypt message using MessageEncryption with secp256k1 keys
+                $encryptedData = \Blockchain\Core\Cryptography\MessageEncryption::createSecureMessage(
+                    $memo, 
+                    $recipientWallet['public_key'], 
+                    $privateKey
+                );
             } catch (Exception $e) {
                 writeLog("Encryption failed: " . $e->getMessage(), 'ERROR');
                 throw $e; // Re-throw to maintain security
