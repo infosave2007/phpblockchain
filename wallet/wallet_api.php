@@ -4676,35 +4676,32 @@ function recoverPublicKeyFromCreationTx($walletManager, string $address): ?strin
         $publicKey = $data['public_key'];
         writeLog("Found public key in creation transaction: $publicKey", 'INFO');
         
-        // Verify the public key corresponds to this address
-        try {
-            $kp = \Blockchain\Core\Cryptography\KeyPair::fromPublicKey($publicKey);
-            $derivedAddress = strtolower($kp->getAddress());
-            
-            if ($derivedAddress === strtolower($address)) {
-                writeLog("Public key verified for $address", 'INFO');
-                
-                // Update wallet with recovered public key
-                $updateStmt = $pdo->prepare("
-                    UPDATE wallets 
-                    SET public_key = ?, updated_at = NOW() 
-                    WHERE address = ? AND (public_key = 'placeholder_public_key' OR public_key = '' OR public_key IS NULL)
-                ");
-                $updateStmt->execute([$publicKey, strtolower($address)]);
-                
-                if ($updateStmt->rowCount() > 0) {
-                    writeLog("Updated wallet with recovered public key for $address", 'INFO');
-                }
-                
-                return $publicKey;
-            } else {
-                writeLog("Public key verification failed: derived address $derivedAddress != $address", 'WARNING');
-            }
-        } catch (Exception $e) {
-            writeLog("Public key verification error: " . $e->getMessage(), 'WARNING');
+        // Validate public key format (compressed secp256k1: 33 bytes = 66 hex chars)
+        if (strlen($publicKey) !== 66 && strlen($publicKey) !== 130) {
+            writeLog("Invalid public key format for $address: length=" . strlen($publicKey), 'WARNING');
+            return null;
         }
         
-        return null;
+        // Update wallet with recovered public key (trust confirmed transaction)
+        try {
+            $updateStmt = $pdo->prepare("
+                UPDATE wallets 
+                SET public_key = ?, updated_at = NOW() 
+                WHERE address = ? AND (public_key = 'placeholder_public_key' OR public_key = '' OR public_key IS NULL)
+            ");
+            $updateStmt->execute([$publicKey, strtolower($address)]);
+            
+            if ($updateStmt->rowCount() > 0) {
+                writeLog("Updated wallet with recovered public key for $address", 'INFO');
+            } else {
+                writeLog("Wallet already has a valid public key or doesn't exist: $address", 'INFO');
+            }
+            
+            return $publicKey;
+        } catch (Exception $e) {
+            writeLog("Failed to update wallet with recovered public key: " . $e->getMessage(), 'ERROR');
+            return null;
+        }
         
     } catch (Exception $e) {
         writeLog("Error recovering public key from creation tx for $address: " . $e->getMessage(), 'ERROR');

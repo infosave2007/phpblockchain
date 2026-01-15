@@ -15,27 +15,28 @@ require_once __DIR__ . '/StakingRateHelper.php';
 /**
  * Function to write logs to WalletManager log file
  */
-function writeWalletLog($message, $level = 'INFO') {
+function writeWalletLog($message, $level = 'INFO')
+{
     // Check debug mode from global config
     global $config;
     $debugMode = $config['debug_mode'] ?? true;
-    
+
     if (!$debugMode && $level === 'DEBUG') {
         return; // Don't write DEBUG logs if debug mode is disabled
     }
-    
+
     $baseDir = dirname(__DIR__);
     $logDir = $baseDir . '/logs';
-    
+
     // Create logs folder if it does not exist
     if (!is_dir($logDir)) {
         mkdir($logDir, 0755, true);
     }
-    
+
     $logFile = $logDir . '/wallet_api.log';
     $timestamp = date('Y-m-d H:i:s');
     $logMessage = "[{$timestamp}] [WalletManager] [{$level}] {$message}" . PHP_EOL;
-    
+
     file_put_contents($logFile, $logMessage, FILE_APPEND | LOCK_EX);
 }
 
@@ -49,14 +50,14 @@ class WalletManager
     private PDO $database;
     private PDO $pdo; // Alias for backward compatibility with queueBackgroundOperation
     private array $config;
-    
+
     public function __construct(PDO $database, array $config = [])
     {
         $this->database = $database;
         $this->pdo = $database; // Alias for backward compatibility with queueBackgroundOperation
         $this->config = $config;
     }
-    
+
     /**
      * Create a new wallet
      * @param string|null $password Password for wallet encryption (currently unused)
@@ -67,31 +68,31 @@ class WalletManager
         try {
             // Generate proper mnemonic first
             $mnemonic = Mnemonic::generate();
-            
+
             // Create key pair from mnemonic  
             $keyPair = KeyPair::fromMnemonic($mnemonic);
             $address = $keyPair->getAddress();
-            
+
             // Store wallet in database only if requested
             if ($saveToDatabase) {
                 $stmt = $this->database->prepare("
                     INSERT INTO wallets (address, public_key, balance) 
                     VALUES (?, ?, 0)
                 ");
-                
+
                 $stmt->execute([
                     $address,
                     $keyPair->getPublicKey()
                 ]);
             }
-            
+
             return [
                 'address' => $address,
                 'public_key' => $keyPair->getPublicKey(),
                 'private_key' => $keyPair->getPrivateKey(),
                 'mnemonic' => $mnemonic // Use the generated mnemonic, not KeyPair's getMnemonic()
             ];
-            
+
         } catch (Exception $e) {
             throw new Exception("Failed to create wallet: " . $e->getMessage());
         }
@@ -151,12 +152,12 @@ class WalletManager
             // Debug: verify what we received
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Received mnemonic count: " . count($mnemonic), 'DEBUG');
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Mnemonic words: " . implode(' ', $mnemonic), 'DEBUG');
-            
+
             // Validate mnemonic
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Starting mnemonic validation", 'DEBUG');
             $isValid = Mnemonic::validate($mnemonic);
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Mnemonic validation result: " . ($isValid ? 'true' : 'false'), 'DEBUG');
-            
+
             if (!$isValid) {
                 writeWalletLog("WalletManager::restoreWalletFromMnemonic - Invalid mnemonic phrase", 'ERROR');
                 throw new Exception('Invalid mnemonic phrase');
@@ -171,20 +172,20 @@ class WalletManager
                 writeWalletLog("WalletManager::restoreWalletFromMnemonic - KeyPair generation failed: " . $e->getMessage(), 'ERROR');
                 throw new Exception('Failed to generate keys from mnemonic: ' . $e->getMessage());
             }
-            
+
             $address = $keyPair->getAddress();
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Generated address: " . $address, 'DEBUG');
 
             // Check existing wallet in the database
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Checking for existing wallet in database", 'DEBUG');
             $existingWallet = $this->getWalletInfo($address);
-            
+
             // Get balance from blockchain (if transactions exist)
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Calculating balances from blockchain", 'DEBUG');
             $blockchainBalance = $this->calculateBalanceFromBlockchain($address);
             $blockchainStaked = $this->calculateStakedBalanceFromBlockchain($address);
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Blockchain balance: $blockchainBalance, staked: $blockchainStaked", 'DEBUG');
-            
+
             if ($existingWallet) {
                 writeWalletLog("WalletManager::restoreWalletFromMnemonic - Wallet exists in database, updating from blockchain", 'INFO');
                 // If the stored public key is a placeholder, update it with the real one derived from mnemonic
@@ -204,7 +205,7 @@ class WalletManager
                     $this->updateBalance($address, $blockchainBalance);
                     $this->updateStakedBalance($address, $blockchainStaked);
                 }
-                
+
                 return [
                     'address' => $address,
                     'public_key' => $keyPair->getPublicKey(),
@@ -215,7 +216,7 @@ class WalletManager
                     'restored_from' => 'database'
                 ];
             }
-            
+
             // Wallet not found in DB but may exist in blockchain
             if ($blockchainBalance > 0 || $blockchainStaked > 0) {
                 writeWalletLog("WalletManager::restoreWalletFromMnemonic - Wallet found in blockchain, creating database record", 'INFO');
@@ -224,7 +225,7 @@ class WalletManager
                     INSERT INTO wallets (address, public_key, balance, staked_balance, created_at, updated_at) 
                     VALUES (?, ?, ?, ?, NOW(), NOW())
                 ");
-                
+
                 $stmt->execute([
                     $address,
                     $keyPair->getPublicKey(),
@@ -242,11 +243,11 @@ class WalletManager
                     'restored_from' => 'blockchain'
                 ];
             }
-            
+
             // Wallet not found in DB or blockchain
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Wallet not found in blockchain or database, creating database record", 'INFO');
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - About to insert wallet: " . $address, 'DEBUG');
-            
+
             // Save wallet to the database even if not found in blockchain
             // This allows it to be used to receive funds
             $stmt = $this->database->prepare("
@@ -256,20 +257,20 @@ class WalletManager
                     public_key = VALUES(public_key),
                     updated_at = NOW()
             ");
-            
+
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - SQL prepared, executing insert", 'DEBUG');
-            
+
             $executeResult = $stmt->execute([
                 $address,
                 $keyPair->getPublicKey(),
                 0,
                 0
             ]);
-            
+
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Execute result: " . json_encode($executeResult), 'DEBUG');
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Affected rows: " . $stmt->rowCount(), 'DEBUG');
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Wallet record created in database", 'INFO');
-            
+
             // Return wallet parameters with DB record
             // IMPORTANT: flag that blockchain registration is required
             return [
@@ -283,14 +284,14 @@ class WalletManager
                 'note' => 'Wallet restored from mnemonic and saved to database. Will be registered in blockchain.',
                 'needs_blockchain_registration' => true
             ];
-            
+
         } catch (Exception $e) {
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Exception: " . $e->getMessage(), 'ERROR');
             writeWalletLog("WalletManager::restoreWalletFromMnemonic - Stack trace: " . $e->getTraceAsString(), 'DEBUG');
             throw new Exception('Failed to restore wallet from mnemonic: ' . $e->getMessage());
         }
     }
-    
+
     /**
      * Get wallet balance (total = available + staked)
      */
@@ -298,10 +299,10 @@ class WalletManager
     {
         $availableBalance = $this->getAvailableBalance($address);
         $stakedBalance = $this->getStakedBalance($address);
-        
+
         return $availableBalance + $stakedBalance;
     }
-    
+
     /**
      * Get available balance (excluding staked)
      */
@@ -321,19 +322,19 @@ class WalletManager
         $stmt = $this->database->prepare("
             SELECT balance FROM wallets WHERE address = ?
         ");
-        
+
         $stmt->execute([$address]);
         $result = $stmt->fetch();
-        
+
         if (!$result) {
             // Auto-create wallet for MetaMask/external addresses with zero balance
             writeWalletLog("WalletManager::getAvailableBalance - Auto-creating wallet for address $address", 'DEBUG');
             $this->autoCreateWallet($address);
             return 0.0;
         }
-        
-        $balance = (float)$result['balance'];
-        
+
+        $balance = (float) $result['balance'];
+
         // Safety check: if balance is negative, log critical error
         if ($balance < 0) {
             writeWalletLog("CRITICAL: Negative cached balance for $address: $balance. Recalculating from blockchain.", 'ERROR');
@@ -350,31 +351,42 @@ class WalletManager
                 writeWalletLog("WalletManager::getAvailableBalance - Failed to repair cached balance for $address: " . $e->getMessage(), 'ERROR');
             }
 
-            return (float)$recalculated;
+            return (float) $recalculated;
         }
-        
+
         return $balance;
     }
-    
+
     /**
      * Get staked balance - calculated based on blockchain transactions
      */
     public function getStakedBalance(string $address): float
     {
-        // Calculate staked balance from blockchain transactions (most reliable)
-        $blockchainStaked = $this->calculateStakedBalanceFromBlockchain($address);
-        
-        // Get staking records from staking table
+        // 1. Check staking table first (Primary Source of Truth)
         $stmt = $this->database->prepare("
-            SELECT COALESCE(SUM(amount), 0) as total_staked 
+            SELECT 
+                COUNT(*) as has_history,
+                COALESCE(SUM(CASE WHEN status = 'active' THEN amount ELSE 0 END), 0) as active_staked
             FROM staking 
-            WHERE staker = ? AND status = 'active'
+            WHERE staker = ?
         ");
         $stmt->execute([$address]);
-        $result = $stmt->fetch();
-        $tableStaked = (float)$result['total_staked'];
-        
-        // Get legacy staked balance from wallets table
+        $stakingData = $stmt->fetch();
+
+        // If the user has any history in the staking table, trust its calculation (even if 0)
+        if ($stakingData && $stakingData['has_history'] > 0) {
+            return (float) $stakingData['active_staked'];
+        }
+
+        // 2. Fallback to blockchain calculation (Secondary Source)
+        // Only use if no staking table history exists
+        $blockchainStaked = $this->calculateStakedBalanceFromBlockchain($address);
+
+        if ($blockchainStaked > 0) {
+            return $blockchainStaked;
+        }
+
+        // 3. Legacy field fallback (Deprecated)
         $stmt = $this->database->prepare("
             SELECT COALESCE(staked_balance, 0) as legacy_staked
             FROM wallets 
@@ -382,18 +394,10 @@ class WalletManager
         ");
         $stmt->execute([$address]);
         $result = $stmt->fetch();
-        $legacyStaked = $result ? (float)$result['legacy_staked'] : 0.0;
-        
-        // Priority: blockchain transactions > staking table > legacy field
-        if ($blockchainStaked > 0) {
-            return $blockchainStaked;
-        } elseif ($tableStaked > 0) {
-            return $tableStaked;
-        } else {
-            return $legacyStaked;
-        }
+
+        return $result ? (float) $result['legacy_staked'] : 0.0;
     }
-    
+
     /**
      * Check if wallet exists in database
      */
@@ -443,18 +447,18 @@ class WalletManager
             if (!preg_match('/^0x[a-f0-9]{40}$/', $address)) {
                 return false;
             }
-            
+
             // Use a placeholder public key for externally controlled addresses where we don't know the key yet
             $placeholderPubKey = 'placeholder_public_key';
-            
+
             writeWalletLog("WalletManager::autoCreateWallet - Starting wallet creation for $address", 'DEBUG');
-            
+
             // Check if we're in a transaction
             $inTransaction = $this->database->inTransaction();
             if ($inTransaction) {
                 writeWalletLog("WalletManager::autoCreateWallet - Using existing transaction", 'DEBUG');
             }
-            
+
             // First try to UPDATE existing record with placeholder public_key
             $upd = $this->database->prepare("
                 UPDATE wallets 
@@ -466,7 +470,7 @@ class WalletManager
                 WHERE address = ?
             ");
             $upd->execute([$placeholderPubKey, $address]);
-            
+
             if ($upd->rowCount() === 0) {
                 // No existing record found, INSERT new one with ON DUPLICATE KEY UPDATE for safety
                 $ins = $this->database->prepare("
@@ -487,14 +491,14 @@ class WalletManager
                 writeWalletLog("WalletManager::autoCreateWallet - UPDATE for $address affected_rows=" . $upd->rowCount(), 'DEBUG');
                 return true;
             }
-            
+
         } catch (\Throwable $e) {
             writeWalletLog("WalletManager::autoCreateWallet - Failed for {$address}: " . $e->getMessage(), 'ERROR');
             writeWalletLog("WalletManager::autoCreateWallet - Stack trace: " . $e->getTraceAsString(), 'DEBUG');
             return false;
         }
     }
-    
+
     /**
      * Update wallet balance
      */
@@ -505,10 +509,10 @@ class WalletManager
             SET balance = ?, updated_at = NOW() 
             WHERE address = ?
         ");
-        
+
         return $stmt->execute([$balance, $address]);
     }
-    
+
     /**
      * Update staked balance
      */
@@ -524,10 +528,10 @@ class WalletManager
             SET staked_balance = ?, updated_at = NOW() 
             WHERE address = ?
         ");
-        
+
         return $stmt->execute([$stakedBalance, $address]);
     }
-    
+
     /**
      * Create and sign transaction
      */
@@ -541,7 +545,7 @@ class WalletManager
     ): Transaction {
         // Validate balance
         $availableBalance = $this->getAvailableBalance($fromAddress);
-        
+
         if ($fee === null) {
             $fee = \Blockchain\Core\Transaction\FeePolicy::computeFee($this->database, $amount);
         }
@@ -549,10 +553,10 @@ class WalletManager
         if ($availableBalance < ($amount + $fee)) {
             throw new Exception("Insufficient balance");
         }
-        
+
         // Get nonce
         $nonce = $this->getNextNonce($fromAddress);
-        
+
         // Create transaction
         $transaction = new Transaction(
             $fromAddress,
@@ -562,18 +566,18 @@ class WalletManager
             $nonce,
             $data
         );
-        
+
         // Sign transaction if private key provided
         if ($privateKey) {
             $signature = Signature::sign($transaction->getHash(), $privateKey);
             $transaction->setSignature($signature);
         }
-        
+
         return $transaction;
     }
-    
-        /**
-* Get next nonce for address (improved to prevent RBF conflicts)
+
+    /**
+     * Get next nonce for address (improved to prevent RBF conflicts)
      */
     public function getNextNonce(string $address): int
     {
@@ -591,28 +595,28 @@ class WalletManager
             ");
             $stmt->execute([$address]);
             $result = $stmt->fetch();
-            $confirmedNonce = $result ? (int)$result['max_confirmed_nonce'] : -1;
+            $confirmedNonce = $result ? (int) $result['max_confirmed_nonce'] : -1;
 
             // Get current nonce from wallet and lock the row
             $stmt = $this->database->prepare("
                 SELECT nonce FROM wallets WHERE address = ? FOR UPDATE
             ");
-            
+
             $stmt->execute([$address]);
             $result = $stmt->fetch();
-            
+
             if (!$result) {
                 // Auto-create wallet for MetaMask/external addresses
                 writeWalletLog("WalletManager::getNextNonce - Auto-creating wallet for address $address", 'DEBUG');
                 $this->autoCreateWallet($address);
                 $currentNonce = -1;
             } else {
-                $currentNonce = (int)$result['nonce'];
+                $currentNonce = (int) $result['nonce'];
             }
-            
+
             // Use the higher of confirmed transactions or wallet nonce
             $baseNonce = max($confirmedNonce, $currentNonce);
-            
+
             // Get the highest pending nonce from mempool
             $stmt = $this->database->prepare("
                 SELECT COALESCE(MAX(nonce), -1) as max_pending_nonce 
@@ -621,27 +625,27 @@ class WalletManager
             ");
             $stmt->execute([$address]);
             $result = $stmt->fetch();
-            $pendingNonce = $result ? (int)$result['max_pending_nonce'] : -1;
-            
+            $pendingNonce = $result ? (int) $result['max_pending_nonce'] : -1;
+
             // Calculate next nonce
             $nextNonce = max($baseNonce, $pendingNonce) + 1;
-            
+
             // The while loop for conflict resolution is still useful in case of edge cases.
             $stmt = $this->database->prepare("
                 SELECT COUNT(*) FROM transactions 
                 WHERE from_address = ? AND nonce = ? AND status = 'confirmed'
             ");
             $stmt->execute([$address, $nextNonce]);
-            $conflictCount = (int)$stmt->fetchColumn();
-            
+            $conflictCount = (int) $stmt->fetchColumn();
+
             while ($conflictCount > 0) {
                 $nextNonce++;
                 $stmt->execute([$address, $nextNonce]);
-                $conflictCount = (int)$stmt->fetchColumn();
+                $conflictCount = (int) $stmt->fetchColumn();
             }
-            
+
             writeWalletLog("WalletManager::getNextNonce - Address: $address, Confirmed: $confirmedNonce, Wallet: $currentNonce, Pending: $pendingNonce, Next: $nextNonce", 'DEBUG');
-            
+
             $this->database->commit();
 
             return $nextNonce;
@@ -652,7 +656,7 @@ class WalletManager
             throw $e; // re-throw the exception
         }
     }
-    
+
     /**
      * Update nonce after transaction confirmation
      */
@@ -660,7 +664,7 @@ class WalletManager
     {
         // Normalize address
         $address = strtolower($address);
-        
+
         // Get the highest confirmed nonce for this address
         $stmt = $this->database->prepare("
             SELECT COALESCE(MAX(nonce), -1) as max_confirmed_nonce 
@@ -669,22 +673,22 @@ class WalletManager
         ");
         $stmt->execute([$address]);
         $result = $stmt->fetch();
-        $maxConfirmedNonce = $result ? (int)$result['max_confirmed_nonce'] : -1;
-        
+        $maxConfirmedNonce = $result ? (int) $result['max_confirmed_nonce'] : -1;
+
         // Update wallet nonce to the highest confirmed nonce
         $stmt = $this->database->prepare("
             UPDATE wallets 
             SET nonce = ?, updated_at = NOW() 
             WHERE address = ?
         ");
-        
+
         $success = $stmt->execute([$maxConfirmedNonce, $address]);
-        
+
         writeWalletLog("WalletManager::updateNonce - Address: $address, Input nonce: $nonce, Max confirmed: $maxConfirmedNonce, Updated: " . ($success ? 'yes' : 'no'), 'DEBUG');
-        
+
         return $success;
     }
-    
+
     /**
      * Get transaction history
      */
@@ -707,12 +711,12 @@ class WalletManager
             ORDER BY timestamp DESC 
             LIMIT $offset, $limit
         ");
-        
+
         $stmt->execute([$address, $address]);
-        
+
         return $stmt->fetchAll();
     }
-    
+
     /**
      * Get wallet info
      */
@@ -732,12 +736,12 @@ class WalletManager
             FROM wallets 
             WHERE address = ?
         ");
-        
+
         $stmt->execute([$address]);
-        
+
         return $stmt->fetch() ?: null;
     }
-    
+
     /**
      * List all wallets
      */
@@ -753,12 +757,12 @@ class WalletManager
             ORDER BY created_at DESC 
             LIMIT $limit OFFSET $offset
         ");
-        
+
         $stmt->execute();
-        
+
         return $stmt->fetchAll();
     }
-    
+
     /**
      * Import wallet from private key
      */
@@ -767,55 +771,55 @@ class WalletManager
         try {
             // Determine if input is mnemonic phrase or private key
             $words = explode(' ', trim($privateKeyOrMnemonic));
-            
+
             if (count($words) >= 12 && count($words) <= 24) {
                 // It's likely a mnemonic phrase - convert to array format
                 $mnemonic = array_map('trim', $words);
-                
+
                 // Use KeyPair::fromMnemonic directly
                 $keyPair = KeyPair::fromMnemonic($mnemonic);
             } else {
                 // Treat as private key (hex string)
                 $privateKey = $privateKeyOrMnemonic;
-                
+
                 // Clean up private key (remove 0x prefix if present)
                 if (strpos($privateKey, '0x') === 0) {
                     $privateKey = substr($privateKey, 2);
                 }
-                
+
                 $keyPair = KeyPair::fromPrivateKey($privateKey);
             }
-            
+
             $address = $keyPair->getAddress();
-            
+
             // Check if wallet already exists
             $existing = $this->getWalletInfo($address);
-            
+
             if (!$existing) {
                 // Create wallet entry
                 $stmt = $this->database->prepare("
                     INSERT INTO wallets (address, public_key, balance) 
                     VALUES (?, ?, 0)
                 ");
-                
+
                 $stmt->execute([
                     $address,
                     $keyPair->getPublicKey()
                 ]);
             }
-            
+
             return [
                 'address' => $address,
                 'public_key' => $keyPair->getPublicKey(),
                 'private_key' => $keyPair->getPrivateKey(),
                 'imported' => true
             ];
-            
+
         } catch (Exception $e) {
             throw new Exception("Failed to import wallet: " . $e->getMessage());
         }
     }
-    
+
     /**
      * Validate address format
      */
@@ -824,7 +828,7 @@ class WalletManager
         // Blockchain addresses should be 42 characters starting with 0x
         return preg_match('/^0x[a-fA-F0-9]{40}$/', $address) === 1;
     }
-    
+
     /**
      * Get total supply
      */
@@ -834,10 +838,10 @@ class WalletManager
             SELECT SUM(balance + staked_balance) as total 
             FROM wallets
         ");
-        
+
         $result = $stmt->fetch();
-        
-        return $result ? (float)$result['total'] : 0.0;
+
+        return $result ? (float) $result['total'] : 0.0;
     }
 
     /**
@@ -881,7 +885,10 @@ class WalletManager
                 ]);
 
                 // Best-effort nonce update (no explicit transaction to avoid nested conflicts)
-                try { $this->updateNonce($from, $transaction->getNonce()); } catch (\Throwable $e) {}
+                try {
+                    $this->updateNonce($from, $transaction->getNonce());
+                } catch (\Throwable $e) {
+                }
 
                 return $ok;
             }
@@ -928,7 +935,7 @@ class WalletManager
         // Check balance
         $availableBalance = $this->getAvailableBalance($transaction->getFromAddress());
         $totalAmount = $transaction->getAmount() + $transaction->getFee();
-        
+
         if ($availableBalance < $totalAmount) {
             return false;
         }
@@ -954,15 +961,15 @@ class WalletManager
         try {
             $pdo = $this->database;
             $baseDir = dirname(__DIR__);
-            
+
             // Validate period
             if (!in_array($period, [7, 30, 90, 180, 365])) {
                 throw new Exception("Invalid staking period. Must be 7, 30, 90, 180, or 365 days");
             }
-            
+
             // Get wallet balance
             $availableBalance = $this->getAvailableBalance($address);
-            
+
             if ($availableBalance < $amount) {
                 throw new Exception("Insufficient balance for staking");
             }
@@ -972,34 +979,34 @@ class WalletManager
             require_once $baseDir . '/core/Storage/StateStorage.php';
             require_once $baseDir . '/core/SmartContract/VirtualMachine.php';
             require_once $baseDir . '/core/Logging/NullLogger.php';
-            
+
             // Initialize SmartContractManager
             $stateStorage = new \Blockchain\Core\Storage\StateStorage($pdo);
             $vm = new \Blockchain\Core\SmartContract\VirtualMachine(8000000); // Gas limit
             $logger = new \Blockchain\Core\Logging\NullLogger();
             $contractManager = new \Blockchain\Contracts\SmartContractManager($vm, $stateStorage, $logger);
-            
+
             // Load config for contract deployment
             $configFile = $baseDir . '/config/config.php';
             $config = [];
             if (file_exists($configFile)) {
                 $config = require $configFile;
             }
-            
+
             // Do NOT auto-deploy contracts here; staking must use existing contract
             // Any deployment should be performed explicitly via admin/API with proper gating
-            
+
             // Add validator to ValidatorManager (same as genesis installation)
             require_once $baseDir . '/core/Consensus/ValidatorManager.php';
             $validatorManager = new \Blockchain\Core\Consensus\ValidatorManager($pdo, $config);
-            
+
             // Create validator record
             // Get public key from wallet
             $walletInfo = $this->getWalletInfo($address);
             $publicKey = $walletInfo['public_key'] ?? null;
-            
+
             if ($publicKey) {
-                $validatorResult = $validatorManager->addValidator($address, $publicKey, (int)$amount);
+                $validatorResult = $validatorManager->addValidator($address, $publicKey, (int) $amount);
                 if (!$validatorResult) {
                     writeWalletLog("Failed to add validator: " . ($validatorResult['error'] ?? 'Unknown error'), 'WARNING');
                 } else {
@@ -1008,16 +1015,16 @@ class WalletManager
             } else {
                 writeWalletLog("Cannot add validator: public key not found for address " . $address, 'WARNING');
             }
-            
+
             // Execute staking transaction through smart contract
             if (!empty($contractAddresses['staking'])) {
                 $stakingContractAddress = $contractAddresses['staking'];
                 writeWalletLog("Executing staking through contract: " . $stakingContractAddress, 'INFO');
-                
+
                 // Create staking transaction using existing blockchain manager
                 require_once $baseDir . '/wallet/WalletBlockchainManager.php';
                 $blockchainManager = new \Blockchain\Wallet\WalletBlockchainManager($pdo, $config);
-                
+
                 // Create transaction data for staking
                 $transactionData = [
                     'hash' => '0x' . hash('sha256', 'stake_' . $address . '_' . $amount . '_' . time()),
@@ -1040,17 +1047,17 @@ class WalletManager
                     'signature' => '', // Will be signed by ValidatorManager
                     'status' => 'pending'
                 ];
-                
+
                 // Record transaction in blockchain
                 $result = $blockchainManager->recordTransactionInBlockchain($transactionData);
-                
+
                 if ($result['blockchain_recorded']) {
                     writeWalletLog("Staking transaction recorded in blockchain: " . $result['block']['hash'], 'INFO');
                 } else {
                     writeWalletLog("Failed to record staking transaction in blockchain: " . ($result['error'] ?? 'Unknown error'), 'WARNING');
                 }
             }
-            
+
             // Start transaction
             $this->database->beginTransaction();
 
@@ -1065,18 +1072,18 @@ class WalletManager
 
             // Add staking record with contract address and dynamic period
             $contractAddress = !empty($contractAddresses['staking']) ? $contractAddresses['staking'] : null;
-            
+
             // Calculate end block based on current block and period
             $currentBlock = $this->getCurrentBlockHeight();
             $blocksPerDay = 86400 / 10; // Assuming 10-second blocks
-            $periodBlocks = (int)($period * $blocksPerDay);
+            $periodBlocks = (int) ($period * $blocksPerDay);
             $endBlock = $currentBlock + $periodBlocks;
-            
+
             $stmt = $pdo->prepare("
                 INSERT INTO staking (staker, amount, status, start_block, end_block, reward_rate)
                 VALUES (?, ?, 'active', ?, ?, ?)
             ");
-            
+
             // Calculate reward rate based on period
             $rewardRate = $this->getRewardRateForPeriod($period);
             $stmt->execute([$address, $amount, $currentBlock, $endBlock, $rewardRate]);
@@ -1101,7 +1108,7 @@ class WalletManager
     {
         try {
             $stakedBalance = $this->getStakedBalance($address);
-            
+
             if ($stakedBalance < $amount) {
                 throw new Exception("Insufficient staked balance");
             }
@@ -1140,10 +1147,10 @@ class WalletManager
                 ");
                 $stmt->execute([$address, $amount]);
                 $stakeRecord = $stmt->fetch();
-                
+
                 if ($stakeRecord) {
                     $remainingAmount = $stakeRecord['amount'] - $amount;
-                    
+
                     // Update original record to remaining amount
                     $stmt = $this->database->prepare("
                         UPDATE staking SET amount = ? WHERE id = ?
@@ -1203,7 +1210,7 @@ class WalletManager
             return 0.0;
         }
 
-        $stakedBalance = (float)$walletInfo['staked_balance'];
+        $stakedBalance = (float) $walletInfo['staked_balance'];
         if ($stakedBalance <= 0) {
             return 0.0;
         }
@@ -1226,11 +1233,11 @@ class WalletManager
         $currentBlock = $this->getCurrentBlockHeight();
 
         foreach ($stakingRecords as $record) {
-            $startBlock = (int)$record['start_block'];
-            $endBlock = (int)$record['end_block'];
-            $rewardRate = (float)$record['reward_rate'];
-            $amount = (float)$record['amount'];
-            
+            $startBlock = (int) $record['start_block'];
+            $endBlock = (int) $record['end_block'];
+            $rewardRate = (float) $record['reward_rate'];
+            $amount = (float) $record['amount'];
+
             // Calculate blocks elapsed
             $blocksElapsed = min($currentBlock - $startBlock, $endBlock - $startBlock);
             if ($blocksElapsed <= 0) {
@@ -1262,14 +1269,14 @@ class WalletManager
     public function claimRewards(string $address): float
     {
         $rewards = $this->getStakingRewards($address);
-        
+
         if ($rewards > 0) {
             $currentBalance = $this->getAvailableBalance($address);
             $newBalance = $currentBalance + $rewards;
-            
+
             $this->updateBalance($address, $newBalance);
             $this->recordStakingTransaction($address, $rewards, 'reward_claim');
-            
+
             // Reset reward calculation timestamps for active staking records
             $stmt = $this->database->prepare("
                 UPDATE staking
@@ -1278,7 +1285,7 @@ class WalletManager
             ");
             $stmt->execute([$address]);
         }
-        
+
         return $rewards;
     }
 
@@ -1314,11 +1321,11 @@ class WalletManager
 
         return [
             'address' => $address,
-            'balance' => (float)$walletInfo['balance'],
-            'staked_balance' => (float)$walletInfo['staked_balance'],
-            'total_balance' => (float)$walletInfo['balance'] + (float)$walletInfo['staked_balance'],
-            'transaction_count' => (int)$txCount,
-            'last_transaction' => $lastTx ? (int)$lastTx : null,
+            'balance' => (float) $walletInfo['balance'],
+            'staked_balance' => (float) $walletInfo['staked_balance'],
+            'total_balance' => (float) $walletInfo['balance'] + (float) $walletInfo['staked_balance'],
+            'transaction_count' => (int) $txCount,
+            'last_transaction' => $lastTx ? (int) $lastTx : null,
             'staking_rewards' => $this->getStakingRewards($address),
             'created_at' => $walletInfo['created_at'],
             'updated_at' => $walletInfo['updated_at']
@@ -1336,7 +1343,7 @@ class WalletManager
         }
 
         $transactions = $this->getTransactionHistory($address, 1000);
-        
+
         return [
             'wallet' => $walletInfo,
             'transactions' => $transactions,
@@ -1351,21 +1358,21 @@ class WalletManager
     public function backupWallet(string $address, string $password): string
     {
         $walletData = $this->exportWallet($address);
-        
+
         // Encrypt wallet data
         $encrypted = $this->encryptWalletData($walletData, $password);
-        
+
         // Save backup file
         $backupDir = '../storage/backups';
         if (!is_dir($backupDir)) {
             mkdir($backupDir, 0755, true);
         }
-        
+
         $filename = 'wallet_' . substr($address, 0, 8) . '_' . date('Y-m-d_H-i-s') . '.backup';
         $filepath = $backupDir . '/' . $filename;
-        
+
         file_put_contents($filepath, $encrypted);
-        
+
         return $filepath;
     }
 
@@ -1377,14 +1384,14 @@ class WalletManager
         if (!file_exists($backupFile)) {
             throw new Exception("Backup file not found");
         }
-        
+
         $encrypted = file_get_contents($backupFile);
         $walletData = $this->decryptWalletData($encrypted, $password);
-        
+
         if (!$walletData) {
             throw new Exception("Invalid password or corrupted backup");
         }
-        
+
         // Restore wallet data (implementation would depend on specific requirements)
         return $walletData;
     }
@@ -1398,9 +1405,9 @@ class WalletManager
         $salt = random_bytes(16);
         $key = hash_pbkdf2('sha256', $password, $salt, 10000, 32, true);
         $iv = random_bytes(16);
-        
+
         $encrypted = openssl_encrypt($json, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
-        
+
         return base64_encode($salt . $iv . $encrypted);
     }
 
@@ -1414,10 +1421,10 @@ class WalletManager
             $salt = substr($data, 0, 16);
             $iv = substr($data, 16, 16);
             $encrypted = substr($data, 32);
-            
+
             $key = hash_pbkdf2('sha256', $password, $salt, 10000, 32, true);
             $decrypted = openssl_decrypt($encrypted, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
-            
+
             return json_decode($decrypted, true);
         } catch (Exception $e) {
             return null;
@@ -1431,7 +1438,7 @@ class WalletManager
     {
         return $this->database;
     }
-    
+
     /**
      * Get transaction by hash
      */
@@ -1453,18 +1460,18 @@ class WalletManager
             FROM transactions 
             WHERE hash = ?
         ");
-        
+
         $stmt->execute([$hash]);
         $transaction = $stmt->fetch();
-        
+
         if (!$transaction) {
             return null;
         }
-        
+
         // Parse data field to get memo
         $transactionData = json_decode($transaction['data'] ?? '{}', true);
         $transaction['memo'] = $transactionData['memo'] ?? '';
-        
+
         return $transaction;
     }
 
@@ -1475,7 +1482,7 @@ class WalletManager
     {
         try {
             writeWalletLog("WalletManager::calculateBalanceFromBlockchain - Calculating for address: $address", 'DEBUG');
-            
+
             // Get all confirmed transactions for this address
             $stmt = $this->database->prepare("
                 SELECT 
@@ -1485,29 +1492,29 @@ class WalletManager
                 AND status = 'confirmed'
                 ORDER BY timestamp ASC
             ");
-            
+
             $stmt->execute([$address, $address]);
             $transactions = $stmt->fetchAll();
-            
+
             $balance = 0.0;
-            
+
             foreach ($transactions as $tx) {
                 if ($tx['to_address'] === $address) {
                     // Incoming transaction
-                    $balance += (float)$tx['amount'];
+                    $balance += (float) $tx['amount'];
                     writeWalletLog("WalletManager::calculateBalanceFromBlockchain - Incoming: +" . $tx['amount'], 'DEBUG');
                 }
-                
+
                 if ($tx['from_address'] === $address && $tx['from_address'] !== 'genesis' && $tx['from_address'] !== 'genesis_address') {
                     // Outgoing transaction (excluding genesis transactions)
-                    $balance -= (float)$tx['amount'] + (float)$tx['fee'];
+                    $balance -= (float) $tx['amount'] + (float) $tx['fee'];
                     writeWalletLog("WalletManager::calculateBalanceFromBlockchain - Outgoing: -" . ($tx['amount'] + $tx['fee']), 'DEBUG');
                 }
             }
-            
+
             writeWalletLog("WalletManager::calculateBalanceFromBlockchain - Final balance: $balance", 'DEBUG');
             return max(0.0, $balance); // Balance cannot be negative
-            
+
         } catch (Exception $e) {
             writeWalletLog("WalletManager::calculateBalanceFromBlockchain - Error: " . $e->getMessage(), 'ERROR');
             return 0.0;
@@ -1533,7 +1540,7 @@ class WalletManager
                 writeWalletLog("WalletManager::calculateStakedBalanceFromBlockchain - No active staking contract found", 'WARNING');
                 return 0.0;
             }
-            
+
             // Calculate staked balance from actual blockchain transactions
             $stmt = $this->database->prepare("
                 SELECT 
@@ -1559,7 +1566,7 @@ class WalletManager
                     (from_address = ? AND to_address = ?)
                   )
             ");
-            
+
             $stmt->execute([
                 $address,
                 $stakingContract,
@@ -1571,11 +1578,11 @@ class WalletManager
                 $address
             ]);
             $result = $stmt->fetch();
-            $stakedBalance = max(0.0, (float)($result['staked_balance'] ?? 0));
-            
+            $stakedBalance = max(0.0, (float) ($result['staked_balance'] ?? 0));
+
             writeWalletLog("WalletManager::calculateStakedBalanceFromBlockchain - Staked balance: $stakedBalance", 'DEBUG');
             return $stakedBalance;
-            
+
         } catch (Exception $e) {
             writeWalletLog("WalletManager::calculateStakedBalanceFromBlockchain - Error: " . $e->getMessage(), 'ERROR');
             return 0.0;
@@ -1601,8 +1608,8 @@ class WalletManager
             ");
             $stmt->execute();
             $result = $stmt->fetch();
-            
-            return $result && $result['max_height'] ? (int)$result['max_height'] : 0;
+
+            return $result && $result['max_height'] ? (int) $result['max_height'] : 0;
         } catch (Exception $e) {
             writeWalletLog("Error getting current block height: " . $e->getMessage(), 'ERROR');
             return 0;
