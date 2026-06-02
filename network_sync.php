@@ -16,6 +16,10 @@ class NetworkSyncManager {
     private $logFile;
     private $isWebMode;
     private $loggingEnabled; // Controls whether logs are written to disk
+    private $lockFileHandle = null; // flock handle to prevent parallel sync
+    private const SYNC_LOCK_FILE = __DIR__ . '/storage/sync.lock';
+    private const MAX_BLOCKS_PER_SESSION = 1000; // Prevent runaway sync sessions
+    private const BLOCK_FETCH_DELAY_US = 50000; // 50ms delay between individual block fetches
     
     public function __construct($webMode = false) {
         $this->isWebMode = $webMode;
@@ -24,6 +28,50 @@ class NetworkSyncManager {
         $this->loggingEnabled = false;
         $this->initializeDatabase();
         $this->loadConfig();
+    }
+
+    /**
+     * Acquire exclusive lock to prevent parallel sync processes.
+     * Returns true if lock acquired, false if another sync is running.
+     */
+    private function acquireSyncLock(): bool {
+        $lockDir = dirname(self::SYNC_LOCK_FILE);
+        if (!is_dir($lockDir)) {
+            @mkdir($lockDir, 0755, true);
+        }
+        $this->lockFileHandle = @fopen(self::SYNC_LOCK_FILE, 'c');
+        if (!$this->lockFileHandle) {
+            $this->log('Failed to open sync lock file');
+            return false;
+        }
+        if (!flock($this->lockFileHandle, LOCK_EX | LOCK_NB)) {
+            fclose($this->lockFileHandle);
+            $this->lockFileHandle = null;
+            $this->log('Another sync process is already running, skipping');
+            return false;
+        }
+        // Write PID and timestamp for diagnostics
+        ftruncate($this->lockFileHandle, 0);
+        rewind($this->lockFileHandle);
+        fwrite($this->lockFileHandle, json_encode([
+            'pid' => getmypid(),
+            'started_at' => date('Y-m-d H:i:s'),
+            'mode' => $this->isWebMode ? 'web' : 'cli'
+        ]));
+        fflush($this->lockFileHandle);
+        return true;
+    }
+
+    /**
+     * Release the sync lock.
+     */
+    private function releaseSyncLock(): void {
+        if ($this->lockFileHandle) {
+            flock($this->lockFileHandle, LOCK_UN);
+            fclose($this->lockFileHandle);
+            $this->lockFileHandle = null;
+            @unlink(self::SYNC_LOCK_FILE);
+        }
     }
 
     /**
@@ -343,6 +391,20 @@ class NetworkSyncManager {
     
     public function syncAll() {
         $this->log("=== Starting Full Blockchain Synchronization ===");
+        
+        // Acquire exclusive lock to prevent parallel sync processes
+        if (!$this->acquireSyncLock()) {
+            $this->log('Sync skipped: another sync process is already running');
+            return [
+                'status' => 'skipped',
+                'reason' => 'Another sync process is already running',
+                'blocks_synced' => 0,
+                'transactions_synced' => 0,
+                'wallets_synced' => 0,
+                'completion_time' => date('Y-m-d H:i:s')
+            ];
+        }
+        
         $totalSteps = 11;
         $currentStep = 0;
         
@@ -420,11 +482,13 @@ class NetworkSyncManager {
             ];
             
             $this->log("Sync completed successfully: " . json_encode($summary));
+            $this->releaseSyncLock();
             return $summary;
             
         } catch (Exception $e) {
             $this->log("Sync failed: " . $e->getMessage());
             $this->updateProgress($currentStep, $totalSteps, "Sync failed: " . $e->getMessage());
+            $this->releaseSyncLock();
             throw $e;
         }
     }
@@ -940,6 +1004,7 @@ class NetworkSyncManager {
                 if ($localBlock) {
                     $remoteBlockUrl = rtrim($node, '/') . "/api/explorer/index.php?action=get_block&block_id=$h";
                     $remoteBlockResponse = $this->makeApiCall($remoteBlockUrl);
+                    usleep(self::BLOCK_FETCH_DELAY_US); // Throttle: prevent request flood
                     
                     if ($remoteBlockResponse && isset($remoteBlockResponse['success']) && $remoteBlockResponse['success']) {
                         $remoteBlock = $remoteBlockResponse['data'];
@@ -964,6 +1029,7 @@ class NetworkSyncManager {
                 if ($localBlock) {
                     $remoteBlockUrl = rtrim($node, '/') . "/api/explorer/index.php?action=get_block&block_id=$h";
                     $remoteBlockResponse = $this->makeApiCall($remoteBlockUrl);
+                    usleep(self::BLOCK_FETCH_DELAY_US); // Throttle: prevent request flood
                     
                     if ($remoteBlockResponse && isset($remoteBlockResponse['success']) && $remoteBlockResponse['success']) {
                         $remoteBlock = $remoteBlockResponse['data'];
@@ -1063,9 +1129,21 @@ class NetworkSyncManager {
         }
         
         // Try to sync remaining blocks individually since get_blocks API doesn't work
+        // Apply per-session block limit and throttle to prevent HTTP flood
+        $individualBlockLimit = self::MAX_BLOCKS_PER_SESSION - $totalSynced;
+        $individualSynced = 0;
         for ($h = $localHeight + 1; $h <= $remoteHeight; $h++) {
+            // Enforce per-session block limit
+            if ($individualSynced >= $individualBlockLimit) {
+                $this->log("Reached per-session block limit ({$individualBlockLimit}), stopping individual sync. Remaining blocks will be synced next run.");
+                break;
+            }
+            
             $blockUrl = rtrim($node, '/') . "/api/explorer/index.php?action=get_block&block_id=$h";
             $blockResponse = $this->makeApiCall($blockUrl);
+            
+            // Throttle: prevent request flood (50ms between requests)
+            usleep(self::BLOCK_FETCH_DELAY_US);
             
             if ($blockResponse && isset($blockResponse['success']) && $blockResponse['success']) {
                 $block = $blockResponse['data'];
@@ -1088,6 +1166,7 @@ class NetworkSyncManager {
                 
                 if ($result && $stmt->rowCount() > 0) {
                     $totalSynced++;
+                    $individualSynced++;
                     $this->log("Synced block $h: {$block['hash']}");
                     
                     if ($this->isWebMode) {
@@ -2433,10 +2512,77 @@ class NetworkSyncManager {
                 }
             }
             
-            // 3) Try to get from environment or server variables
+            // 3) Try installation.json (may contain node URL or domain)
+            $installConfig = __DIR__ . '/config/installation.json';
+            if (file_exists($installConfig)) {
+                $installData = json_decode(file_get_contents($installConfig), true);
+                if (is_array($installData)) {
+                    $nodeDomain = $installData['node_domain'] ?? $installData['domain'] ?? $installData['node_url'] ?? null;
+                    if ($nodeDomain) {
+                        if (strpos($nodeDomain, 'http') === 0) {
+                            return $nodeDomain;
+                        }
+                        return 'https://' . $nodeDomain;
+                    }
+                }
+            }
+            
+            // 4) Try to get from environment or server variables
             if (isset($_SERVER['HTTP_HOST'])) {
                 $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
                 return "$protocol://" . $_SERVER['HTTP_HOST'];
+            }
+            
+            // 5) Fallback: try SERVER_NAME or environment variables
+            $serverName = $_SERVER['SERVER_NAME'] ?? getenv('NODE_DOMAIN') ?: getenv('SERVER_DOMAIN') ?: null;
+            if ($serverName) {
+                return 'https://' . $serverName;
+            }
+            
+            // 6) Last resort: try to resolve hostname to find matching node in DB
+            $hostname = gethostname();
+            if ($hostname) {
+                $hostIPs = @gethostbynamel($hostname) ?: [];
+                // Also try to get all local IPs
+                $localIPs = $hostIPs;
+                $ifaceOutput = @shell_exec('hostname -I 2>/dev/null') ?: '';
+                foreach (preg_split('/\s+/', trim($ifaceOutput)) as $ip) {
+                    if (filter_var($ip, FILTER_VALIDATE_IP)) {
+                        $localIPs[] = $ip;
+                    }
+                }
+                $localIPs = array_unique($localIPs);
+                
+                if (!empty($localIPs)) {
+                    // Find a node in DB whose IP matches one of our local IPs
+                    try {
+                        $stmt = $this->pdo->query("SELECT ip_address, port, metadata FROM nodes WHERE status='active'");
+                        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                            $nodeIp = trim($row['ip_address'] ?? '');
+                            $meta = json_decode($row['metadata'] ?? '{}', true) ?: [];
+                            $nodeDomain = $meta['domain'] ?? '';
+                            $nodeProtocol = $meta['protocol'] ?? 'https';
+                            
+                            // Check if node IP matches any of our local IPs
+                            if ($nodeIp !== '' && in_array($nodeIp, $localIPs, true)) {
+                                if ($nodeDomain !== '') {
+                                    return $nodeProtocol . '://' . $nodeDomain;
+                                }
+                                return 'http://' . $nodeIp . ':' . (int)($row['port'] ?? 80);
+                            }
+                            
+                            // Check if node domain resolves to one of our local IPs
+                            if ($nodeDomain !== '') {
+                                $domainIPs = @gethostbynamel($nodeDomain) ?: [];
+                                if (!empty(array_intersect($domainIPs, $localIPs))) {
+                                    return $nodeProtocol . '://' . $nodeDomain;
+                                }
+                            }
+                        }
+                    } catch (\Throwable $e) {
+                        // ignore DB errors in fallback
+                    }
+                }
             }
             
             return null;
@@ -2460,15 +2606,28 @@ class NetworkSyncManager {
         $host1 = strtolower($parsed1['host'] ?? '');
         $host2 = strtolower($parsed2['host'] ?? '');
         
-        if ($host1 !== $host2) {
-            return false;
+        if ($host1 === $host2 && $host1 !== '') {
+            // Same hostname — check ports
+            $port1 = $parsed1['port'] ?? (($parsed1['scheme'] ?? 'http') === 'https' ? 443 : 80);
+            $port2 = $parsed2['port'] ?? (($parsed2['scheme'] ?? 'http') === 'https' ? 443 : 80);
+            return $port1 === $port2;
         }
         
-        // Compare ports (use default if not specified)
-        $port1 = $parsed1['port'] ?? (($parsed1['scheme'] ?? 'http') === 'https' ? 443 : 80);
-        $port2 = $parsed2['port'] ?? (($parsed2['scheme'] ?? 'http') === 'https' ? 443 : 80);
+        // Different hostnames — check if they resolve to the same IP
+        // This catches cases like domain vs IP, or two domains pointing to same server
+        if ($host1 !== '' && $host2 !== '') {
+            $ip1 = filter_var($host1, FILTER_VALIDATE_IP) ? $host1 : @gethostbyname($host1);
+            $ip2 = filter_var($host2, FILTER_VALIDATE_IP) ? $host2 : @gethostbyname($host2);
+            
+            if ($ip1 !== false && $ip2 !== false && $ip1 === $ip2 && $ip1 !== $host1 && $ip2 !== $host2) {
+                // Both resolved to same IP
+                $port1 = $parsed1['port'] ?? (($parsed1['scheme'] ?? 'http') === 'https' ? 443 : 80);
+                $port2 = $parsed2['port'] ?? (($parsed2['scheme'] ?? 'http') === 'https' ? 443 : 80);
+                return $port1 === $port2;
+            }
+        }
         
-        return $port1 === $port2;
+        return false;
     }
 
     // Public method to sync blocks only from a specific source

@@ -375,6 +375,34 @@ function checkSyncStatus(PDO $pdo): void
 function triggerEmergencySync(PDO $pdo, int $networkHeight, int $heightDiff): void
 {
     try {
+        // Cooldown: don't trigger more than once every 5 minutes
+        $cooldownFile = __DIR__ . '/../storage/emergency_sync_cooldown';
+        if (file_exists($cooldownFile)) {
+            $lastTrigger = (int)@file_get_contents($cooldownFile);
+            if ((time() - $lastTrigger) < 300) { // 5 minute cooldown
+                writeHeartbeatLog("Emergency sync skipped: cooldown active (last trigger " . (time() - $lastTrigger) . "s ago)");
+                return;
+            }
+        }
+        
+        // Check if a sync is already running via lock file
+        $syncLockFile = __DIR__ . '/../storage/sync.lock';
+        if (file_exists($syncLockFile)) {
+            $lockFp = @fopen($syncLockFile, 'r');
+            if ($lockFp) {
+                // Try non-blocking lock — if we can't get it, sync is running
+                $canLock = flock($lockFp, LOCK_EX | LOCK_NB);
+                if ($canLock) {
+                    flock($lockFp, LOCK_UN); // Release — no sync running, we can proceed
+                } else {
+                    fclose($lockFp);
+                    writeHeartbeatLog("Emergency sync skipped: sync process already running (lock held)");
+                    return;
+                }
+                fclose($lockFp);
+            }
+        }
+        
         writeHeartbeatLog("Triggering emergency sync: network_height={$networkHeight}, diff={$heightDiff}");
         
         // Record sync trigger
@@ -392,6 +420,13 @@ function triggerEmergencySync(PDO $pdo, int $networkHeight, int $heightDiff): vo
             'Emergency sync triggered by heartbeat service',
             json_encode(['trigger' => 'height_difference', 'threshold' => 5])
         ]);
+        
+        // Update cooldown timestamp
+        $cooldownDir = dirname($cooldownFile);
+        if (!is_dir($cooldownDir)) {
+            @mkdir($cooldownDir, 0755, true);
+        }
+        @file_put_contents($cooldownFile, (string)time());
         
         // Try to trigger network sync via existing mechanism
         $syncScript = __DIR__ . '/../network_sync.php';
