@@ -92,6 +92,11 @@ class NetworkSyncManager {
                     }
                     $domain = $meta['domain'] ?? '';
                     $protocol = $meta['protocol'] ?? '';
+                    // Skip loopback hosts: they are never reachable as REMOTE peers and only
+                    // pollute the registry (e.g. a node that self-registered as localhost).
+                    if ($this->isLoopbackHost($domain) || $this->isLoopbackHost($row['ip_address'] ?? '')) {
+                        continue;
+                    }
                     if ($domain !== '') {
                         $scheme = ($protocol === 'http' || $protocol === 'https') ? $protocol : 'https';
                         $nodes[] = $scheme . '://' . $domain;
@@ -433,7 +438,10 @@ class NetworkSyncManager {
             $currentStep++;
             $this->updateProgress($currentStep, $totalSteps, "Syncing blockchain blocks...");
             $blocksSynced = $this->syncBlocks($bestNode);
-            
+
+            // Mirror freshly-synced blocks to the on-disk binary ledger (best-effort).
+            $this->mirrorToBinaryLedger();
+
             // Step 6: Sync transactions
             $currentStep++;
             $this->updateProgress($currentStep, $totalSteps, "Syncing transactions...");
@@ -530,11 +538,16 @@ class NetworkSyncManager {
                 $domain = $metaArr['domain'] ?? '';
                 $host = $domain !== '' ? $domain : $ip;
                 if ($host === '') continue;
+                // Skip loopback peers — not reachable from other nodes (registry pollution).
+                if ($this->isLoopbackHost($host)) {
+                    $this->log("Skipping loopback peer from nodes table: $host");
+                    continue;
+                }
 
                 $defaultPort = ($protocol === 'https') ? 443 : 80;
                 $portPart = ($port > 0 && $port !== $defaultPort) ? (':' . $port) : '';
                 $url = sprintf('%s://%s%s', $protocol, rtrim($host, '/'), $portPart);
-                
+
                 // Exclude current node from sync
                 if ($currentNodeUrl && $this->isSameNode($url, $currentNodeUrl)) {
                     $this->log("Excluding current node from sync: $url");
@@ -2594,6 +2607,40 @@ class NetworkSyncManager {
     /**
      * Check if two URLs represent the same node
      */
+    /**
+     * Best-effort mirror of the synced DB chain to the on-disk binary ledger. Non-fatal.
+     */
+    private function mirrorToBinaryLedger(): void {
+        try {
+            require_once __DIR__ . '/vendor/autoload.php';
+            if (!class_exists('\\Blockchain\\Core\\Storage\\BlockchainBinaryStorage')) {
+                return;
+            }
+            $dataDir = __DIR__ . '/storage/blockchain';
+            if (!is_dir($dataDir)) { @mkdir($dataDir, 0775, true); }
+            $bin = new \Blockchain\Core\Storage\BlockchainBinaryStorage($dataDir, [], false);
+            $res = $bin->importFromDatabase($this->pdo);
+            $this->log("Binary ledger mirrored: imported={$res['imported']} skipped={$res['skipped']} errors={$res['errors']}");
+        } catch (\Throwable $e) {
+            $this->log('Binary ledger mirror failed (non-fatal): ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Loopback / non-routable hosts that can never be a valid REMOTE peer.
+     * Accepts a bare host or a full URL.
+     */
+    private function isLoopbackHost(string $host): bool {
+        $host = trim($host);
+        if ($host === '') return false;
+        if (strpos($host, '://') !== false) {
+            $host = parse_url($host, PHP_URL_HOST) ?: $host;
+        }
+        $host = strtolower(rtrim($host, '/'));
+        return in_array($host, ['localhost', '127.0.0.1', '::1', '0.0.0.0', ''], true)
+            || str_starts_with($host, '127.');
+    }
+
     private function isSameNode(string $url1, string $url2): bool {
         $parsed1 = parse_url($url1);
         $parsed2 = parse_url($url2);

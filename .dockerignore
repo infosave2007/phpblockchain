@@ -28,9 +28,23 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-# Environment
+# Environment & secrets (provided via compose `environment:` / mounted at runtime)
+.env
 .env.local
 .env.production
+
+# Heavy / sensitive artifacts that must never enter the image
+*.sql
+*.sql.gz
+*.gz
+*.jpeg
+*.jpg
+
+# Dev scratch / test scripts in repo root
+test_*.php
+*_REPORT.md
+*_FIX*.md
+*_SUMMARY.md
 
 # Temporary files
 tmp/

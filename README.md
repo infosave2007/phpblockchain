@@ -214,8 +214,7 @@ php crypto-cli.php generate
   - `action: transfer_tokens` - Transfer tokens
 
 ### Node API
-- `GET /api/health` - Node health check
-- `GET /api/status` - Full node status
+- `GET /api/status` - Node health / full status (DB, storage, memory)
 
 ## 🔐 Security Features
 

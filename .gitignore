@@ -19,6 +19,9 @@ composer.lock
 /storage/state/*
 /storage/test/*
 /storage/raw_mempool/processed/*
+/storage/tmp/*
+/storage/rate_limits.json
+/storage/contract_addresses.json
 /storage/trustwallet/*
 !/storage/.gitkeep
 !/storage/raw_mempool/.gitkeep

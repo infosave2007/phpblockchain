@@ -237,8 +237,8 @@ try {
                 exit;
 
             case 'search':
-                $query = $params['query'] ?? $params['q'] ?? '';
-                if (empty($query)) {
+                $query = trim((string)($params['query'] ?? $params['q'] ?? ''));
+                if ($query === '') { // note: don't use empty() — it rejects the valid query "0"
                     throw new Exception('Search query required');
                 }
 
@@ -362,8 +362,8 @@ try {
             break;
             
         case 'search':
-            $query = $params['query'] ?? $params['q'] ?? '';
-            if (empty($query)) {
+            $query = trim((string)($params['query'] ?? $params['q'] ?? ''));
+            if ($query === '') { // don't use empty() — it rejects the valid query "0"
                 throw new Exception('Search query required');
             }
             

@@ -6,7 +6,6 @@ namespace Blockchain\Core\Consensus;
 use Blockchain\Core\Contracts\BlockInterface;
 use Blockchain\Core\Contracts\ConsensusInterface;
 use Blockchain\Core\Crypto\Hash;
-use Blockchain\Core\Crypto\Signature;
 use Blockchain\Core\Logging\LoggerInterface;
 
 /**

@@ -5,25 +5,61 @@ namespace Blockchain\Wallet;
 
 class StakingRateHelper
 {
+    /** Flat APY for all fixed-term staking (12% annual). */
+    public const APY = 0.12;
+
     /**
-     * Returns reward rate as a fraction (0.12 = 12%) for the given period.
+     * Allowed fixed staking terms: period in days => human label.
+     * 1 month, 6 months, 1 year, 2 years, 3 years.
      */
-    public static function getRewardRateForPeriod(int $periodDays): float
+    public const ALLOWED_PERIODS = [
+        30   => '1 month',
+        180  => '6 months',
+        365  => '1 year',
+        730  => '2 years',
+        1095 => '3 years',
+    ];
+
+    /**
+     * List of allowed period lengths (days).
+     *
+     * @return int[]
+     */
+    public static function allowedPeriods(): array
     {
-        // Unified APY scale: 4/6/8/10/12% by period thresholds
-        if ($periodDays >= 365) return 0.12; // 12% for 1 year and above
-        if ($periodDays >= 180) return 0.10; // 10% for 6 months and above
-        if ($periodDays >= 90)  return 0.08; // 8% for 3 months and above
-        if ($periodDays >= 30)  return 0.06; // 6% for 1 month and above
-        if ($periodDays == 7)   return 0.04; // 4% for 7 days
-        return 0.04;                        // 4% by default (< 30 days)
+        return array_keys(self::ALLOWED_PERIODS);
     }
 
     /**
-     * Returns APY as percentage based on the given period.
+     * Whether the given period (days) is one of the supported fixed terms.
+     */
+    public static function isAllowedPeriod(int $periodDays): bool
+    {
+        return array_key_exists($periodDays, self::ALLOWED_PERIODS);
+    }
+
+    /**
+     * Human label for a period, e.g. "2 years".
+     */
+    public static function labelForPeriod(int $periodDays): string
+    {
+        return self::ALLOWED_PERIODS[$periodDays] ?? ($periodDays . ' days');
+    }
+
+    /**
+     * Returns reward rate as a fraction (0.12 = 12%) for the given period.
+     * Flat 12% for every supported fixed term.
+     */
+    public static function getRewardRateForPeriod(int $periodDays): float
+    {
+        return self::APY;
+    }
+
+    /**
+     * Returns APY as percentage (always 12.0).
      */
     public static function getApyPercent(int $periodDays): float
     {
-        return self::getRewardRateForPeriod($periodDays) * 100.0;
+        return self::APY * 100.0;
     }
 }

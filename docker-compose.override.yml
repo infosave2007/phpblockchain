@@ -5,6 +5,8 @@ services:
       - ./docker/php-fpm.conf:/usr/local/etc/php-fpm.d/www.conf:ro
       - ./storage:/var/www/html/storage:rw
       - ./logs:/var/www/html/logs:rw
+      # Binary ledger on a real fs (named volume), not the macOS bind mount.
+      - bc_binary:/var/www/html/storage/blockchain
     environment:
       - PHP_ENV=development
     command: []

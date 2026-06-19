@@ -27,6 +27,18 @@ class KeyPair
         $this->publicKey = $publicKey;
         $this->address = $address;
     }
+
+    /**
+     * Gated debug logger (F6). OFF by default — key material must never hit logs in normal
+     * operation. Enable only for local debugging with CRYPTO_DEBUG=1.
+     */
+    private static function dbg(string $message): void
+    {
+        $flag = strtolower((string)(getenv('CRYPTO_DEBUG') ?: ''));
+        if (in_array($flag, ['1', 'true', 'on', 'yes'], true)) {
+            error_log($message);
+        }
+    }
     
     /**
      * Generate new key pair
@@ -82,16 +94,16 @@ class KeyPair
     public static function fromMnemonic(array $mnemonic, string $passphrase = '', int $accountIndex = 0): self
     {
         try {
-            error_log("KeyPair::fromMnemonic - Starting BIP44 derivation with " . count($mnemonic) . " words");
-            error_log("KeyPair::fromMnemonic - Words: " . implode(' ', $mnemonic));
+            self::dbg("KeyPair::fromMnemonic - Starting BIP44 derivation with " . count($mnemonic) . " words");
+            // Never log the actual mnemonic words (key material).
             
             // Step 1: Generate seed using BIP39 standard
             $seed = Mnemonic::toSeed($mnemonic, $passphrase);
-            error_log("KeyPair::fromMnemonic - BIP39 seed generated, length: " . strlen($seed));
+            self::dbg("KeyPair::fromMnemonic - BIP39 seed generated, length: " . strlen($seed));
             
             // Step 2: Generate master key using BIP32 standard
             $masterKey = self::generateMasterKeyFromSeed($seed);
-            error_log("KeyPair::fromMnemonic - Master key generated");
+            self::dbg("KeyPair::fromMnemonic - Master key generated");
             
             // Step 3: Derive private key using BIP44 path: m/44'/60'/0'/0/{accountIndex}
             // Ethereum coin type is 60 (0x3c)
@@ -104,11 +116,11 @@ class KeyPair
             ];
             
             $privateKey = self::derivePrivateKey($masterKey, $derivationPath);
-            error_log("KeyPair::fromMnemonic - Derived private key for account $accountIndex");
+            self::dbg("KeyPair::fromMnemonic - Derived private key for account $accountIndex");
             
             return self::fromPrivateKey($privateKey);
         } catch (Exception $e) {
-            error_log("KeyPair::fromMnemonic - Error: " . $e->getMessage());
+            self::dbg("KeyPair::fromMnemonic - Error: " . $e->getMessage());
             throw $e;
         }
     }
@@ -133,9 +145,30 @@ class KeyPair
             }
         }
 
-        // Pure-PHP fallback without GMP/extensions
+        // SECURITY (D4): the pure-PHP path is a DETERMINISTIC, NON-cryptographic stand-in and
+        // must never be used to mint real keys in production. Hard-fail unless explicitly allowed.
+        self::assertFallbackAllowed();
+
+        // Pure-PHP fallback without GMP/extensions (dev/testing only)
         $publicKeyPoint = EllipticCurve::generatePublicKey($privateKeyHex);
         return EllipticCurve::compressPublicKey($publicKeyPoint);
+    }
+
+    /**
+     * Refuse to generate keys with the insecure pure-PHP fallback in production.
+     * Override with ALLOW_INSECURE_CRYPTO=1 only for explicit dev/testing.
+     */
+    private static function assertFallbackAllowed(): void
+    {
+        $env = strtolower((string)(getenv('APP_ENV') ?: getenv('PHP_ENV') ?: 'production'));
+        $allow = strtolower((string)(getenv('ALLOW_INSECURE_CRYPTO') ?: ''));
+        $allowed = in_array($allow, ['1', 'true', 'yes', 'on'], true);
+        if (($env === 'production' || $env === 'prod') && !$allowed) {
+            throw new Exception(
+                'Refusing to generate keys without secp256k1 (GMP/mdanter-ecc) in production. '
+                . 'Install the ext-gmp + secp256k1 stack, or set ALLOW_INSECURE_CRYPTO=1 for non-production use.'
+            );
+        }
     }
     
     /**
@@ -360,14 +393,14 @@ class KeyPair
         // It generates a deterministic mnemonic from private key which may contain duplicates.
         // Use Mnemonic::generate() for new wallets instead.
         
-        error_log("WARNING: KeyPair::getMnemonic() is deprecated and may generate invalid mnemonics. Use Mnemonic::generate() instead.");
+        self::dbg("WARNING: KeyPair::getMnemonic() is deprecated and may generate invalid mnemonics. Use Mnemonic::generate() instead.");
         
         // Generate a proper mnemonic using the correct BIP39 implementation
         try {
             $mnemonic = Mnemonic::generate(12);
             return implode(' ', $mnemonic);
         } catch (Exception $e) {
-            error_log("Failed to generate mnemonic: " . $e->getMessage());
+            self::dbg("Failed to generate mnemonic: " . $e->getMessage());
             
             // Fallback to old method (with warnings)
             return $this->getLegacyMnemonic();
@@ -379,7 +412,7 @@ class KeyPair
      */
     private function getLegacyMnemonic(): string
     {
-        error_log("WARNING: Using legacy mnemonic generation - may contain duplicates!");
+        self::dbg("WARNING: Using legacy mnemonic generation - may contain duplicates!");
         
         // Use BIP39 wordlist from Mnemonic class
         $wordList = Mnemonic::getWordList();
@@ -400,7 +433,7 @@ class KeyPair
                 
                 // Prevent infinite loop
                 if ($attempts > 100) {
-                    error_log("WARNING: KeyPair::getLegacyMnemonic() - Could not generate unique words, allowing duplicates");
+                    self::dbg("WARNING: KeyPair::getLegacyMnemonic() - Could not generate unique words, allowing duplicates");
                     break;
                 }
             } while (in_array($index, $usedIndices) && $attempts <= 100);
@@ -413,7 +446,7 @@ class KeyPair
         
         // Check for duplicates
         if (count($mnemonic) !== count(array_unique($mnemonic))) {
-            error_log("WARNING: KeyPair::getLegacyMnemonic() generated mnemonic with duplicates: $mnemonicString");
+            self::dbg("WARNING: KeyPair::getLegacyMnemonic() generated mnemonic with duplicates: $mnemonicString");
         }
         
         return $mnemonicString;
@@ -457,7 +490,7 @@ class KeyPair
             throw new Exception('Invalid master private key generated');
         }
         
-        error_log("KeyPair::generateMasterKeyFromSeed - Master key: " . substr($privateKey, 0, 16) . "...");
+        self::dbg("KeyPair::generateMasterKeyFromSeed - Master key: " . substr($privateKey, 0, 16) . "...");
         
         return [
             'key' => $privateKey,
@@ -481,7 +514,7 @@ class KeyPair
         $adapter = EccFactory::getAdapter();
         
         foreach ($derivationPath as $index) {
-            error_log("KeyPair::derivePrivateKey - Deriving child with index: " . dechex($index));
+            self::dbg("KeyPair::derivePrivateKey - Deriving child with index: " . dechex($index));
             
             // Check if hardened derivation (index >= 0x80000000)
             $isHardened = $index >= 0x80000000;
@@ -527,7 +560,7 @@ class KeyPair
             }
         }
         
-        error_log("KeyPair::derivePrivateKey - Final derived key: " . substr($currentKey, 0, 16) . "...");
+        self::dbg("KeyPair::derivePrivateKey - Final derived key: " . substr($currentKey, 0, 16) . "...");
         return $currentKey;
     }
 }

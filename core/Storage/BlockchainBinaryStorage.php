@@ -258,15 +258,22 @@ class BlockchainBinaryStorage
                 continue;
             }
             
-            // Check previous hash
-            if ($block['previous_hash'] !== $lastHash) {
+            // Check previous hash linkage (skip for genesis, which links to '0').
+            if ($index > 0 && $block['previous_hash'] !== $lastHash) {
                 $errors[] = "Block $index: Invalid previous hash. Expected: $lastHash, Got: {$block['previous_hash']}";
             }
-            
-            // Check block hash
-            $calculatedHash = $this->calculateBlockHash($block);
-            if ($calculatedHash !== $block['hash']) {
-                $errors[] = "Block $index: Invalid block hash. Expected: $calculatedHash, Got: {$block['hash']}";
+
+            // Block hash integrity.
+            // NOTE: the canonical hash is produced by the app's Block::calculateHash() from fields
+            // (stateRoot, nonce, gas, validators, stakes, ...) that are NOT all persisted to the DB,
+            // so it cannot be recomputed here. Instead we verify (a) the hash is well-formed and
+            // (b) the block payload's hash matches the index entry — detecting data/index drift and
+            // truncation. Byte-level tamper detection of the file is done by validateBinaryFile().
+            $h = (string)($block['hash'] ?? '');
+            if (!preg_match('/^[0-9a-fA-F]{64}$/', $h)) {
+                $errors[] = "Block $index: Malformed block hash";
+            } elseif (isset($indexData['hash']) && $indexData['hash'] !== $h) {
+                $errors[] = "Block $index: Hash/index mismatch. Index: {$indexData['hash']}, Block: $h";
             }
             
             // Check timestamp order

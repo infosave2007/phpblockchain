@@ -11,7 +11,9 @@ return array (
     'debug' => false,
     'timezone' => 'UTC',
     'installed' => true,
-    'key' => '23ad8834a4579dfe1bf6863af8eac0607d8806a4800c4e92ec45f067080be6bf',
+    // SECURITY (C5): prefer env-provided secret in production; the committed value is a
+    // dev-only fallback and should be rotated for any real deployment.
+    'key' => getenv('APP_KEY') ?: '23ad8834a4579dfe1bf6863af8eac0607d8806a4800c4e92ec45f067080be6bf',
     'installation_date' => '2025-08-21 10:27:22',
   ),
   'database' => 
@@ -44,7 +46,7 @@ return array (
   ),
   'security' => 
   array (
-    'jwt_secret' => 'd372c2d69f84a8c06373970b5c634519d51afffade36e811f6d7c4c50579a7a7',
+    'jwt_secret' => getenv('JWT_SECRET') ?: 'd372c2d69f84a8c06373970b5c634519d51afffade36e811f6d7c4c50579a7a7',
     'session_lifetime' => 86400,
     'rate_limit' => 
     array (

@@ -1310,6 +1310,15 @@ function getLanguageOptions($currentLang) {
                 </h4>
             </div>
             <div class="col-lg-4 col-md-6 mb-3">
+                <div class="action-card" onclick="showSwapModal()">
+                    <div class="action-icon" style="background: linear-gradient(45deg, #11998e 0%, #38ef7d 100%);">
+                        <i class="fas fa-exchange-alt"></i>
+                    </div>
+                    <h5 class="fw-bold"><?php echo $t['swap_tokens_title'] ?? 'Swap Tokens'; ?></h5>
+                    <p class="text-muted mb-0"><?php echo $t['swap_tokens_desc'] ?? 'Exchange tokens via the on-chain AMM'; ?></p>
+                </div>
+            </div>
+            <div class="col-lg-4 col-md-6 mb-3">
                 <div class="action-card" onclick="showLiquidityModal()">
                     <div class="action-icon" style="background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);">
                         <i class="fas fa-plus-circle"></i>
@@ -1572,11 +1581,20 @@ function getLanguageOptions($currentLang) {
                         <div class="mb-3">
                             <label for="stakingPeriod" class="form-label fw-bold"><?php echo $t['staking_period']; ?></label>
                             <select class="form-select" id="stakingPeriod" required>
-                                <option value="7">7 <?php echo $t['days_apy']; ?>4%)</option>
-                                <option value="30">30 <?php echo $t['days_apy']; ?>6%)</option>
-                                <option value="90">90 <?php echo $t['days_apy']; ?>8%)</option>
-                                <option value="180">180 <?php echo $t['days_apy']; ?>10%)</option>
-                                <option value="365">365 <?php echo $t['days_apy']; ?>12%)</option>
+                                <?php
+                                // Fixed staking terms only — all at a flat 12% APY.
+                                $stakingTerms = [
+                                    30   => ['en' => '1 month',  'ru' => '1 месяц'],
+                                    180  => ['en' => '6 months', 'ru' => '6 месяцев'],
+                                    365  => ['en' => '1 year',   'ru' => '1 год'],
+                                    730  => ['en' => '2 years',  'ru' => '2 года'],
+                                    1095 => ['en' => '3 years',  'ru' => '3 года'],
+                                ];
+                                $stLang = ($language === 'ru') ? 'ru' : 'en';
+                                foreach ($stakingTerms as $days => $labels) {
+                                    echo '<option value="' . $days . '">' . $labels[$stLang] . ' (12% APY)</option>';
+                                }
+                                ?>
                             </select>
                         </div>
                         
@@ -2742,14 +2760,9 @@ function getLanguageOptions($currentLang) {
             const period = parseInt(document.getElementById('stakingPeriod').value) || 0;
             
             if (amount > 0 && period > 0) {
-                // Calculate APY based on period
-                let apy;
-                if (period >= 365) apy = 12.0;
-                else if (period >= 180) apy = 10.0;
-                else if (period >= 90) apy = 8.0;
-                else if (period >= 30) apy = 6.0;
-                else apy = 4.0;
-                
+                // Flat 12% APY for all fixed staking terms.
+                const apy = 12.0;
+
                 const expectedRewards = amount * (apy / 100) * (period / 365);
                 
                 // Update preview
@@ -2960,9 +2973,12 @@ function getLanguageOptions($currentLang) {
                     
                     if (activeStakes.length > 0) {
                         activeStakes.forEach(stake => {
-                            const isUnlocked = stake.lock_status === 'unlocked' || stake.lock_status === 'pending';
-                            const isUnlimited = stake.end_block === null || stake.end_block === undefined;
-                            const canUnstake = isUnlocked || isUnlimited; // Можно анстейкнуть если разблокирован ИЛИ неограниченный
+                            const hasUnlockTime = stake.unlock_time !== null && stake.unlock_time !== undefined;
+                            const isUnlocked = stake.is_unlocked === true || stake.lock_status === 'unlocked' || stake.lock_status === 'pending';
+                            // Only legacy rows without a fixed term are "unlimited".
+                            const isUnlimited = !hasUnlockTime && (stake.end_block === null || stake.end_block === undefined);
+                            // Fixed-term stakes can only be unstaked once unlocked.
+                            const canUnstake = isUnlocked || isUnlimited;
                             const statusClass = isUnlocked ? 'success' : (isUnlimited ? 'info' : 'warning');
                             const statusIcon = isUnlocked ? 'unlock' : (isUnlimited ? 'infinity' : 'lock');
                             
@@ -4208,58 +4224,146 @@ function getLanguageOptions($currentLang) {
             modal.show();
         }
         
-        // Show blockchain info (stub)
-        function showBlockchainInfo() {
+        // Show blockchain info — real network status & statistics.
+        async function showBlockchainInfo() {
             const resultsDiv = document.getElementById('results');
-            resultsDiv.innerHTML = `
-                <div class="action-card text-center">
-                    <div class="action-icon icon-info mx-auto">
-                        <i class="fas fa-info-circle"></i>
-                    </div>
-                    <h5>${t.blockchain_info || 'Blockchain Information'}</h5>
-                    <p class="text-muted">${t.blockchain_info_description || 'View blockchain network status and statistics'}</p>
-                    <div class="alert alert-info alert-modern mt-3">
-                        <i class="fas fa-exclamation-circle me-2"></i>
-                        ${t.feature_coming_soon || 'This feature is coming soon!'}
-                    </div>
-                </div>
-            `;
+            resultsDiv.innerHTML = '<div class="action-card text-center"><i class="fas fa-spinner fa-spin fa-2x"></i></div>';
+            try {
+                const [statsR, cfgR] = await Promise.all([
+                    fetch('/api/explorer/index.php?action=get_network_stats').then(r => r.json()).catch(() => ({})),
+                    fetch('wallet_api.php', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'get_config' }) }).then(r => r.json()).catch(() => ({}))
+                ]);
+                const s = statsR || {};
+                const row = (k, v) => `<tr><td class="text-muted">${k}</td><td class="text-end fw-bold">${v ?? '-'}</td></tr>`;
+                resultsDiv.innerHTML = `
+                    <div class="action-card">
+                        <h5 class="mb-3"><i class="fas fa-info-circle me-2 text-info"></i>${t.blockchain_info || 'Blockchain Information'}</h5>
+                        <table class="table table-sm">
+                            ${row('Network', s.network)}
+                            ${row('Status', s.status)}
+                            ${row('Consensus', s.consensus)}
+                            ${row('Block height', s.current_height)}
+                            ${row('Total transactions', s.total_transactions)}
+                            ${row('Total supply', s.total_supply)}
+                            ${row('Circulating supply', s.circulating_supply)}
+                            ${row('Active nodes', s.active_nodes)}
+                            ${row('Hash rate', s.hash_rate)}
+                            ${row('Version', s.version)}
+                        </table>
+                        <a class="btn btn-outline-primary btn-sm" href="/explorer/" target="_blank"><i class="fas fa-search me-1"></i>Open Explorer</a>
+                    </div>`;
+            } catch (e) {
+                resultsDiv.innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
+            }
         }
 
-        // Show smart contracts
-        function showSmartContracts() {
+        // Show smart contracts — deploy ERC20 tokens and interact with them (real).
+        async function showSmartContracts() {
             const resultsDiv = document.getElementById('results');
+            const addr = (document.getElementById('myAddress')?.value || localStorage.getItem('walletAddress') || '');
             resultsDiv.innerHTML = `
-                <div class="action-card text-center">
-                    <div class="action-icon icon-contract mx-auto">
-                        <i class="fas fa-file-contract"></i>
-                    </div>
-                    <h5>${t.smart_contracts || 'Smart Contracts'}</h5>
-                    <p class="text-muted">${t.smart_contracts_description || 'Deploy and interact with smart contracts'}</p>
-                    <div class="alert alert-info alert-modern mt-3">
-                        <i class="fas fa-exclamation-circle me-2"></i>
-                        ${t.feature_coming_soon || 'This feature is coming soon!'}
-                    </div>
-                </div>
-            `;
+                <div class="action-card">
+                    <h5 class="mb-3"><i class="fas fa-file-contract me-2 text-primary"></i>${t.smart_contracts || 'Smart Contracts'}</h5>
+                    <div class="card mb-3"><div class="card-body">
+                        <h6 class="fw-bold">Deploy ERC20 Token</h6>
+                        <div class="row g-2">
+                            <div class="col-md-4"><input id="dtName" class="form-control" placeholder="Name (e.g. My Token)"></div>
+                            <div class="col-md-2"><input id="dtSymbol" class="form-control" placeholder="Symbol"></div>
+                            <div class="col-md-2"><input id="dtDecimals" class="form-control" type="number" value="18" placeholder="Decimals"></div>
+                            <div class="col-md-4"><input id="dtSupply" class="form-control" type="number" placeholder="Total supply"></div>
+                        </div>
+                        <input id="dtCreator" class="form-control mt-2" placeholder="Creator wallet address (0x...)" value="${addr}">
+                        <button class="btn btn-success btn-sm mt-2" onclick="deployTokenUI()"><i class="fas fa-rocket me-1"></i>Deploy Token</button>
+                        <div id="dtResult" class="small mt-2"></div>
+                    </div></div>
+                    <h6 class="fw-bold">Deployed Tokens</h6>
+                    <div id="contractsList"><i class="fas fa-spinner fa-spin"></i></div>
+                </div>`;
+            refreshContractsList();
         }
 
-        // Show settings
-        function showSettings() {
+        async function deployTokenUI() {
+            const name = document.getElementById('dtName').value.trim();
+            const symbol = document.getElementById('dtSymbol').value.trim();
+            const decimals = parseInt(document.getElementById('dtDecimals').value) || 18;
+            const total_supply = parseFloat(document.getElementById('dtSupply').value);
+            const creator = document.getElementById('dtCreator').value.trim();
+            const out = document.getElementById('dtResult');
+            if (!name || !symbol || !creator || !(total_supply > 0)) { out.innerHTML = '<span class="text-danger">Fill all fields</span>'; return; }
+            out.innerHTML = '<i class="fas fa-spinner fa-spin"></i> deploying...';
+            try {
+                const r = await fetch('wallet_api.php', { method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({ action:'deploy_token', creator, name, symbol, decimals, total_supply }) });
+                const d = await r.json();
+                if (d.success && d.deployed) {
+                    out.innerHTML = `<span class="text-success">Deployed ${d.symbol} at ${d.address}</span>`;
+                    refreshContractsList();
+                } else { out.innerHTML = `<span class="text-danger">${d.error || 'Failed'}</span>`; }
+            } catch (e) { out.innerHTML = `<span class="text-danger">${e.message}</span>`; }
+        }
+
+        async function refreshContractsList() {
+            const el = document.getElementById('contractsList');
+            if (!el) return;
+            try {
+                const r = await fetch('wallet_api.php', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'get_contracts' }) });
+                const d = await r.json();
+                const list = d.contracts || [];
+                if (!list.length) { el.innerHTML = '<p class="text-muted">No tokens deployed yet.</p>'; return; }
+                el.innerHTML = list.map(c => `
+                    <div class="card mb-2"><div class="card-body py-2">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div><strong>${c.symbol}</strong> — ${c.name}<br><small class="text-muted">${c.address}</small></div>
+                            <div class="text-end"><small>Supply: ${c.total_supply}</small></div>
+                        </div>
+                        <div class="input-group input-group-sm mt-2">
+                            <input class="form-control" id="bal_${c.address}" placeholder="address to check balance">
+                            <button class="btn btn-outline-secondary" onclick="checkTokenBalanceUI('${c.address}')">Balance</button>
+                            <span class="input-group-text" id="balres_${c.address}">-</span>
+                        </div>
+                    </div></div>`).join('');
+            } catch (e) { el.innerHTML = `<span class="text-danger">${e.message}</span>`; }
+        }
+
+        async function checkTokenBalanceUI(contract) {
+            const addr = document.getElementById('bal_' + contract).value.trim()
+                || document.getElementById('myAddress')?.value || '';
+            const res = document.getElementById('balres_' + contract);
+            if (!addr) { res.textContent = 'no addr'; return; }
+            try {
+                const r = await fetch('wallet_api.php', { method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({ action:'call_contract', contract, method:'balanceOf', args:[addr] }) });
+                const d = await r.json();
+                res.textContent = (d.result !== undefined ? (+d.result).toLocaleString() : (d.error || '-'));
+            } catch (e) { res.textContent = 'err'; }
+        }
+
+        // Show settings — language, network/RPC info (real).
+        async function showSettings() {
             const resultsDiv = document.getElementById('results');
+            let cfg = {};
+            try {
+                cfg = await fetch('wallet_api.php', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'get_metamask_config' }) }).then(r => r.json());
+            } catch (e) {}
+            const nc = cfg.network_config || {};
+            const rpc = `${window.location.origin}/wallet/wallet_api.php`;
             resultsDiv.innerHTML = `
-                <div class="action-card text-center">
-                    <div class="action-icon icon-settings mx-auto">
-                        <i class="fas fa-cogs"></i>
+                <div class="action-card">
+                    <h5 class="mb-3"><i class="fas fa-cogs me-2"></i>${t.settings || 'Settings'}</h5>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">${t.language || 'Language'}</label>
+                        <div class="btn-group d-block">
+                            <a class="btn btn-sm btn-outline-primary" href="?lang=en">English</a>
+                            <a class="btn btn-sm btn-outline-primary" href="?lang=ru">Русский</a>
+                        </div>
                     </div>
-                    <h5>${t.settings || 'Settings'}</h5>
-                    <p class="text-muted">${t.settings_description || 'Configure wallet and network settings'}</p>
-                    <div class="alert alert-info alert-modern mt-3">
-                        <i class="fas fa-exclamation-circle me-2"></i>
-                        ${t.feature_coming_soon || 'This feature is coming soon!'}
-                    </div>
-                </div>
-            `;
+                    <table class="table table-sm">
+                        <tr><td class="text-muted">Network name</td><td class="text-end fw-bold">${nc.name || nc.network_name || '-'}</td></tr>
+                        <tr><td class="text-muted">Chain ID</td><td class="text-end fw-bold">${nc.chainId || nc.chain_id || '-'}</td></tr>
+                        <tr><td class="text-muted">Token symbol</td><td class="text-end fw-bold">${nc.symbol || nc.token_symbol || '-'}</td></tr>
+                        <tr><td class="text-muted">RPC endpoint</td><td class="text-end"><code>${rpc}</code></td></tr>
+                    </table>
+                </div>`;
         }
 
         // Show about
@@ -4574,7 +4678,7 @@ function getLanguageOptions($currentLang) {
                                     <td>${position.share_percent || '0.00'}%</td>
                                     <td>${providedDate}</td>
                                     <td>
-                                        <button class="btn btn-sm btn-danger" onclick="removeLiquidityFromPosition('${position.pool_address}', '${position.lp_tokens}')">
+                                        <button class="btn btn-sm btn-danger" onclick="removeLiquidityFromPosition('${position.pool_address}', '${position.lp_tokens}', '${position.token0}', '${position.token1}')">
                                             <i class="fas fa-minus"></i> Remove
                                         </button>
                                     </td>
@@ -4608,98 +4712,238 @@ function getLanguageOptions($currentLang) {
             }, 300);
         }
         
-        function removeLiquidityFromPosition(poolAddress, lpTokens) {
-            if (confirm(`Remove ${lpTokens} LP tokens from this position?`)) {
-                showNotification('Remove liquidity feature coming soon!', 'info');
-            }
-        }
-        
-        async function loadAvailableTokens() {
+        async function removeLiquidityFromPosition(poolAddress, lpTokens, token0, token1) {
+            const address = (document.getElementById('positionsAddress') || {}).value
+                || document.getElementById('myAddress')?.value
+                || prompt('Enter your wallet address:');
+            if (!address) return;
+            const amountStr = prompt(`How many LP tokens to remove? (you have ${lpTokens})`, lpTokens);
+            if (amountStr === null) return;
+            const liquidity = parseFloat(amountStr);
+            if (!(liquidity > 0)) { showNotification('Invalid LP amount', 'warning'); return; }
             try {
-                const tokenASelect = document.getElementById('tokenA');
-                const tokenBSelect = document.getElementById('tokenB');
-                
-                // Add main token option
-                const mainOption = '<option value="main_token">VFLW - Main Token</option>';
-                tokenASelect.innerHTML = '<option value="">Select Token A</option>' + mainOption;
-                tokenBSelect.innerHTML = '<option value="">Select Token B</option>' + mainOption;
-                
-                // Get available WETH tokens
-                const response = await fetch('wallet_api.php', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'get_dex_info' })
-                });
-                
-                const data = await response.json();
-                if (data.success) {
-                    const wethOption = '<option value="weth_074781511f0019d7565f718d89588e8f">WETH - Wrapped Token</option>';
-                    tokenASelect.innerHTML += wethOption;
-                    tokenBSelect.innerHTML += wethOption;
-                }
-            } catch (error) {
-                console.error('Error loading tokens:', error);
-            }
-        }
-        
-        async function addLiquidityToPool() {
-            const tokenA = document.getElementById('tokenA').value;
-            const tokenB = document.getElementById('tokenB').value;
-            const amountA = parseFloat(document.getElementById('amountA').value);
-            const amountB = parseFloat(document.getElementById('amountB').value);
-            const address = document.getElementById('liquidityAddress').value;
-            
-            if (!tokenA || !tokenB || !amountA || !amountB || !address) {
-                showNotification('Please fill all fields', 'warning');
-                return;
-            }
-            
-            if (tokenA === tokenB) {
-                showNotification('Please select different tokens', 'warning');
-                return;
-            }
-            
-            try {
-                const button = document.getElementById('addLiquidityBtn');
-                button.disabled = true;
-                button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Processing...';
-                
                 const response = await fetch('wallet_api.php', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        action: 'create_liquidity_pool',
+                        action: 'remove_liquidity',
                         address: address,
-                        tokenA: tokenA,
-                        tokenB: tokenB,
-                        amountA: amountA,
-                        amountB: amountB
+                        tokenA: token0,
+                        tokenB: token1,
+                        liquidity: liquidity,
+                        amountAMin: 0,
+                        amountBMin: 0
                     })
                 });
-                
                 const data = await response.json();
-                
-                if (data.success) {
-                    showNotification(`Liquidity added successfully! LP Tokens: ${data.lp_tokens || 0}`, 'success');
-                    
-                    // Reset form
-                    document.getElementById('liquidityForm').reset();
-                    
-                    // Close modal
-                    bootstrap.Modal.getInstance(document.getElementById('liquidityModal')).hide();
+                if (data.success && data.liquidity_removed) {
+                    showNotification(`Removed liquidity: ${(+data.amountA).toFixed(6)} ${token0} + ${(+data.amountB).toFixed(6)} ${token1}`, 'success');
+                    if (typeof showMyPositions === 'function') showMyPositions();
                 } else {
                     showNotification('Error: ' + (data.error || 'Unknown error'), 'danger');
                 }
             } catch (error) {
-                console.error('Error adding liquidity:', error);
                 showNotification('Error: ' + error.message, 'danger');
-            } finally {
-                const button = document.getElementById('addLiquidityBtn');
-                button.disabled = false;
-                button.innerHTML = '<i class="fas fa-plus me-2"></i>Add Liquidity';
             }
         }
+        
+        // Shared token list for all DEX UIs. Returns [{id, label}] with native normalized to 'native'.
+        let __dexTokensCache = null;
+        async function dexFetchTokens() {
+            if (__dexTokensCache) return __dexTokensCache;
+            const out = [];
+            try {
+                const response = await fetch('wallet_api.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'get_available_tokens' })
+                });
+                const data = await response.json();
+                (data.tokens || []).forEach(tk => {
+                    // Backend treats the native coin strictly as 'native'.
+                    const id = (tk.address === 'native_token' || tk.address === 'native' || tk.address === 'main_token')
+                        ? 'native' : tk.address;
+                    out.push({ id: id, label: `${tk.symbol} — ${tk.name}` });
+                });
+            } catch (e) { console.error('dexFetchTokens', e); }
+            if (!out.length) out.push({ id: 'native', label: 'Native coin' });
+            __dexTokensCache = out;
+            return out;
+        }
+
+        function dexFillSelect(selectEl, tokens, placeholder) {
+            if (!selectEl) return;
+            selectEl.innerHTML = (placeholder ? `<option value="">${placeholder}</option>` : '')
+                + tokens.map(t => `<option value="${t.id}">${t.label}</option>`).join('');
+        }
+
+        async function loadAvailableTokens() {
+            const tokens = await dexFetchTokens();
+            dexFillSelect(document.getElementById('tokenA'), tokens, 'Select Token A');
+            dexFillSelect(document.getElementById('tokenB'), tokens, 'Select Token B');
+        }
+
+        // ---------------- Swap UI ----------------
+        let __swapQuoteTimer = null;
+        async function showSwapModal() {
+            const tokens = await dexFetchTokens();
+            dexFillSelect(document.getElementById('swapTokenIn'), tokens, null);
+            dexFillSelect(document.getElementById('swapTokenOut'), tokens, null);
+            // default: native -> first non-native
+            const inSel = document.getElementById('swapTokenIn');
+            const outSel = document.getElementById('swapTokenOut');
+            inSel.value = 'native';
+            const other = tokens.find(t => t.id !== 'native');
+            if (other) outSel.value = other.id;
+            const addr = (document.getElementById('myAddress')?.value || localStorage.getItem('walletAddress') || '');
+            document.getElementById('swapAddress').value = addr;
+            document.getElementById('swapAmountIn').value = '';
+            document.getElementById('swapAmountOut').value = '';
+            document.getElementById('swapQuoteBox').style.display = 'none';
+            document.getElementById('swapError').textContent = '';
+            document.getElementById('swapBtn').disabled = true;
+            ['swapAmountIn','swapTokenIn','swapTokenOut'].forEach(id => {
+                const el = document.getElementById(id);
+                el.oninput = el.onchange = () => { scheduleSwapQuote(); refreshSwapBalance(); };
+            });
+            refreshSwapBalance();
+            new bootstrap.Modal(document.getElementById('swapModal')).show();
+        }
+
+        function swapFlipTokens() {
+            const a = document.getElementById('swapTokenIn');
+            const b = document.getElementById('swapTokenOut');
+            const tmp = a.value; a.value = b.value; b.value = tmp;
+            scheduleSwapQuote(); refreshSwapBalance();
+        }
+
+        async function refreshSwapBalance() {
+            const addr = document.getElementById('swapAddress').value.trim();
+            const token = document.getElementById('swapTokenIn').value;
+            const el = document.getElementById('swapBalanceIn');
+            if (!addr) { el.textContent = '-'; return; }
+            try {
+                const r = await fetch('wallet_api.php', { method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({ action:'get_token_balance', address: addr, token: token }) });
+                const d = await r.json();
+                el.textContent = (d.balance !== undefined ? (+d.balance).toFixed(6) : '-');
+            } catch (e) { el.textContent = '-'; }
+        }
+
+        function scheduleSwapQuote() {
+            clearTimeout(__swapQuoteTimer);
+            __swapQuoteTimer = setTimeout(updateSwapQuote, 300);
+        }
+
+        async function updateSwapQuote() {
+            const tokenIn = document.getElementById('swapTokenIn').value;
+            const tokenOut = document.getElementById('swapTokenOut').value;
+            const amountIn = parseFloat(document.getElementById('swapAmountIn').value);
+            const errEl = document.getElementById('swapError');
+            const box = document.getElementById('swapQuoteBox');
+            const btn = document.getElementById('swapBtn');
+            errEl.textContent = '';
+            if (tokenIn === tokenOut) { errEl.textContent = 'Select two different tokens'; box.style.display='none'; btn.disabled=true; return; }
+            if (!(amountIn > 0)) { document.getElementById('swapAmountOut').value=''; box.style.display='none'; btn.disabled=true; return; }
+            try {
+                const r = await fetch('wallet_api.php', { method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({ action:'get_swap_quote', tokenIn, tokenOut, amountIn }) });
+                const d = await r.json();
+                if (d.error || !d.pair_exists) {
+                    document.getElementById('swapAmountOut').value=''; box.style.display='none'; btn.disabled=true;
+                    errEl.textContent = d.error || 'No pool for this pair';
+                    return;
+                }
+                document.getElementById('swapAmountOut').value = (+d.amountOut).toFixed(8);
+                document.getElementById('swapFee').textContent = (+d.fee).toFixed(6);
+                document.getElementById('swapImpact').textContent = (+(d.price_impact||0)).toFixed(4);
+                document.getElementById('swapMinOut').textContent = (+(d.minimum_received ?? d.amountOut*0.995)).toFixed(8);
+                box.style.display='block';
+                btn.disabled = false;
+            } catch (e) {
+                errEl.textContent = 'Quote error: ' + e.message; btn.disabled=true;
+            }
+        }
+
+        async function executeSwap() {
+            const address = document.getElementById('swapAddress').value.trim();
+            const tokenIn = document.getElementById('swapTokenIn').value;
+            const tokenOut = document.getElementById('swapTokenOut').value;
+            const amountIn = parseFloat(document.getElementById('swapAmountIn').value);
+            const amountOut = parseFloat(document.getElementById('swapAmountOut').value) || 0;
+            const amountOutMin = amountOut * 0.995; // 0.5% slippage
+            if (!address) { showNotification('Enter wallet address', 'warning'); return; }
+            if (!(amountIn > 0) || tokenIn === tokenOut) { showNotification('Invalid swap', 'warning'); return; }
+            const btn = document.getElementById('swapBtn');
+            btn.disabled = true; const orig = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Swapping...';
+            try {
+                const r = await fetch('wallet_api.php', { method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({ action:'swap_tokens', from: address, to: address, tokenIn, tokenOut, amountIn, amountOutMin }) });
+                const d = await r.json();
+                if (d.success && d.swap_executed) {
+                    showNotification(`Swapped ${amountIn} for ${(+d.amountOut).toFixed(6)} (fee ${(+d.fee).toFixed(4)})`, 'success');
+                    refreshSwapBalance();
+                    document.getElementById('swapAmountIn').value='';
+                    document.getElementById('swapAmountOut').value='';
+                    document.getElementById('swapQuoteBox').style.display='none';
+                } else {
+                    showNotification('Swap failed: ' + (d.error || 'Unknown error'), 'danger');
+                }
+            } catch (e) {
+                showNotification('Swap error: ' + e.message, 'danger');
+            } finally {
+                btn.innerHTML = orig; btn.disabled = false;
+            }
+        }
+        
+        // NOTE: addLiquidityToPool() is defined once below (supports manual + MetaMask).
     </script>
+
+    <!-- Swap Modal -->
+    <div class="modal fade" id="swapModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="fas fa-exchange-alt me-2"></i><?php echo $t['swap_tokens_title'] ?? 'Swap Tokens'; ?></h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label fw-bold"><?php echo $t['wallet_address'] ?? 'Wallet address'; ?></label>
+                        <input type="text" class="form-control" id="swapAddress" placeholder="0x...">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label fw-bold"><?php echo $t['from'] ?? 'From'; ?></label>
+                        <div class="input-group">
+                            <input type="number" class="form-control" id="swapAmountIn" placeholder="0.0" min="0" step="any">
+                            <select class="form-select" id="swapTokenIn" style="max-width:45%"></select>
+                        </div>
+                        <small class="text-muted">Balance: <span id="swapBalanceIn">-</span></small>
+                    </div>
+                    <div class="text-center my-1">
+                        <button class="btn btn-sm btn-outline-secondary" type="button" onclick="swapFlipTokens()" title="Flip"><i class="fas fa-arrows-up-down"></i> ⬍</button>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold"><?php echo $t['to'] ?? 'To'; ?></label>
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="swapAmountOut" placeholder="0.0" readonly>
+                            <select class="form-select" id="swapTokenOut" style="max-width:45%"></select>
+                        </div>
+                    </div>
+                    <div class="alert alert-secondary py-2 small" id="swapQuoteBox" style="display:none;">
+                        <div>Rate fee: <span id="swapFee">0</span></div>
+                        <div>Price impact: <span id="swapImpact">0</span>%</div>
+                        <div>Min received (0.5% slippage): <span id="swapMinOut">0</span></div>
+                    </div>
+                    <div id="swapError" class="text-danger small mb-2"></div>
+                    <button class="btn btn-success w-100" id="swapBtn" onclick="executeSwap()" disabled>
+                        <i class="fas fa-exchange-alt me-2"></i><?php echo $t['swap_tokens_title'] ?? 'Swap'; ?>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- Liquidity Modal -->
     <div class="modal fade" id="liquidityModal" tabindex="-1">

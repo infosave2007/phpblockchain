@@ -59,6 +59,9 @@ RUN php check.php
 # Copy PHP-FPM configuration
 COPY docker/php-fpm.conf /usr/local/etc/php-fpm.d/www.conf
 
+# Copy PHP runtime configuration (display_errors off, log to stderr, etc.)
+COPY docker/php.ini /usr/local/etc/php/conf.d/zz-app.ini
+
 # Add entrypoint script for dev/prod runtime adjustments
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

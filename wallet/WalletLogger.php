@@ -22,35 +22,15 @@ class WalletLogger
             return self::$debugLevel;
         }
         
-        // Check for debug variable in various places
-        $debugValue = null;
-        
-        // 1. Check environment variables
-        $debugValue = $debugValue ?? getenv('DEBUG');
-        $debugValue = $debugValue ?? getenv('WALLET_DEBUG');
-        $debugValue = $debugValue ?? getenv('API_DEBUG');
-        
-        // 2. Check config array
-        if (is_array(self::$config)) {
-            $debugValue = $debugValue ?? self::$config['debug'];
-            $debugValue = $debugValue ?? self::$config['debug_mode'];
-            $debugValue = $debugValue ?? self::$config['wallet_debug'];
-        }
-        
-        // 3. Check global variables
-        $debugValue = $debugValue ?? ($GLOBALS['debug'] ?? null);
-        
-        // 4. Check $_GET parameter for testing
-        $debugValue = $debugValue ?? ($_GET['debug'] ?? null);
-        
-        // Convert to integer (0 or 1)
-        // Default to verbose logging (1) unless explicitly disabled (0)
-        if ($debugValue === '0' || $debugValue === 'false' || $debugValue === 'off' || $debugValue === 'no') {
-            self::$debugLevel = 0; // No logging - explicitly disabled
-        } else {
-            self::$debugLevel = 1; // Verbose logging - default behavior
-        }
-        
+        // SECURITY: debug is controlled by SERVER-SIDE config/env ONLY (never $_GET),
+        // and is OFF by default. Enable explicitly with a truthy value.
+        $debugValue = getenv('DEBUG')
+            ?: getenv('WALLET_DEBUG')
+            ?: getenv('API_DEBUG')
+            ?: (is_array(self::$config) ? (self::$config['debug'] ?? self::$config['debug_mode'] ?? self::$config['wallet_debug'] ?? null) : null);
+
+        self::$debugLevel = self::toBool($debugValue, false) ? 1 : 0;
+
         return self::$debugLevel;
     }
     
@@ -101,8 +81,12 @@ class WalletLogger
             $logFile = $logDir . '/wallet_api.log';
             $timestamp = date('Y-m-d H:i:s');
             $logMessage = "[{$timestamp}] [{$level}] {$message}" . PHP_EOL;
-            
-            file_put_contents($logFile, $logMessage, FILE_APPEND | LOCK_EX);
+
+            // Try with an exclusive lock; on filesystems where flock() is unsupported
+            // (e.g. some Docker Desktop bind mounts → EDEADLK) fall back to a plain append.
+            if (@file_put_contents($logFile, $logMessage, FILE_APPEND | LOCK_EX) === false) {
+                @file_put_contents($logFile, $logMessage, FILE_APPEND);
+            }
         }
     }
     

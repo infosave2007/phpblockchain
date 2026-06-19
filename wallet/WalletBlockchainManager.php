@@ -724,6 +724,28 @@ class WalletBlockchainManager
     /**
      * Save block directly to database using ValidatorManager
      */
+    /**
+     * Best-effort mirror of the DB chain to the on-disk binary ledger.
+     * Idempotent (importFromDatabase skips blocks already present), never fatal.
+     */
+    private function mirrorToBinaryLedger(): void
+    {
+        try {
+            if (!class_exists('\\Blockchain\\Core\\Storage\\BlockchainBinaryStorage')) {
+                return;
+            }
+            $dataDir = $this->config['blockchain']['binary_storage']['data_dir'] ?? 'storage/blockchain';
+            if (strpos($dataDir, '/') !== 0) {
+                $dataDir = dirname(__DIR__) . '/' . $dataDir;
+            }
+            if (!is_dir($dataDir)) { @mkdir($dataDir, 0775, true); }
+            $bin = new \Blockchain\Core\Storage\BlockchainBinaryStorage($dataDir, [], false);
+            $bin->importFromDatabase($this->database);
+        } catch (\Throwable $e) {
+            WalletLogger::error('Binary ledger mirror failed (non-fatal): ' . $e->getMessage());
+        }
+    }
+
     private function saveBlockToDatabase($block): void
     {
         if (!$this->database) {
@@ -947,7 +969,10 @@ class WalletBlockchainManager
             } else {
                 WalletLogger::debug("No transaction to commit (not started by this method)");
             }
-            
+
+            // Mirror the committed chain to the on-disk binary ledger (best-effort, non-fatal).
+            $this->mirrorToBinaryLedger();
+
         } catch (Exception $e) {
             WalletLogger::error("WalletBlockchainManager::saveToDatabaseDirectly - EXCEPTION CAUGHT: " . $e->getMessage());
             WalletLogger::error("WalletBlockchainManager::saveToDatabaseDirectly - Exception file: " . $e->getFile() . " line: " . $e->getLine());
@@ -984,10 +1009,13 @@ class WalletBlockchainManager
                 // Fallback to database-only storage
                 $this->saveBlockToDatabase($block);
             }
-            
+
+            // Mirror to on-disk binary ledger (best-effort, non-fatal).
+            $this->mirrorToBinaryLedger();
+
             // Broadcast to network
             $this->broadcastToNetwork($transaction, $block);
-            
+
             return [
                 'transaction' => $transaction,
                 'block' => [

@@ -13,6 +13,18 @@ class Mnemonic
     private static array $wordList = [];
 
     /**
+     * Gated debug logger (F6). OFF by default; enable with CRYPTO_DEBUG=1 for local debugging.
+     * Must never be passed raw key material (mnemonic words, entropy, seeds).
+     */
+    private static function dbg(string $message): void
+    {
+        $flag = strtolower((string)(getenv('CRYPTO_DEBUG') ?: ''));
+        if (in_array($flag, ['1', 'true', 'on', 'yes'], true)) {
+            error_log($message);
+        }
+    }
+
+    /**
      * Generate a new mnemonic phrase.
      *
      * @param int $strength The number of words (12, 15, 18, 21, 24)
@@ -37,13 +49,13 @@ class Mnemonic
         $entropyBytes = $entropyLengthBits / 8;
         $entropy = random_bytes((int)$entropyBytes);
         
-        error_log("Mnemonic::generate - Entropy bytes: " . $entropyBytes . ", hex: " . bin2hex($entropy));
+        self::dbg("Mnemonic::generate - Entropy bytes: " . $entropyBytes);
         
         $entropyBits = self::bytesToBits($entropy);
         $checksumBits = self::deriveChecksumBits($entropy);
         $bits = $entropyBits . $checksumBits;
         
-        error_log("Mnemonic::generate - Total bits length: " . strlen($bits) . " (expected: " . ($strength * 11) . ")");
+        self::dbg("Mnemonic::generate - Total bits length: " . strlen($bits) . " (expected: " . ($strength * 11) . ")");
 
         $chunks = str_split($bits, 11); // Each chunk maps to one word index
         self::loadWordList();
@@ -57,7 +69,8 @@ class Mnemonic
             // BIP39 allows repeated words; enforcing uniqueness reduced entropy and broke compatibility.
             $words[] = self::$wordList[$index];
         }
-        error_log("Mnemonic::generate - Generated BIP39 mnemonic: " . implode(' ', $words));
+        // Never log the actual mnemonic words (key material).
+        self::dbg("Mnemonic::generate - Generated BIP39 mnemonic (" . count($words) . " words)");
         return $words;
     }
 
@@ -70,15 +83,15 @@ class Mnemonic
      */
     public static function toSeed(array $mnemonic, string $passphrase = ''): string
     {
-        error_log("Mnemonic::toSeed - Starting with " . count($mnemonic) . " words");
+        self::dbg("Mnemonic::toSeed - Starting with " . count($mnemonic) . " words");
         
         $mnemonicString = implode(' ', $mnemonic);
-        error_log("Mnemonic::toSeed - Mnemonic string: " . $mnemonicString);
+        // Never log the mnemonic string (key material).
         
         $salt = 'mnemonic' . $passphrase;
         $result = bin2hex(hash_pbkdf2('sha512', $mnemonicString, $salt, 2048, 64, true));
         
-        error_log("Mnemonic::toSeed - Generated seed length: " . strlen($result));
+        self::dbg("Mnemonic::toSeed - Generated seed length: " . strlen($result));
         return $result;
     }
 
@@ -183,9 +196,9 @@ class Mnemonic
                 self::$wordList = $words;
                 return;
             }
-            error_log('Mnemonic::loadWordList - english.txt failed validation (count=' . count($words) . ', unique=' . $uniqueCount . '), using minimal fallback');
+            self::dbg('Mnemonic::loadWordList - english.txt failed validation (count=' . count($words) . ', unique=' . $uniqueCount . '), using minimal fallback');
         } else {
-            error_log('Mnemonic::loadWordList - english.txt not found, using minimal fallback');
+            self::dbg('Mnemonic::loadWordList - english.txt not found, using minimal fallback');
         }
 
         // Minimal fallback (NOT standard) just to avoid fatal crashes; generation should be avoided until proper list provided.

@@ -121,23 +121,29 @@ class Migration
             throw new Exception("Could not read migration file: {$file}");
         }
         
-        // Begin transaction
-        $this->database->beginTransaction();
-        
-        try {
-            // Execute migration
-            $this->database->exec($sql);
-            
-            // Mark as executed
+        // Skip empty migration files (placeholders) — record them so they are not retried.
+        if (trim($sql) === '') {
             $this->markAsExecuted($migrationName);
-            
-            // Commit
-            $this->database->commit();
-            
-        } catch (Exception $e) {
-            $this->database->rollback();
-            throw $e;
+            return;
         }
+
+        // NOTE: DDL statements (ALTER/CREATE) cause implicit commits in MySQL, so wrapping
+        // them in a transaction is unreliable. We execute directly and tolerate
+        // "already applied" errors so migrations stay idempotent across repeated runs.
+        try {
+            $this->database->exec($sql);
+        } catch (\PDOException $e) {
+            $msg = $e->getMessage();
+            $alreadyApplied = stripos($msg, 'Duplicate key name') !== false
+                || stripos($msg, 'already exists') !== false
+                || stripos($msg, 'Duplicate column') !== false;
+            if (!$alreadyApplied) {
+                throw $e;
+            }
+            // fall through: treat as success and record it so it is not retried
+        }
+
+        $this->markAsExecuted($migrationName);
     }
     
     /**
@@ -249,6 +255,7 @@ class Migration
                 reward_rate DECIMAL(5,4) NOT NULL DEFAULT 0.05,
                 start_block BIGINT NOT NULL,
                 end_block BIGINT NULL,
+                unlock_time BIGINT NULL DEFAULT NULL,
                 status ENUM('active', 'pending_withdrawal', 'withdrawn') NOT NULL DEFAULT 'active',
                 rewards_earned DECIMAL(20,8) NOT NULL DEFAULT 0,
                 last_reward_block BIGINT NOT NULL DEFAULT 0,

@@ -7,6 +7,9 @@ services:
       - ./storage:/var/www/html/storage
       - ./logs:/var/www/html/logs
       - ./config:/var/www/html/config
+      # Binary blockchain ledger needs a real filesystem (host bind mounts on Docker
+      # Desktop/macOS can't do the binary fseek/fwrite reliably) — use a named volume.
+      - bc_binary:/var/www/html/storage/blockchain
     environment:
       PHP_ENV: development
       BLOCKCHAIN_NETWORK: testnet
@@ -32,17 +35,16 @@ services:
       - MYSQL_PASSWORD=blockchain123
     volumes:
       - db_data:/var/lib/mysql
-      - ./database:/docker-entrypoint-initdb.d
     ports:
-      - "3306:3306"
+      - "33070:3306"
     networks:
       - blockchain-network
 
   nginx:
     image: nginx:alpine
     ports:
-      - "8080:80"
-      - "8443:443"
+      - "8090:80"
+      - "8453:443"
     volumes:
       - ./docker/nginx.conf:/etc/nginx/nginx.conf
       - ./:/var/www/html
@@ -61,7 +63,7 @@ services:
       PMA_PASSWORD: blockchain123
       PMA_ARBITRARY: 1
     ports:
-      - "8081:80"
+      - "8091:80"
     networks:
       - blockchain-network
     depends_on:
@@ -69,6 +71,7 @@ services:
 
 volumes:
   db_data:
+  bc_binary:
 
 networks:
   blockchain-network:
