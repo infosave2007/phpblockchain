@@ -20,8 +20,8 @@ require __DIR__ . '/../vendor/autoload.php';
 
 function out(string $m): void { fwrite(STDOUT, $m . "\n"); }
 
-$INITIAL_SUPPLY   = 1000000.0;   // total network supply
-$ADMIN_FUNDING    = 500000.0;    // credited to admin wallet
+$INITIAL_SUPPLY   = (float)(getenv('INITIAL_SUPPLY') ?: 1000000);   // total network supply
+$ADMIN_FUNDING    = (float)(getenv('ADMIN_FUNDING') ?: $INITIAL_SUPPLY); // credited to admin/genesis wallet (default: full supply)
 $NETWORK_NAME     = getenv('NETWORK_NAME') ?: 'Local DeFi Chain';
 $TOKEN_SYMBOL     = getenv('TOKEN_SYMBOL') ?: 'MBC';
 $TOKEN_DECIMALS   = 18;
@@ -141,6 +141,17 @@ try {
         $block = Blockchain::createGenesisWithDatabase($pdo, $genesisConfig);
         out('[5/5] Genesis block created: ' . $block->getHash());
     }
+
+    // --- Deterministic genesis-wallet holdings: total == ADMIN_FUNDING ---
+    // Genesis creation may also credit the wallet, so set the cached (available) balance
+    // explicitly to ADMIN_FUNDING minus whatever is already staked, giving total == ADMIN_FUNDING
+    // regardless of intermediate funding paths (prevents double-counting).
+    $stakedNow = (float)$pdo->query(
+        "SELECT COALESCE(SUM(amount),0) FROM staking WHERE staker = " . $pdo->quote(strtolower($adminAddress)) . " AND status = 'active'"
+    )->fetchColumn();
+    $finalAvailable = max(0, $ADMIN_FUNDING - $stakedNow);
+    $pdo->prepare("UPDATE wallets SET balance = ? WHERE address = ?")->execute([$finalAvailable, strtolower($adminAddress)]);
+    out('     Genesis wallet balance set: available=' . number_format($finalAvailable, 2) . ' staked=' . number_format($stakedNow, 2) . ' total=' . number_format($ADMIN_FUNDING, 2));
 
     // --- Mirror the chain to the on-disk binary ledger (independent durable copy) ---
     try {

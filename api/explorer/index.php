@@ -494,7 +494,19 @@ function getNetworkStats(PDO $pdo, string $network): array
             if ($latestBlock) {
                 $stats['last_block_time'] = (int)$latestBlock['timestamp'];
             }
-            
+
+            // Authoritative token supply from the config table (set at genesis).
+            try {
+                $cs = $pdo->query("SELECT key_name, value FROM config WHERE key_name IN ('network.total_supply','network.initial_supply')");
+                $supplyMap = [];
+                foreach ($cs->fetchAll(PDO::FETCH_ASSOC) as $r) { $supplyMap[$r['key_name']] = $r['value']; }
+                $supply = $supplyMap['network.total_supply'] ?? ($supplyMap['network.initial_supply'] ?? null);
+                if ($supply !== null && is_numeric($supply)) {
+                    $stats['total_supply'] = (float)$supply;
+                    $stats['circulating_supply'] = (float)$supply;
+                }
+            } catch (\Throwable $e) { /* keep defaults */ }
+
             if ($debug) {
                 $debugInfo['db_blocks_table'] = 'exists';
                 $debugInfo['db_blocks_count'] = $dbBlockCount;
